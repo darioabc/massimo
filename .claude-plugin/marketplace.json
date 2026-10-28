@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "massimo",
+  "description": "Massimo: design-system automation for front-end repos.",
+  "owner": {
+    "name": "Dario Codipietro",
+    "url": "https://dariocodipietro.co.uk"
+  },
+  "plugins": [
+    {
+      "name": "massimo",
+      "description": "Design-system automation for any front-end repo: component graph, native story lane, tokens, guided tidy-up, iterative UX loop, optional Figma mirror.",
+      "version": "0.1.0",
+      "source": "./",
+      "category": "design",
+      "homepage": "https://dariocodipietro.co.uk/massimo/"
+    }
+  ]
+}

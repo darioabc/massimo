@@ -1,0 +1,21 @@
+.a {
+  color: #fff;
+  margin: 6px 12px;
+  font-size: 13px;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  background: #ffffff;
+}
+@media (min-width: 640px) {
+  .b {
+    width: 100%;
+  }
+}
+@font-face {
+  font-family: "Custom";
+  src: url(x.woff2);
+}
+.c {
+  padding: 0;
+  border: 1px solid #000;
+  color: var(--color-primary);
+}

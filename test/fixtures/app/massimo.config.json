@@ -1,0 +1,23 @@
+{
+  "framework": "react",
+  "styling": ["tailwind4", "daisyui"],
+  "components": {
+    "include": ["src/components/**/*.{tsx,vue,svelte,astro}"],
+    "exclude": ["**/*.test.*", "**/*.stories.*", "**/*.story.*"]
+  },
+  "stories": { "include": ["src/stories/**/*.tsx"] },
+  "tokens": {
+    "source": "design-system/tokens/tokens.json",
+    "styleFiles": ["src/styles/theme.css"],
+    "outputs": [
+      { "format": "css", "path": "src/styles/tokens.generated.css" },
+      { "format": "tailwind4", "path": "src/styles/tokens.tailwind.css" },
+      { "format": "tailwind3", "path": "src/styles/tokens.tailwind.cjs" },
+      { "format": "scss", "path": "src/styles/_tokens.scss" },
+      { "format": "json", "path": "src/styles/tokens.flat.json" },
+      { "format": "ts", "path": "src/styles/tokens.ts" }
+    ]
+  },
+  "audit": { "include": ["src/**/*.{css,tsx,vue,svelte,astro}"] },
+  "ticketPattern": "FIU-\\d+"
+}

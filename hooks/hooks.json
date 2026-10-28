@@ -1,0 +1,16 @@
+{
+  "description": "Tells a new session where the repo's massimo design-system project stands, so work resumes instead of restarting.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "massimo",
+  "version": "0.1.0",
+  "description": "Design-system automation for any front-end repo: a component graph, a native story lane (no Storybook or Ladle), tokens, guided tidy-up, an iterative UX design loop, and an optional Figma mirror. Keeps a resumable project in the repo so work carries across sessions.",
+  "author": {
+    "name": "Dario Codipietro",
+    "url": "https://dariocodipietro.co.uk"
+  },
+  "homepage": "https://dariocodipietro.co.uk/massimo/",
+  "repository": "https://github.com/darioabc/massimo",
+  "license": "MIT",
+  "keywords": ["design-system", "design-tokens", "stories", "ux", "figma", "components", "frontend"]
+}

@@ -1,0 +1,50 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+}
+
+@plugin "daisyui/theme" {
+  name: "light";
+  default: true;
+  color-scheme: light;
+  --color-base-100: oklch(100% 0 0);
+  --color-base-content: oklch(21% 0.006 285.885);
+  --color-primary: #14b8a6;
+  --radius-field: 0.25rem;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(25.33% 0.016 252.42);
+  --color-base-content: oklch(97.807% 0.029 256.847);
+  --color-primary: #2dd4bf;
+  --radius-field: 0.25rem;
+}
+
+@theme {
+  --font-sans: "Geist Sans", system-ui, sans-serif;
+  --color-brand: var(--brand-teal);
+  --spacing: 0.25rem;
+}
+
+:root {
+  --brand-teal: #00d3bb;
+  --page-max: 80rem;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.1);
+}
+
+.dark {
+  --brand-teal: #00ffee;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page-max: 70rem;
+  }
+}
+
+.card {
+  --local: 1px;
+}

@@ -1,0 +1,21 @@
+# Design-system guard (massimo). Fails when the component graph is stale,
+# when a change adds raw colours or sizes beyond the audit baseline, or when
+# generated token files are out of date. Fix locally with `npm run ds:check`.
+name: Design system
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ds-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The checks are zero-dependency Node scripts vendored in design-system/scripts,
+      # so no install step is needed.
+      - run: npm run ds:check
