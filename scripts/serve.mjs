@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 // Zero-dependency static server for the project folder, so canvases, token
 // previews and mockups open in a browser pane at a stable localhost URL.
+// Markdown (STATUS.md, graph.md, audits, handoffs) renders as a page; add
+// `?raw` for the file itself. A folder with no index.html lists its files,
+// with its STATUS.md or README.md rendered under the list.
 //
 //   serve.mjs [--dir <folder>] [--port 4700] [--host 127.0.0.1]
 //
 // --dir defaults to the project folder. Tries the next ten ports if busy.
 
-import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
+import { escapeHtml, markdownPage, renderMarkdown } from './lib/markdown.mjs'
 import { loadConfig, parseArgs } from './lib/project.mjs'
 
 const { flags } = parseArgs()
@@ -22,7 +26,7 @@ const TYPES = {
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.md': 'text/markdown; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -34,7 +38,36 @@ const TYPES = {
   '.ico': 'image/x-icon',
 }
 
-const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const root = dir.split(sep).pop() || dir
+
+// The path trail from the served folder down to this URL, for the page bar.
+function trail(pathname) {
+  const parts = pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  const out = [{ name: root, href: '/' }]
+  parts.forEach((p, i) => out.push({ name: p, href: `/${parts.slice(0, i + 1).map(encodeURIComponent).join('/')}${i < parts.length - 1 ? '/' : ''}` }))
+  return out
+}
+
+function sendHtml(res, html) {
+  res.writeHead(200, { 'content-type': TYPES['.html'], 'cache-control': 'no-store' })
+  res.end(html)
+}
+
+function listing(target, pathname) {
+  const entries = readdirSync(target, { withFileTypes: true })
+    .filter((e) => !e.name.startsWith('.'))
+    .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+  const items = entries
+    .map((e) => {
+      const isDir = e.isDirectory()
+      const note = isDir ? `${readdirSync(join(target, e.name)).filter((n) => !n.startsWith('.')).length} items` : ''
+      return `<li class="${isDir ? 'dir' : 'file'}"><a href="${encodeURIComponent(e.name)}${isDir ? '/' : ''}">${escapeHtml(e.name)}${isDir ? '/' : ''}</a>${note ? `<small>${note}</small>` : ''}</li>`
+    })
+    .join('')
+  const readme = ['STATUS.md', 'README.md'].map((n) => join(target, n)).find((p) => existsSync(p))
+  const body = `<h1>${escapeHtml(trail(pathname).at(-1).name)}</h1><ul class="files">${items || '<li>Empty folder.</li>'}</ul>${readme ? `<hr>${renderMarkdown(readFileSync(readme, 'utf8'))}` : ''}`
+  return markdownPage({ title: pathname, body, trail: trail(pathname) })
+}
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://x')
@@ -52,17 +85,18 @@ const server = createServer((req, res) => {
     const index = join(target, 'index.html')
     if (existsSync(index)) target = index
     else {
-      const items = readdirSync(target, { withFileTypes: true })
-        .filter((e) => !e.name.startsWith('.'))
-        .map((e) => `<li><a href="${encodeURIComponent(e.name)}${e.isDirectory() ? '/' : ''}">${esc(e.name)}${e.isDirectory() ? '/' : ''}</a></li>`)
-        .join('')
-      res.writeHead(200, { 'content-type': TYPES['.html'], 'cache-control': 'no-store' })
-      res.end(`<!doctype html><meta charset="utf-8"><title>${esc(url.pathname)}</title><body style="font:14px system-ui;padding:24px"><h1 style="font-size:16px">${esc(url.pathname)}</h1><ul>${items}</ul>`)
+      sendHtml(res, listing(target, url.pathname))
       return
     }
   }
   if (!existsSync(target)) {
     res.writeHead(404, { 'content-type': 'text/plain' }).end('not found')
+    return
+  }
+  if (extname(target).toLowerCase() === '.md' && !url.searchParams.has('raw')) {
+    const text = readFileSync(target, 'utf8')
+    const title = text.match(/^#\s+(.+)$/m)?.[1] ?? url.pathname
+    sendHtml(res, markdownPage({ title, body: renderMarkdown(text), trail: trail(url.pathname), raw: `${url.pathname}?raw` }))
     return
   }
   res.writeHead(200, { 'content-type': TYPES[extname(target).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-store' })

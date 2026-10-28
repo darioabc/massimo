@@ -84,7 +84,7 @@ design-system/
   scripts/               zero-dependency Node scripts, vendored so CI and teammates without the plugin can run them
 ```
 
-Everything is plain Markdown, JSON and HTML, committed with your code.
+Everything is plain Markdown, JSON and HTML, committed with your code. `npm run ds:serve` opens the folder in a browser: the project's status first, with the graph, audits, handoffs and token preview one click away.
 
 ## Supported stacks
 
