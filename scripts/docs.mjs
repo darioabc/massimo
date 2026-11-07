@@ -16,13 +16,13 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder, writeFileAtomic } from './lib/project.mjs'
+import { tierOrder } from './lib/roles.mjs'
 import { isAlias } from './lib/source.mjs'
 import { truthy } from './lib/text.mjs'
 
 export const DOCS_START = '<!-- massimo:docs:start -->'
 export const DOCS_END = '<!-- massimo:docs:end -->'
 
-const TIERS = ['Foundations', 'Primitives', 'Patterns', 'Shells', 'Pages', 'Explorations']
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 const typeFamily = (t) => ({ color: 'Colour', dimension: 'Size and space', fontFamily: 'Type', fontWeight: 'Type', typography: 'Type', shadow: 'Shadow', border: 'Border', duration: 'Motion', cubicBezier: 'Motion', transition: 'Motion', number: 'Number', gradient: 'Gradient', strokeStyle: 'Border', css: 'CSS only' }[t] ?? 'Other')
 
@@ -84,7 +84,9 @@ export function docsBlock({ root, config, projectDir }) {
       if (!byTier.has(n.tier)) byTier.set(n.tier, [])
       byTier.get(n.tier).push(n)
     }
-    const tiers = [...byTier.keys()].sort((a, b) => (TIERS.indexOf(a) === -1 ? 99 : TIERS.indexOf(a)) - (TIERS.indexOf(b) === -1 ? 99 : TIERS.indexOf(b)))
+    // The same tier order as graph.md: the taxonomy's, or massimo's own.
+    const order = tierOrder(config)
+    const tiers = [...byTier.keys()].sort((a, b) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)))
     for (const tier of tiers) {
       lines.push(`### ${tier}`, '', '| Component | Use it when | Props |', '|---|---|---|')
       for (const n of byTier.get(tier)) {

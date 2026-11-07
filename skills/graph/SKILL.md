@@ -43,3 +43,12 @@ Components declare their place in the system in comment lines at the top of thei
 ```
 
 `ds:group` places the node in the graph's index by tier (Foundations, Primitives, Patterns, Shells, Pages, Explorations) and group. A value may wrap onto the next comment lines until a blank comment line, code, or another `ds:` key. Use whatever comment syntax the file allows (`<!-- ds:… -->` in Vue/Svelte templates, `//` inside an Astro frontmatter fence). Writing them is the guard phase's job, with the user; do not add them unasked here. An unknown `ds:` key shows up in graph.md as a header fault; a repo that already uses its own keys (say `ds:owner` or `ds:inputs`) lists them in `massimo.config.json` → `graph.extraKeys` so they are read instead.
+
+## A repo with its own header rules
+
+When a repo already has a taxonomy and header keys of its own, the config carries them and the graph checks them, so nothing in the source has to change:
+
+- `graph.keys` gives each of the repo's own keys a role (`list`, `definitions`, `scope`, `breakpoint`). A key with a role is never unknown, and a value its role cannot take (a scope outside its set, a list item that is not a file in its folder) is a header fault.
+- `graph.taxonomy` holds the tiers in order, the groups with a line each, the placement test, path rules that give a file its group, the parked marker and its group, and the keys a tier requires. With it, an unknown group, a node with no group, a missing required key and a parked node in the wrong place are faults. graph.md then opens with the placement test (one `- <Tier>: <test>` line per question) and the groups, and the index and the README follow the taxonomy's tier order.
+- `graph.header: "top"` reads only the first comment block of a file (inside the frontmatter in an .astro file). A `ds:` line anywhere else, a key written with a colon, a second `ds:group` and a line that opens with `ds:` but is not `ds:key value` are faults. `"anywhere"`, the default, reads every comment.
+- `graph.strictFaults: true` makes header faults fail the run and `--check`, after the files are written, so CI stops on them. Off, they are listed in graph.md and the run passes.

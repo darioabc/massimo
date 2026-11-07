@@ -18,7 +18,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { headerRoles, keyRoles, knownKeys, placeFile, tierOf, tierOrder } from './lib/roles.mjs'
 import {
+  RULE_KEYS,
   classLibraries,
   componentName,
   createResolver,
@@ -120,6 +122,108 @@ function assignNames(files) {
 function tokenGroup(name) {
   const first = name.replace(/^--/, '').split('-')[0]
   return TOKEN_GROUPS.includes(first) && first !== 'other' ? first : 'other'
+}
+
+// ── ds: headers ─────────────────────────────────────────────────────────────
+
+// A comment line that opens with `ds:`, whatever follows.
+const DS_LINE = /^\s*(?:\/\/+|\/\*+|\*+|<!--+|\{\/\*+)\s*ds:/
+const LEADING = /^\s*(?:#!|['"]use [\w ]+['"];?\s*$)/
+
+// The first comment block of a file as 1-based [first, last] lines, or null:
+// a run of `//` lines, or one `/* */` or `<!-- -->` comment. It starts at the
+// first line with something on it, after an .astro file's frontmatter fence
+// or a Vue or Svelte file's opening <script> tag, and after a shebang or a
+// "use client" directive.
+function headerBlock(lines, file) {
+  let i = 0
+  const skipBlank = () => {
+    while (i < lines.length && lines[i].trim() === '') i++
+  }
+  skipBlank()
+  if (/\.astro$/i.test(file) && lines[i]?.trim() === '---') i++
+  else if (/\.(?:vue|svelte)$/i.test(file) && /^<script\b[^>]*>$/i.test(lines[i]?.trim() ?? '')) i++
+  skipBlank()
+  while (i < lines.length && LEADING.test(lines[i])) {
+    i++
+    skipBlank()
+  }
+  const first = lines[i]?.trim() ?? ''
+  const start = i
+  if (first.startsWith('//')) {
+    while (i < lines.length && lines[i].trim().startsWith('//')) i++
+    return [start + 1, i]
+  }
+  const close = first.startsWith('/*') || first.startsWith('{/*') ? '*/' : first.startsWith('<!--') ? '-->' : null
+  if (!close) return null
+  while (i < lines.length - 1 && !lines[i].includes(close)) i++
+  return [start + 1, i + 1]
+}
+
+// A file's `ds:` header as { rules, unknown, entries, problems }. 'anywhere'
+// reads every comment, as massimo always has. 'top' reads the first comment
+// block only, and names as problems a `ds:` line anywhere else, a key
+// written with a colon, a second ds:group and a line that opens with `ds:`
+// but is not `ds:key value`; each problem is { key, line, message }.
+function readHeader(source, file, keys, mode) {
+  const all = extractRules(source, keys)
+  if (mode !== 'top') return { ...all, problems: [] }
+  const lines = source.split(/\r?\n/)
+  const [from, to] = headerBlock(lines, file) ?? [0, -1]
+  const known = [...RULE_KEYS, ...keys.filter((k) => !RULE_KEYS.includes(k))]
+  const where = /\.astro$/i.test(file) ? 'the first comment block inside the frontmatter' : 'the first comment block at the top of the file'
+  const found = {}
+  const unknown = []
+  const entries = []
+  const problems = []
+  for (const e of all.entries) {
+    const problem = (message) => problems.push({ key: `ds:${e.key}`, line: e.line, message })
+    if (e.line < from || e.line > to) problem(`ds:${e.key} sits outside the header, ${where}; move it there`)
+    else if (e.colon) problem(`ds:${e.key}: is written with a colon; write "ds:${e.key} <value>"`)
+    else if (e.key === 'group' && entries.some((x) => x.key === 'group')) problem('ds:group is declared a second time; keep one')
+    else {
+      entries.push(e)
+      if (!known.includes(e.key)) {
+        if (!unknown.includes(e.key)) unknown.push(e.key)
+      } else if (e.value) found[e.key] = found[e.key] ? `${found[e.key]} ${e.value}` : e.value
+      else if (e.key === 'no-story' && found[e.key] === undefined) found[e.key] = ''
+    }
+  }
+  const lineSet = new Set(all.entries.map((e) => e.line))
+  lines.forEach((line, k) => {
+    if (DS_LINE.test(line) && !lineSet.has(k + 1)) problems.push({ key: 'ds:', line: k + 1, message: 'a line opens with ds: but is not "ds:key value"' })
+  })
+  const rules = {}
+  for (const key of known) if (found[key] !== undefined) rules[key] = found[key]
+  return { rules, unknown, entries, problems }
+}
+
+// Whether a taxonomy knows a group: by its glossary when it has one, else by
+// its tiers, else any group goes.
+function knowsGroup(taxonomy, group) {
+  const groups = taxonomy?.groups
+  if (Array.isArray(groups) && groups.length > 0) return groups.includes(group)
+  if (groups && typeof groups === 'object' && Object.keys(groups).length > 0) return Object.prototype.hasOwnProperty.call(groups, group)
+  const tiers = taxonomy?.tiers
+  return Array.isArray(tiers) && tiers.length > 0 ? tiers.includes(tierOf(group)) : true
+}
+
+// The taxonomy's groups as [name, line] pairs, in its order.
+const glossary = (taxonomy) => {
+  const groups = taxonomy?.groups
+  if (Array.isArray(groups)) return groups.map((g) => [g, ''])
+  return groups && typeof groups === 'object' ? Object.entries(groups).map(([g, line]) => [g, typeof line === 'string' ? line : '']) : []
+}
+
+// The placement test as { tests: [{ tier, test }], notes }: `placement` is
+// { tests, notes }, or the list of tests alone; a test is { tier, test } or
+// [tier, test].
+function placementOf(taxonomy) {
+  const p = taxonomy?.placement
+  const list = Array.isArray(p) ? p : Array.isArray(p?.tests) ? p.tests : []
+  const tests = list.map((t) => (Array.isArray(t) ? { tier: t[0], test: t[1] } : { tier: t?.tier, test: t?.test })).filter((t) => typeof t.tier === 'string' && typeof t.test === 'string')
+  const notes = Array.isArray(p?.notes) ? p.notes.filter((n) => typeof n === 'string') : []
+  return { tests, notes }
 }
 
 // Everything the graph needs, computed from source. Pure apart from reads:
@@ -274,6 +378,39 @@ export function buildGraph(root, config, command = "graph.mjs") {
 
   const ticketRe = config.ticketPattern ? new RegExp(config.ticketPattern, 'g') : null
   const faults = []
+  // Where each fault sits, line included, for the message a strict run prints.
+  const faultLines = []
+
+  // How headers are read: the repo's own keys and their roles, the taxonomy
+  // that places each node, and how much of the file counts as its header.
+  const keys = knownKeys(config)
+  const { roles, problems: roleProblems } = keyRoles(config)
+  warnings.push(...roleProblems)
+  const taxonomy = config.graph?.taxonomy && typeof config.graph.taxonomy === 'object' ? config.graph.taxonomy : null
+  const headerMode = config.graph?.header ?? 'anywhere'
+  if (!['anywhere', 'top'].includes(headerMode)) warnings.push(`graph.header is "${headerMode}"; it is "anywhere" or "top", so headers are read anywhere`)
+  const exists = (path) => existsSync(join(root, path))
+
+  // A node's place in the taxonomy: its declared group when the taxonomy
+  // knows it, else what the parked marker or a path rule gives, with the
+  // faults the taxonomy finds on the way.
+  function place(file, source, declared, entries, fault) {
+    const lineOf = (key) => entries.find((e) => e.key === key)?.line ?? null
+    const known = declared === null || knowsGroup(taxonomy, declared)
+    if (!known) fault('ds:group', `"${declared}" is not a group in graph.taxonomy`, lineOf('group'))
+    const p = placeFile(file, source, known ? declared : null, taxonomy)
+    if (p.derived && !knowsGroup(taxonomy, p.group)) fault('ds:group', `takes "${p.group}" from graph.taxonomy, which does not list that group`)
+    if (!p.group && declared === null) fault('ds:group', 'has no group: add a ds:group line, or a path rule in graph.taxonomy.rules')
+    for (const key of [].concat(taxonomy.require?.[p.tier] ?? [])) {
+      if (!entries.some((e) => e.key === key && e.value.trim())) fault(`ds:${key}`, `a ${p.tier} node needs a ds:${key} line`)
+    }
+    const parked = taxonomy.parked
+    if (parked?.group && p.group) {
+      if (p.parked && p.group !== parked.group) fault('ds:group', `carries the parked marker ${parked.marker} but sits in ${p.group}; a parked node goes in ${parked.group}`, lineOf('group'))
+      if (!p.parked && p.group === parked.group) fault('ds:group', `sits in ${parked.group} without the parked marker ${parked.marker}`, lineOf('group'))
+    }
+    return p
+  }
 
   // Call sites are read once each, however many components they use.
   const textOf = new Map()
@@ -304,13 +441,23 @@ export function buildGraph(root, config, command = "graph.mjs") {
     }
     const cssVars = new Set()
     for (const m of code.matchAll(/var\(\s*(--[\w-]+)/g)) if (!m[1].startsWith('--tw-')) cssVars.add(m[1])
-    const header = extractRules(source, config.graph?.extraKeys ?? [])
+    const header = readHeader(source, file, keys, headerMode)
     for (const key of header.unknown) {
       warnings.push(`${file}: unknown header key "ds:${key}"`)
       faults.push({ file, key: `ds:${key}` })
     }
+    const fault = (key, message, line = null) => {
+      faults.push({ file, key, message })
+      faultLines.push(`${file}${line ? `:${line}` : ''}: ${message}`)
+    }
+    for (const p of header.problems) fault(p.key, p.message, p.line)
+    if (roles.size > 0) for (const p of headerRoles(header.entries, roles, { exists }).problems) fault(`ds:${p.key}`, p.message, p.line)
     const { group: groupValue, 'no-story': noStory, ...rules } = header.rules
     const groupParts = (groupValue ?? '').split('/').map((p) => p.trim()).filter(Boolean)
+    let group = groupParts.length > 0 ? groupParts.join(' / ') : null
+    let tier = groupParts[0] ?? null
+    const placed = taxonomy ? place(file, source, group, header.entries, fault) : {}
+    if (taxonomy) ({ group, tier } = placed)
     const decisions = ticketRe ? sortedUnique(source.match(ticketRe) ?? [], natural) : []
     const composedBy = {}
     for (const importer of sortedUnique(importersOf.get(file))) {
@@ -322,8 +469,10 @@ export function buildGraph(root, config, command = "graph.mjs") {
     return {
       name: nameOf.get(file),
       file,
-      tier: groupParts[0] ?? null,
-      group: groupParts.length > 0 ? groupParts.join(' / ') : null,
+      tier,
+      group,
+      ...(placed.derived ? { derived: true } : {}),
+      ...(placed.parked ? { parked: true } : {}),
       noStory: noStory ?? null,
       stories: sortedUnique(storiesOf.get(file)),
       exports: extractExports(source, file),
@@ -364,6 +513,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
   const unresolvedMap = {}
   for (const spec of [...unresolved.keys()].sort(compare)) unresolvedMap[spec] = [...unresolved.get(spec)].sort(compare)
   const rulesNodes = nodes.filter((n) => Object.keys(n.rules).length > 0).map((n) => n.name)
+  const faultList = uniqueFaults(faults)
 
   const json = {
     version: 1,
@@ -376,7 +526,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       tokens: tokenNames.length,
       nodesWithRules: rulesNodes.length,
       unresolvedImports: Object.keys(unresolvedMap).length,
-      headerFaults: faults.length,
+      headerFaults: faultList.length,
     },
     tokens: {
       styleFiles,
@@ -387,21 +537,38 @@ export function buildGraph(root, config, command = "graph.mjs") {
     storyQueue,
     nodes,
     unresolved: unresolvedMap,
-    faults: faults.sort((a, b) => compare(a.file, b.file) || compare(a.key, b.key)),
+    faults: faultList,
   }
-  return { json, markdown: renderMarkdown(json, rulesNodes, command), warnings }
+  const view = { order: tierOrder(config), taxonomy }
+  return { json, markdown: renderMarkdown(json, rulesNodes, command, view), warnings, faultLines: sortedUnique(faultLines) }
+}
+
+// Faults sorted by file, key and message, each once.
+function uniqueFaults(faults) {
+  const seen = new Set()
+  return faults
+    .sort((a, b) => compare(a.file, b.file) || compare(a.key, b.key) || compare(a.message ?? '', b.message ?? ''))
+    .filter((f) => {
+      const id = `${f.file}\n${f.key}\n${f.message ?? ''}`
+      if (seen.has(id)) return false
+      seen.add(id)
+      return true
+    })
 }
 
 const code = (s) => `\`${s}\``
 
-const TIER_ORDER = ['Foundations', 'Primitives', 'Patterns', 'Shells', 'Pages', 'Explorations']
-const tierRank = (tier) => {
-  const i = TIER_ORDER.indexOf(tier)
-  return i === -1 ? TIER_ORDER.length : i
+// A rank in a list, with anything not in it after everything that is.
+const rankIn = (list, item) => {
+  const i = list.indexOf(item)
+  return i === -1 ? list.length : i
 }
 
-// One line per node, grouped by tier then group; nodes without `ds:group` come last.
-function renderIndex(nodes) {
+// One line per node, grouped by tier (in the taxonomy's order, or massimo's)
+// then group (in the taxonomy's order, then by name); nodes without a group
+// come last.
+function renderIndex(nodes, view) {
+  const groupOrder = glossary(view.taxonomy).map(([g]) => g)
   const buckets = new Map()
   for (const n of nodes) {
     const key = n.group ?? 'Ungrouped'
@@ -412,7 +579,7 @@ function renderIndex(nodes) {
     if (a === 'Ungrouped' || b === 'Ungrouped') return (a === 'Ungrouped') - (b === 'Ungrouped')
     const ta = buckets.get(a).tier
     const tb = buckets.get(b).tier
-    return tierRank(ta) - tierRank(tb) || compare(ta, tb) || compare(a, b)
+    return rankIn(view.order, ta) - rankIn(view.order, tb) || compare(ta, tb) || rankIn(groupOrder, a) - rankIn(groupOrder, b) || compare(a, b)
   })
   const out = []
   for (const key of keys) {
@@ -467,13 +634,35 @@ function renderNode(node, nameByFile) {
   }
   if (node.states?.length > 0) lines.push(`- states: ${node.states.join(', ')}`)
   const rules = Object.entries(node.rules).map(([k, v]) => `${k} ${v}`)
-  if (node.group) rules.unshift(`group ${node.group}`)
+  const from = node.derived ? (node.parked ? ' (from its parked marker)' : ' (from its path)') : ''
+  if (node.group) rules.unshift(`group ${node.group}${from}`)
   if (rules.length > 0) lines.push(`- rules: ${rules.join(' · ')}`)
   if (node.decisions.length > 0) lines.push(`- decisions: ${node.decisions.join(', ')}`)
   return lines.join('\n')
 }
 
-function renderMarkdown(json, rulesNodes, command) {
+// The taxonomy's placement test, its notes and its groups. The placement
+// test keeps one `- <Tier>: <test>` line per question between its heading and
+// the next, so a page can read it back with a pattern.
+function renderTaxonomy(taxonomy) {
+  const out = []
+  const { tests, notes } = placementOf(taxonomy)
+  if (tests.length > 0) {
+    out.push('## Placement test', '', 'Ask each question in order; the first yes gives the node its tier.', '')
+    for (const t of tests) out.push(`- ${t.tier}: ${t.test}`)
+    out.push('')
+    for (const note of notes) out.push(note, '')
+  }
+  const groups = glossary(taxonomy)
+  if (groups.length > 0) {
+    out.push('## Groups', '')
+    for (const [group, line] of groups) out.push(line ? `- ${group}: ${line}` : `- ${group}`)
+    out.push('')
+  }
+  return out
+}
+
+function renderMarkdown(json, rulesNodes, command, view) {
   const { summary, tokens, storyQueue, nodes, unresolved, faults } = json
   const nameByFile = new Map(nodes.map((n) => [n.file, n.name]))
   const out = []
@@ -496,14 +685,20 @@ function renderMarkdown(json, rulesNodes, command) {
 
   if (faults.length > 0) {
     out.push('## Header faults', '')
-    out.push('A `ds:` key the graph does not know, so its value was ignored. Known keys: `ds:group`, `ds:no-story`, `ds:parents`, `ds:children`, `ds:never`, `ds:use-when`.', '')
-    for (const f of faults) out.push(`- ${code(f.file)} · ${code(f.key)}`)
+    if (faults.every((f) => f.message === undefined)) {
+      out.push('A `ds:` key the graph does not know, so its value was ignored. Known keys: `ds:group`, `ds:no-story`, `ds:parents`, `ds:children`, `ds:never`, `ds:use-when`.', '')
+    } else {
+      out.push('A `ds:` header line the graph could not use, or a node the taxonomy cannot place. A key with no message is one the graph does not know, so its value was ignored; `graph.keys` and `graph.extraKeys` in massimo.config.json name a repo\'s own keys.', '')
+    }
+    for (const f of faults) out.push(f.message === undefined ? `- ${code(f.file)} · ${code(f.key)}` : `- ${code(f.file)} · ${code(f.key)} · ${f.message}`)
     out.push('')
   }
 
+  out.push(...renderTaxonomy(view.taxonomy))
+
   out.push('## Index', '')
   out.push('One line per component, grouped by tier and group from each file\'s `ds:group` line.', '')
-  out.push(...renderIndex(nodes))
+  out.push(...renderIndex(nodes, view))
 
   out.push('## Story queue', '')
   if (storyQueue.length === 0) {
@@ -552,9 +747,20 @@ function main() {
   warnIfVendoredOlder(projectDir, import.meta.url)
   // A graph.json from a newer massimo is never checked against or overwritten.
   refuseNewer('graph', readJson(join(projectDir, 'graph.json'), null)?.version, 'graph.json')
-  const { json, markdown, warnings } = buildGraph(root, config, scriptCommand(root, projectDir, 'graph'))
-  if (json.faults.length > 0 && !truthy(flags.check)) {
+  const { json, markdown, warnings, faultLines } = buildGraph(root, config, scriptCommand(root, projectDir, 'graph'))
+  // With graph.strictFaults, header faults fail the run and the check: the
+  // files are still written first, so the reader can see what to fix.
+  const strict = config.graph?.strictFaults === true
+  const check = truthy(flags.check)
+  if (json.faults.length > 0 && (!check || strict)) {
     process.stderr.write(`massimo graph: ${json.faults.length} header ${json.faults.length === 1 ? 'fault' : 'faults'}; see "Header faults" in graph.md\n`)
+  }
+  if (strict) for (const line of faultLines) process.stderr.write(`massimo graph: ${line}\n`)
+  const failing = strict ? json.faults.length : 0
+  const strictFailure = () => {
+    if (failing === 0) return false
+    process.stderr.write(`massimo graph: graph.strictFaults is on, so ${failing === 1 ? 'this fault fails' : `these ${failing} faults fail`} the ${check ? 'check' : 'run'}. Fix ${failing === 1 ? 'it' : 'them'}, or set graph.strictFaults to false to report faults without failing.\n`)
+    return true
   }
   for (const w of warnings.filter((w) => !w.includes('unknown header key'))) process.stderr.write(`massimo graph: ${w}\n`)
   if (json.nodes.length === 0) {
@@ -571,7 +777,7 @@ function main() {
   const s = json.summary
   const stats = `${s.components} components, ${s.withStory} with a story, ${s.unresolvedImports} unresolved imports`
 
-  if (truthy(flags.check)) {
+  if (check) {
     const bad = []
     for (const [name, text] of files) {
       const path = join(projectDir, name)
@@ -580,14 +786,17 @@ function main() {
     }
     if (bad.length > 0) {
       process.stderr.write(`massimo graph: out of date: ${bad.join(', ')}. Run: ${scriptCommand(root, projectDir, 'graph')}\n`)
+      strictFailure()
       process.exit(1)
     }
+    if (strictFailure()) process.exit(1)
     process.stdout.write(`massimo graph: up to date (${stats})\n`)
     return
   }
   mkdirSync(projectDir, { recursive: true })
   for (const [name, text] of files) writeFileSync(join(projectDir, name), text)
   process.stdout.write(`massimo graph: wrote ${shown('graph.md')} and graph.json (${stats})\n`)
+  if (strictFailure()) process.exit(1)
 }
 
 const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''

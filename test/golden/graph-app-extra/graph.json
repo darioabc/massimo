@@ -1,0 +1,502 @@
+{
+  "version": 1,
+  "generatedBy": "massimo graph",
+  "summary": {
+    "components": 11,
+    "withStory": 3,
+    "withoutStory": 7,
+    "noStory": 1,
+    "tokens": 11,
+    "nodesWithRules": 2,
+    "unresolvedImports": 1,
+    "headerFaults": 0
+  },
+  "tokens": {
+    "styleFiles": [
+      "src/styles/theme.css"
+    ],
+    "total": 11,
+    "groups": {
+      "color": [
+        "--color-base-100",
+        "--color-base-content",
+        "--color-brand",
+        "--color-primary"
+      ],
+      "spacing": [
+        "--spacing"
+      ],
+      "radius": [
+        "--radius-field"
+      ],
+      "font": [
+        "--font-sans"
+      ],
+      "shadow": [
+        "--shadow-card"
+      ],
+      "other": [
+        "--brand-teal",
+        "--local",
+        "--page-max"
+      ]
+    },
+    "dtcg": {
+      "path": "design-system/tokens/tokens.json",
+      "count": 11
+    }
+  },
+  "storyQueue": [
+    {
+      "name": "Icon",
+      "file": "src/components/Icon.tsx",
+      "usage": 2
+    },
+    {
+      "name": "Badge",
+      "file": "src/components/Badge.vue",
+      "usage": 1
+    },
+    {
+      "name": "Chip",
+      "file": "src/components/Chip.svelte",
+      "usage": 1
+    },
+    {
+      "name": "forms/Button",
+      "file": "src/components/forms/Button.tsx",
+      "usage": 1
+    },
+    {
+      "name": "Panel",
+      "file": "src/components/Panel/index.tsx",
+      "usage": 1
+    },
+    {
+      "name": "Tooltip",
+      "file": "src/components/ui/Tooltip.tsx",
+      "usage": 1
+    },
+    {
+      "name": "Other",
+      "file": "src/components/ui/Other.tsx",
+      "usage": 0
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Badge",
+      "file": "src/components/Badge.vue",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Badge"
+      ],
+      "composes": [
+        "Icon"
+      ],
+      "composedBy": {
+        "components": [
+          "src/components/Chip.svelte"
+        ]
+      },
+      "usage": 1,
+      "props": [
+        {
+          "name": "label",
+          "from": "type",
+          "usage": {
+            "true": 1
+          }
+        }
+      ],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "badge"
+          ]
+        },
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Card",
+      "file": "src/components/Card.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [
+        "src/components/Card.stories.tsx"
+      ],
+      "exports": [
+        "Card",
+        "Theme"
+      ],
+      "composes": [
+        "components/Button",
+        "Panel"
+      ],
+      "composedBy": {
+        "app": [
+          "src/app/page.tsx"
+        ],
+        "routes": [
+          "src/routes/home.tsx"
+        ]
+      },
+      "usage": 2,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "card"
+          ]
+        },
+        "tokens": [
+          "base-100",
+          "base-300"
+        ],
+        "cssVars": [
+          "--shadow-card"
+        ]
+      },
+      "rules": {},
+      "decisions": [
+        "PROJ-2",
+        "PROJ-10"
+      ]
+    },
+    {
+      "name": "Chip",
+      "file": "src/components/Chip.svelte",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Chip"
+      ],
+      "composes": [
+        "Badge"
+      ],
+      "composedBy": {
+        "components": [
+          "src/components/Hero.astro"
+        ]
+      },
+      "usage": 1,
+      "props": [
+        {
+          "name": "label",
+          "default": "",
+          "from": "type",
+          "usage": {
+            "new": 1
+          }
+        }
+      ],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "components/Button",
+      "file": "src/components/Button.tsx",
+      "tier": "Primitives",
+      "group": "Primitives / Actions",
+      "noStory": null,
+      "stories": [
+        "src/components/Button.stories.tsx"
+      ],
+      "exports": [
+        "Button",
+        "ButtonProps"
+      ],
+      "composes": [
+        "Icon"
+      ],
+      "composedBy": {
+        "components": [
+          "src/components/Card.tsx",
+          "src/components/Hero.astro"
+        ]
+      },
+      "usage": 2,
+      "props": [
+        {
+          "name": "loading",
+          "values": [
+            "true",
+            "false"
+          ],
+          "optional": true,
+          "from": "type"
+        }
+      ],
+      "states": [
+        "loading"
+      ],
+      "packages": [
+        "@radix-ui/react-slot"
+      ],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "btn"
+          ]
+        },
+        "tokens": [
+          "base-content",
+          "primary"
+        ],
+        "cssVars": [
+          "--radius-field"
+        ]
+      },
+      "rules": {
+        "never": "nested inside another Button",
+        "use-when": "a user presses something to run an action; wrap it for links via asChild"
+      },
+      "decisions": [
+        "PROJ-3",
+        "PROJ-12"
+      ]
+    },
+    {
+      "name": "forms/Button",
+      "file": "src/components/forms/Button.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Button"
+      ],
+      "composes": [],
+      "composedBy": {
+        "routes": [
+          "src/routes/home.tsx"
+        ]
+      },
+      "usage": 1,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "btn"
+          ]
+        },
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Hero",
+      "file": "src/components/Hero.astro",
+      "tier": "Pages",
+      "group": "Pages / Marketing",
+      "noStory": "Only rendered inside the marketing page",
+      "stories": [],
+      "exports": [
+        "Hero"
+      ],
+      "composes": [
+        "Chip",
+        "components/Button"
+      ],
+      "composedBy": {},
+      "usage": 0,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "hero"
+          ]
+        },
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {
+        "never": "inside a Card",
+        "bogus": "not a real key"
+      },
+      "decisions": []
+    },
+    {
+      "name": "Icon",
+      "file": "src/components/Icon.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Icon"
+      ],
+      "composes": [],
+      "composedBy": {
+        "components": [
+          "src/components/Badge.vue",
+          "src/components/Button.tsx"
+        ]
+      },
+      "usage": 2,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Other",
+      "file": "src/components/ui/Other.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Other"
+      ],
+      "composes": [],
+      "composedBy": {},
+      "usage": 0,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Panel",
+      "file": "src/components/Panel/index.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Panel"
+      ],
+      "composes": [],
+      "composedBy": {
+        "components": [
+          "src/components/Card.tsx"
+        ]
+      },
+      "usage": 1,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Toolbar",
+      "file": "src/components/Toolbar.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [
+        "src/stories/Dashboard.tsx"
+      ],
+      "exports": [
+        "Toolbar"
+      ],
+      "composes": [
+        "Tooltip"
+      ],
+      "composedBy": {
+        "routes": [
+          "src/routes/home.tsx"
+        ]
+      },
+      "usage": 1,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "menu"
+          ]
+        },
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Tooltip",
+      "file": "src/components/ui/Tooltip.tsx",
+      "tier": null,
+      "group": null,
+      "noStory": null,
+      "stories": [],
+      "exports": [
+        "Tooltip"
+      ],
+      "composes": [],
+      "composedBy": {
+        "components": [
+          "src/components/Toolbar.tsx"
+        ]
+      },
+      "usage": 1,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {
+          "daisyui": [
+            "tooltip"
+          ]
+        },
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    }
+  ],
+  "unresolved": {
+    "@/components/Missing": [
+      "src/routes/home.tsx"
+    ]
+  },
+  "faults": []
+}

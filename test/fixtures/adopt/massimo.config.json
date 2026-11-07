@@ -1,0 +1,46 @@
+{
+  "framework": "astro",
+  "styling": ["css"],
+  "components": {
+    "include": ["src/components/**/*.{astro,tsx,ts}"]
+  },
+  "consumers": ["src/**/*.{astro,tsx,ts}"],
+  "aliases": { "@/": "src/" },
+  "graph": {
+    "keys": {
+      "inputs": "definitions",
+      "styles": { "role": "list", "under": "src/styles" },
+      "theme": { "role": "scope", "values": ["print", "kiosk"] },
+      "breakpoint": "breakpoint"
+    },
+    "taxonomy": {
+      "tiers": ["Foundations", "Primitives", "Components", "Pages", "Internal", "Explorations"],
+      "groups": {
+        "Foundations / Icons": "draws a glyph, picked by name.",
+        "Primitives / Actions": "something a reader presses or follows.",
+        "Components / Cards": "knows a product concept and renders one unit of it.",
+        "Pages / Home": "a route: the home page.",
+        "Internal / Modules": "code a component needs, with no markup of its own.",
+        "Explorations / Kept": "kept on purpose, marked @kept:, never counted as live."
+      },
+      "placement": {
+        "tests": [
+          { "tier": "Explorations", "test": "it is kept on purpose but not live, and marked with an @kept: line." },
+          { "tier": "Internal", "test": "it draws nothing: a module or an endpoint." },
+          { "tier": "Pages", "test": "it is a route." },
+          { "tier": "Components", "test": "it knows a product concept: a card, an order." },
+          { "tier": "Foundations", "test": "it is a glyph or a texture that draws nothing a reader operates." },
+          { "tier": "Primitives", "test": "it is a single-job part a reader presses or places content in." }
+        ],
+        "notes": ["Foundations is asked before Primitives because an icon is a single-job part too."]
+      },
+      "rules": [
+        { "files": "src/components/**/*.ts", "group": "Internal / Modules" }
+      ],
+      "parked": { "marker": "@kept:", "group": "Explorations / Kept" },
+      "require": { "Primitives": ["use-when"] },
+      "notLive": ["Internal", "Explorations"]
+    },
+    "header": "top"
+  }
+}

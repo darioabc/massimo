@@ -1,0 +1,12 @@
+---
+// ds:group Components / Cards
+// ds:theme print
+
+import Button from './Button.astro'
+import Icon from './Icon'
+import { price } from './format'
+interface Props { title: string; cost: number }
+const { title, cost } = Astro.props
+---
+
+<article class="card"><Icon name="tag" /><h3>{title}</h3><p>{price(cost)}</p><Button>Open</Button></article>
