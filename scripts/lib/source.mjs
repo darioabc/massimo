@@ -401,7 +401,27 @@ export function createResolver(root, config = {}) {
   }
   const installed = (spec) => declared.has(packageName(spec)) || existsSync(join(root, 'node_modules', packageName(spec)))
 
-  return function resolveImport(fromFile, rawSpec) {
+  // Where a specifier points, as a repo-relative path, without checking that
+  // anything is there: for an import.meta.glob pattern, whose files are
+  // matched afterwards. Null for a package or a URL.
+  resolveImport.pathOf = (fromFile, spec) => {
+    if (spec.startsWith('./') || spec.startsWith('../')) return toRel(resolve(dirname(join(root, fromFile)), spec))
+    if (spec.startsWith('/')) return spec.replace(/^\/+/, '')
+    for (const { key, target } of aliases) {
+      if (spec === key || (spec.startsWith(key) && (key.endsWith('/') || spec[key.length] === '/'))) {
+        return toRel(join(root, target.replace(/^\.\//, ''), spec.slice(key.length).replace(/^\//, '')))
+      }
+    }
+    for (const p of patterns) {
+      if (!p.star || !spec.startsWith(p.prefix) || !spec.endsWith(p.suffix) || p.targets.length === 0) continue
+      return toRel(resolve(p.base, p.targets[0].replace('*', spec.slice(p.prefix.length, spec.length - p.suffix.length))))
+    }
+    return null
+  }
+
+  return resolveImport
+
+  function resolveImport(fromFile, rawSpec) {
     if (/^[a-z][a-z0-9+.-]*:/i.test(rawSpec) || rawSpec.startsWith('#')) return { external: rawSpec }
     const spec = rawSpec.replace(/[?#].*$/, '')
     const fromDir = dirname(join(root, fromFile))

@@ -1,0 +1,7 @@
+---
+// One labelled state on a story page.
+interface Props { label: string; note?: string; ground?: 'ground' | 'tile'; flush?: boolean }
+const { label, note, ground = 'ground', flush = false } = Astro.props
+---
+
+<section class:list={['state', ground, flush && 'flush']}><span>{label}</span>{note && <span>{note}</span>}<slot /></section>

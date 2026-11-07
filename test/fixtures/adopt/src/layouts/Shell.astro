@@ -1,0 +1,10 @@
+---
+// ds:group Shells / Site
+// ds:no-story the home story shows it
+
+import Button from '../components/Button.astro'
+// Parts drawn on every page, the card itself and the button left out.
+const parts = import.meta.glob(['../components/*.astro', '!../components/Card.astro', '!../components/Button.astro'], { eager: true })
+---
+
+<html lang="en"><body><slot /><footer><Button>Top</Button>{Object.keys(parts).length}</footer></body></html>

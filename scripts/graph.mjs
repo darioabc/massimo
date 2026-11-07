@@ -35,11 +35,15 @@ import {
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
+import { componentsOf, readManifest, readStoryStates, slugPath } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
 const STORY_EXTS = /\.(?:tsx?|jsx?|mjs|vue|svelte|astro|mdx?)$/
 const CODE_EXTS = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro)$/
+const MDX_EXT = /\.mdx$/i
+// import.meta.glob('pattern') or (['a', '!b']), with or without a type argument.
+const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?\s*(?:<[^>()]*>)?\s*\(\s*(\[[^\]]*\]|(['"`])[^'"`\n]+\2)/g
 const TOKEN_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'other']
 
 const MAX_COMPONENT_LIST = 40
@@ -74,6 +78,33 @@ const isProse = (text) => /[.,!?;](?:\s|$)/.test(text.replace(/\$\{[^}]*\}/g, ' 
 
 // `hover:!btn-primary` -> `btn-primary`
 const bareClass = (raw) => raw.slice(raw.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
+
+// The import and export lines of an MDX file, as MDX reads them: from a line
+// that opens with `import` or `export` to the next blank line, so an import
+// that wraps stays whole. Fenced code is skipped: an import shown in a code
+// sample imports nothing.
+function mdxImports(text) {
+  const out = []
+  let fence = null
+  let open = false
+  for (const line of text.split(/\r?\n/)) {
+    const f = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !line.trim().slice(f[1].length).trim()) fence = null
+      out.push('')
+      continue
+    }
+    if (!open && f) {
+      fence = f[1]
+      out.push('')
+      continue
+    }
+    if (open && !line.trim()) open = false
+    else if (!open && /^(?:import|export)\b/.test(line)) open = true
+    out.push(open ? line : '')
+  }
+  return out.join('\n')
+}
 
 // Area a non-node importer is grouped under: the first directory under `src/`,
 // or the first directory of the path when there is no `src/`.
@@ -246,9 +277,17 @@ export function buildGraph(root, config, command = "graph.mjs") {
   const storyGlob = compileGlobs(config.stories.include)
   const isStory = (f) => storyGlob(f) || (isStoryFile(f) && STORY_EXTS.test(f))
 
-  const nodeFiles = expandGlobs(root, config.components.include, config.components.exclude, config.ignore, all).filter(
-    (f) => !isStory(f) && !isTestFile(f),
-  )
+  const usable = (f) => !isStory(f) && !isTestFile(f)
+  const componentFiles = expandGlobs(root, config.components.include, config.components.exclude, config.ignore, all).filter(usable)
+  // Node kinds beyond components (layouts, pages...): a file a kind's globs
+  // match is a node of that kind, the first kind in the config winning.
+  const kinds = Object.entries(config.graph?.kinds ?? {}).filter(([, globs]) => [].concat(globs ?? []).length > 0)
+  const kindOf = new Map()
+  for (const [kind, globs] of kinds) {
+    for (const f of expandGlobs(root, [].concat(globs), config.components.exclude, config.ignore, all).filter(usable)) if (!kindOf.has(f)) kindOf.set(f, kind)
+  }
+  for (const f of componentFiles) if (!kindOf.has(f)) kindOf.set(f, 'component')
+  const nodeFiles = kinds.length > 0 ? [...kindOf.keys()].sort(compare) : componentFiles
   const nodeSet = new Set(nodeFiles)
   const storyFiles = all.filter(isStory)
   const consumerFiles = expandGlobs(root, config.consumers, [], config.ignore, all).filter(
@@ -256,21 +295,56 @@ export function buildGraph(root, config, command = "graph.mjs") {
   )
 
   const resolveImport = createResolver(root, config)
-  const nameOf = assignNames(nodeFiles)
+  // Components go by their name; a node of another kind by its path without
+  // `src/` and its extension (`pages/work/index`), which reads as its route.
+  const nameOf = assignNames(kinds.length > 0 ? nodeFiles.filter((f) => kindOf.get(f) === 'component') : nodeFiles)
+  if (kinds.length > 0) {
+    const taken = new Set(nameOf.values())
+    for (const f of nodeFiles.filter((x) => kindOf.get(x) !== 'component')) {
+      const name = f.replace(/^src\//, '').replace(/\.[^./]+$/, '')
+      nameOf.set(f, taken.has(name) ? f : name)
+      taken.add(nameOf.get(f))
+    }
+  }
+  const edgeKinds = new Set([].concat(config.graph?.edges ?? []))
 
-  // Parse a file once: its resolved imports and, lazily, its exports.
+  // Every file an import.meta.glob call in `code` matches, its patterns read
+  // relative to the file, from the root or through the aliases; a `!`
+  // pattern takes its matches back out, as Vite does.
+  function globTargets(file, code) {
+    const out = new Set()
+    for (const m of code.matchAll(GLOB_CALL)) {
+      const keep = []
+      const drop = []
+      for (const [, , pattern] of m[1].matchAll(/(['"`])([^'"`\n]+)\1/g)) {
+        const negated = pattern.startsWith('!')
+        const path = resolveImport.pathOf(file, negated ? pattern.slice(1) : pattern)
+        if (path) (negated ? drop : keep).push(path)
+      }
+      const take = compileGlobs(keep)
+      const leave = compileGlobs(drop)
+      for (const f of all) if (f !== file && take(f) && !leave(f)) out.add(f)
+    }
+    return [...out]
+  }
+
+  // Parse a file once: its resolved imports and, lazily, its exports. An MDX
+  // file is read for its import lines when graph.edges asks for it.
   const infoCache = new Map()
   function infoOf(file) {
     let info = infoCache.get(file)
     if (info !== undefined) return info
     info = null
-    if (CODE_EXTS.test(file)) {
-      const source = readFileSync(join(root, file), 'utf8')
+    const mdx = edgeKinds.has('mdx') && MDX_EXT.test(file)
+    if (CODE_EXTS.test(file) || mdx) {
+      const text = readFileSync(join(root, file), 'utf8')
+      const source = mdx ? mdxImports(text) : text
+      const parseAs = mdx ? file.replace(MDX_EXT, '.mjs') : file
       const edges = []
       const unresolved = []
       const packages = []
       const reexports = []
-      for (const imp of extractImports(source, file)) {
+      for (const imp of extractImports(source, parseAs)) {
         const hit = resolveImport(file, imp.spec)
         if (hit.unresolved) unresolved.push(hit.unresolved)
         if (imp.typeOnly) continue
@@ -279,8 +353,9 @@ export function buildGraph(root, config, command = "graph.mjs") {
         if (imp.kind === 'export-from') reexports.push({ file: hit.file, ...imp.reexport })
         else edges.push({ file: hit.file, names: imp.names })
       }
+      if (edgeKinds.has('glob')) for (const target of globTargets(file, stripComments(source, parseAs))) edges.push({ file: target, names: ['*'] })
       let exportsCache = null
-      info = { edges, unresolved, packages, reexports, exportNames: () => (exportsCache ??= extractExports(source, file)) }
+      info = { edges, unresolved, packages, reexports, exportNames: () => (exportsCache ??= extractExports(source, parseAs)) }
     }
     infoCache.set(file, info)
     return info
@@ -353,6 +428,78 @@ export function buildGraph(root, config, command = "graph.mjs") {
     const sibling = nodeByStem.get(stemOf(story))
     if (sibling) storiesOf.get(sibling).add(story)
   }
+
+  // The nodes some story files import, directly or through the lane's own
+  // helpers (story files that are not nodes) they import.
+  function storyNodes(files) {
+    const out = new Set()
+    const seen = new Set()
+    const queue = [...files]
+    while (queue.length > 0) {
+      const f = queue.shift()
+      if (seen.has(f)) continue
+      seen.add(f)
+      for (const edge of infoOf(f)?.edges ?? []) {
+        for (const target of reach(edge.file, edge.names)) out.add(target)
+        if (!nodeSet.has(edge.file) && isStory(edge.file)) queue.push(edge.file)
+      }
+    }
+    return out
+  }
+
+  // A lane that lists its stories in a manifest, read as text. An entry
+  // covers directly the nodes its page and frame import and the files it
+  // names; what those nodes compose, it covers incidentally.
+  function readLane() {
+    const { manifest, pages, frames } = config.stories
+    const fileSet = new Set(all)
+    const pageOf = (slug) => (pages ? slugPath(pages, slug) : null)
+    const frameOf = (slug) => (frames ? slugPath(frames, slug) : null)
+    const fileByName = new Map(nodeFiles.map((f) => [nameOf.get(f), f]))
+    const lane = {
+      manifest,
+      entries: [],
+      unreadable: [],
+      states: 0,
+      direct: new Map(nodeFiles.map((f) => [f, new Set()])),
+      incidental: new Map(nodeFiles.map((f) => [f, new Set()])),
+      pagesOf: new Map(nodeFiles.map((f) => [f, new Set()])),
+      pageOf,
+      frameOf,
+      fileSet,
+    }
+    if (!fileSet.has(manifest)) return lane
+    const read = readManifest(readFileSync(join(root, manifest), 'utf8'), manifest)
+    lane.entries = read.entries
+    for (const u of read.unreadable) lane.unreadable.push({ file: manifest, detail: u.slug ? `${u.slug}: ${u.detail}` : u.detail })
+    for (const entry of lane.entries) {
+      if (typeof entry?.slug !== 'string') continue
+      const page = pageOf(entry.slug)
+      const covered = storyNodes([page, frameOf(entry.slug)].filter((f) => f && fileSet.has(f)))
+      for (const c of componentsOf(entry)) {
+        const f = nodeSet.has(c) ? c : fileByName.get(c)
+        if (f) covered.add(f)
+      }
+      const reached = new Set()
+      const queue = [...covered]
+      while (queue.length > 0) {
+        for (const child of composes.get(queue.shift())) {
+          if (covered.has(child) || reached.has(child)) continue
+          reached.add(child)
+          queue.push(child)
+        }
+      }
+      const shown = page && fileSet.has(page) ? page : manifest
+      for (const n of covered) {
+        lane.direct.get(n).add(entry.slug)
+        lane.pagesOf.get(n).add(shown)
+      }
+      for (const n of reached) lane.incidental.get(n).add(entry.slug)
+      if (page && fileSet.has(page)) lane.states += readStoryStates(readFileSync(join(root, page), 'utf8')).length
+    }
+    return lane
+  }
+  const lane = config.stories.manifest ? readLane() : null
 
   // Style harvesting reads the colour names the styleFiles define.
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
@@ -466,15 +613,20 @@ export function buildGraph(root, config, command = "graph.mjs") {
     }
     const sortedAreas = {}
     for (const area of Object.keys(composedBy).sort(compare)) sortedAreas[area] = composedBy[area]
+    const coverage = lane
+      ? { direct: sortedUnique(lane.direct.get(file)), incidental: sortedUnique([...lane.incidental.get(file)].filter((s) => !lane.direct.get(file).has(s))) }
+      : {}
     return {
       name: nameOf.get(file),
       file,
+      ...(kinds.length > 0 ? { kind: kindOf.get(file) } : {}),
       tier,
       group,
       ...(placed.derived ? { derived: true } : {}),
       ...(placed.parked ? { parked: true } : {}),
       noStory: noStory ?? null,
-      stories: sortedUnique(storiesOf.get(file)),
+      stories: sortedUnique(lane ? lane.pagesOf.get(file) : storiesOf.get(file)),
+      ...coverage,
       exports: extractExports(source, file),
       composes: [...composes.get(file)].map((f) => nameOf.get(f)).sort(byName),
       composedBy: sortedAreas,
@@ -527,6 +679,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       nodesWithRules: rulesNodes.length,
       unresolvedImports: Object.keys(unresolvedMap).length,
       headerFaults: faultList.length,
+      ...(kinds.length > 0 ? { kinds: kindCounts(nodes, kinds) } : {}),
     },
     tokens: {
       styleFiles,
@@ -538,9 +691,37 @@ export function buildGraph(root, config, command = "graph.mjs") {
     nodes,
     unresolved: unresolvedMap,
     faults: faultList,
+    ...(lane ? { storyLane: laneSummary(lane, nodes) } : {}),
   }
   const view = { order: tierOrder(config), taxonomy }
   return { json, markdown: renderMarkdown(json, rulesNodes, command, view), warnings, faultLines: sortedUnique(faultLines) }
+}
+
+// How many nodes of each kind: components first, then the config's kinds.
+function kindCounts(nodes, kinds) {
+  const out = { component: 0 }
+  for (const [kind] of kinds) out[kind] = 0
+  for (const n of nodes) out[n.kind] += 1
+  return out
+}
+
+// The story lane in graph.json: where its manifest is, how many entries and
+// states it holds, the coverage split (direct, incidental only, none) and
+// the problems its checks find, each { rule, file, detail }.
+function laneSummary(lane, nodes) {
+  const direct = nodes.filter((n) => n.direct.length > 0).length
+  const incidental = nodes.filter((n) => n.direct.length === 0 && n.incidental.length > 0).length
+  const unreadable = lane.unreadable.sort((a, b) => compare(a.file, b.file) || compare(a.detail, b.detail))
+  return {
+    manifest: lane.manifest,
+    entries: lane.entries.filter(Boolean).length,
+    states: lane.states,
+    direct,
+    incidental,
+    none: nodes.length - direct - incidental,
+    problems: [],
+    ...(unreadable.length > 0 ? { unreadable } : {}),
+  }
 }
 
 // Faults sorted by file, key and message, each once.
@@ -585,8 +766,11 @@ function renderIndex(nodes, view) {
   for (const key of keys) {
     out.push(`**${key}**`, '')
     for (const n of buckets.get(key).nodes) {
-      const story = n.stories.length > 0 ? 'story ✓' : n.noStory !== null ? 'no-story' : 'story ✗'
-      out.push(`- ${n.name}: ${story} · used by ${n.usage}`)
+      // With a story lane, only a direct story counts; a node seen inside a
+      // parent's story says so.
+      const story = n.stories.length > 0 ? 'story ✓' : n.noStory !== null ? 'no-story' : n.incidental?.length > 0 ? 'incidental only' : 'story ✗'
+      const kind = n.kind && n.kind !== 'component' ? ` (${n.kind})` : ''
+      out.push(`- ${n.name}${kind}: ${story} · used by ${n.usage}`)
     }
     out.push('')
   }
@@ -597,11 +781,21 @@ function listWithCap(items, cap) {
   return items.length > cap ? `${items.slice(0, cap).join(', ')}, +${items.length - cap} more` : items.join(', ')
 }
 
+// A node's stories for its head line: the files, or with a story lane the
+// slugs that cover it directly, else the ones it is seen inside.
+function storyHead(node) {
+  const listed = node.direct ?? node.stories
+  if (listed.length > 0) return `${listed.length > 1 ? 'stories' : 'story'} ${listWithCap(listed.map(code), MAX_STORY_LIST)}`
+  if (node.noStory !== null) return `no story on purpose${node.noStory ? `: ${node.noStory}` : ''}`
+  if (node.incidental?.length > 0) return `no story of its own, seen inside ${listWithCap(node.incidental.map(code), MAX_STORY_LIST)}`
+  return 'no story'
+}
+
 function renderNode(node, nameByFile) {
   const lines = [`### ${node.name}`]
   const head = [`file ${code(node.file)}`]
-  if (node.stories.length === 0) head.push(node.noStory === null ? 'no story' : `no story on purpose${node.noStory ? `: ${node.noStory}` : ''}`)
-  else head.push(`${node.stories.length > 1 ? 'stories' : 'story'} ${listWithCap(node.stories.map(code), MAX_STORY_LIST)}`)
+  if (node.kind && node.kind !== 'component') head.push(node.kind)
+  head.push(storyHead(node))
   if (node.exports.length > 0) head.push(`exports ${node.exports.join(', ')}`)
   lines.push(`- ${head.join(' · ')}`)
   lines.push(
@@ -662,8 +856,37 @@ function renderTaxonomy(taxonomy) {
   return out
 }
 
+// The first summary line: how many nodes, of which kinds, and their stories.
+// With a story lane the count that leads is direct coverage, since a node
+// seen only inside a parent's story has no story of its own.
+function nodesLine(summary, storyLane) {
+  const kinds = summary.kinds ? ` (${Object.entries(summary.kinds).map(([kind, n]) => `${kind} ${n}`).join(', ')})` : ''
+  const label = summary.kinds ? 'Nodes' : 'Components'
+  const intentional = summary.noStory > 0 ? `, ${summary.noStory} without on purpose` : ''
+  if (storyLane) {
+    const marked = summary.noStory > 0 ? `; ${summary.noStory} marked \`ds:no-story\`` : ''
+    return `1. ${label}: ${summary.components}${kinds}. Stories: ${storyLane.direct} with a direct story, ${storyLane.incidental} seen only inside a parent's story, ${storyLane.none} with none${marked}.`
+  }
+  if (summary.kinds) return `1. ${label}: ${summary.components}${kinds}: ${summary.withStory} with a story, ${summary.withoutStory} without${intentional}.`
+  return `1. Components: ${summary.components} (${summary.withStory} with a story, ${summary.withoutStory} without${intentional}).`
+}
+
+// The story lane: where its list is, what it holds, how coverage is decided,
+// and anything in it that could not be read without running it.
+function renderLane(lane) {
+  const out = ['## Story lane', '']
+  out.push(`${code(lane.manifest)} lists ${lane.entries} ${lane.entries === 1 ? 'story' : 'stories'}, with ${lane.states} ${lane.states === 1 ? 'state' : 'states'} on their pages. A story covers a node directly when its page or frame imports it (itself or through the lane's own helpers) or its entry names it, and covers what that node composes only incidentally.`, '')
+  out.push(`- Direct: ${lane.direct} · seen only inside a parent's story: ${lane.incidental} · none: ${lane.none}.`, '')
+  if (lane.unreadable?.length > 0) {
+    out.push('Not statically readable, so not checked:', '')
+    for (const u of lane.unreadable) out.push(`- ${code(u.file)}: ${u.detail}`)
+    out.push('')
+  }
+  return out
+}
+
 function renderMarkdown(json, rulesNodes, command, view) {
-  const { summary, tokens, storyQueue, nodes, unresolved, faults } = json
+  const { summary, tokens, storyQueue, nodes, unresolved, faults, storyLane } = json
   const nameByFile = new Map(nodes.map((n) => [n.file, n.name]))
   const out = []
   out.push('# Design-system graph', '')
@@ -675,8 +898,7 @@ function renderMarkdown(json, rulesNodes, command, view) {
   out.push('4. `rules` are declared in the file itself as comment lines: `ds:group Tier / Group`, `ds:parents`, `ds:children`, `ds:never`, `ds:use-when`. `ds:no-story <reason>` marks a component that has no story on purpose. A value may wrap onto the comment lines after it.', '')
 
   out.push('## Summary', '')
-  const intentional = summary.noStory > 0 ? `, ${summary.noStory} without on purpose` : ''
-  out.push(`1. Components: ${summary.components} (${summary.withStory} with a story, ${summary.withoutStory} without${intentional}).`)
+  out.push(nodesLine(summary, storyLane))
   const dtcg = tokens.dtcg ? `; ${tokens.dtcg.count} in ${code(tokens.dtcg.path)}` : ''
   out.push(`2. Tokens: ${summary.tokens} custom properties in ${tokens.styleFiles.length} style ${tokens.styleFiles.length === 1 ? 'file' : 'files'}${dtcg}.`)
   out.push(`3. Nodes carrying \`ds:\` rules: ${rulesNodes.length > 0 ? rulesNodes.join(', ') : 'none'}.`)
@@ -695,16 +917,18 @@ function renderMarkdown(json, rulesNodes, command, view) {
   }
 
   out.push(...renderTaxonomy(view.taxonomy))
+  if (storyLane) out.push(...renderLane(storyLane))
 
   out.push('## Index', '')
   out.push('One line per component, grouped by tier and group from each file\'s `ds:group` line.', '')
   out.push(...renderIndex(nodes, view))
 
   out.push('## Story queue', '')
+  const story = storyLane ? 'a direct story' : 'a story'
   if (storyQueue.length === 0) {
-    out.push('Every component has a story or is marked `ds:no-story`.', '')
+    out.push(`Every component has ${story} or is marked \`ds:no-story\`.`, '')
   } else {
-    out.push(`Components without a story and not marked \`ds:no-story\`, most used first (${Math.min(STORY_QUEUE_MD, storyQueue.length)} of ${storyQueue.length}).`, '')
+    out.push(`Components without ${story} and not marked \`ds:no-story\`, most used first (${Math.min(STORY_QUEUE_MD, storyQueue.length)} of ${storyQueue.length}).`, '')
     storyQueue.slice(0, STORY_QUEUE_MD).forEach((n, i) => out.push(`${i + 1}. ${n.name} · ${n.usage} ${n.usage === 1 ? 'file' : 'files'} · ${code(n.file)}`))
     out.push('')
   }
@@ -775,7 +999,7 @@ function main() {
     return r.startsWith('..') ? join(projectDir, name) : r
   }
   const s = json.summary
-  const stats = `${s.components} components, ${s.withStory} with a story, ${s.unresolvedImports} unresolved imports`
+  const stats = `${s.components} ${s.kinds ? 'nodes' : 'components'}, ${s.withStory} with a ${json.storyLane ? 'direct story' : 'story'}, ${s.unresolvedImports} unresolved imports`
 
   if (check) {
     const bad = []

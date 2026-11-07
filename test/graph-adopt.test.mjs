@@ -187,6 +187,84 @@ test('strictFaults: the run writes the files, then fails and says why; so does t
   }
 })
 
+const nodesByFile = (dir) => Object.fromEntries(readJson(dir, 'graph.json').nodes.map((n) => [n.file, n]))
+
+test('layouts and pages are nodes of their kind, named by their path, and no longer consumers', () => {
+  const byFile = nodesByFile(ctx.project)
+  assert.equal(byFile['src/components/Button.astro'].kind, 'component')
+  assert.equal(byFile['src/layouts/Shell.astro'].kind, 'layout')
+  assert.equal(byFile['src/layouts/Shell.astro'].name, 'layouts/Shell')
+  assert.equal(byFile['src/pages/index.astro'].kind, 'page')
+  assert.equal(byFile['src/pages/index.astro'].name, 'pages/index')
+  assert.equal(byFile['src/pages/index.astro'].group, 'Pages / Home')
+  assert.equal(byFile['src/pages/feed.json.ts'].group, 'Internal / Endpoints')
+  assert.deepEqual(byFile['src/pages/index.astro'].composes, ['Card', 'layouts/Shell'])
+  assert.deepEqual(readJson(ctx.project, 'graph.json').summary.kinds, { component: 5, layout: 1, page: 2 })
+  const md = read(ctx.project, 'graph.md')
+  assert.match(md, /^1\. Nodes: 8 \(component 5, layout 1, page 2\)\. Stories: /m)
+  assert.match(md, /^- pages\/index \(page\): story ✓ · used by 0$/m)
+  assert.match(md, /^- file `src\/layouts\/Shell\.astro` · layout · no story on purpose: the home story shows it · exports Shell$/m)
+})
+
+test('MDX import lines and import.meta.glob calls are edges; an import in a fenced sample is not', () => {
+  const byFile = nodesByFile(ctx.project)
+  assert.deepEqual(byFile['src/components/Card.astro'].composedBy, { components: ['src/pages/index.astro'], content: ['src/content/notes/first.mdx'] })
+  assert.deepEqual(byFile['src/components/Button.astro'].composedBy, { components: ['src/components/Card.astro', 'src/layouts/Shell.astro'] })
+  // Relative patterns with `!` exclusions, and an alias pattern loaded lazily.
+  assert.deepEqual(byFile['src/layouts/Shell.astro'].composes, ['Button', 'Legacy'])
+  assert.deepEqual(byFile['src/pages/feed.json.ts'].composes, ['Icon'])
+})
+
+test('without graph.edges, MDX files and glob calls add nothing, as before', () => {
+  const t = variant({}, (c) => ({ ...c, graph: { ...c.graph, edges: [] } }))
+  try {
+    assert.equal(run('graph', t).status, 0)
+    const byFile = nodesByFile(t.project)
+    assert.deepEqual(byFile['src/components/Card.astro'].composedBy, { components: ['src/pages/index.astro'] })
+    assert.deepEqual(byFile['src/layouts/Shell.astro'].composes, ['Button'])
+    assert.deepEqual(byFile['src/pages/feed.json.ts'].composes, [])
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('a manifest lane covers directly what a story\'s page, frame and helpers import and what it names; what those compose, incidentally', () => {
+  const coverage = Object.fromEntries(Object.values(nodesByFile(ctx.project)).map((n) => [n.name, [n.direct, n.incidental]]))
+  assert.deepEqual(coverage, {
+    Button: [['button'], ['card', 'home']], // its page imports it
+    Icon: [['button'], ['card', 'home']], // through the Stage helper the button page imports
+    Card: [['card'], ['home']], // named, and imported by its frame
+    'pages/index': [['home'], []], // named: the page only frames the route
+    format: [[], ['card', 'home']],
+    Legacy: [[], ['home']], // the shell's glob reaches it
+    'layouts/Shell': [[], ['home']],
+    'pages/feed.json': [[], []],
+  })
+  const g = readJson(ctx.project, 'graph.json')
+  assert.deepEqual(g.storyLane, { manifest: 'src/stories/manifest.ts', entries: 4, states: 6, direct: 4, incidental: 3, none: 1, problems: [] })
+  assert.equal(g.summary.withStory, 4)
+  assert.deepEqual(nodesByFile(ctx.project)['src/components/Card.astro'].stories, ['src/stories/pages/card/index.astro'])
+  const md = read(ctx.project, 'graph.md')
+  assert.match(md, /Stories: 4 with a direct story, 3 seen only inside a parent's story, 1 with none; 1 marked `ds:no-story`\./)
+  assert.match(md, /\n## Story lane\n\n`src\/stories\/manifest\.ts` lists 4 stories, with 6 states on their pages\./)
+  assert.match(md, /^- format: incidental only · used by 1$/m)
+  assert.match(md, /^- file `src\/components\/format\.ts` · no story of its own, seen inside `card`, `home` · exports price$/m)
+})
+
+test('without a manifest, stories are found by file name as before', () => {
+  const t = variant({}, (c) => ({ ...c, stories: { ...c.stories, lane: 'native', manifest: null } }))
+  try {
+    assert.equal(run('graph', t).status, 0)
+    const g = readJson(t.project, 'graph.json')
+    assert.equal(g.storyLane, undefined)
+    const button = g.nodes.find((n) => n.name === 'Button')
+    assert.equal(button.direct, undefined)
+    assert.deepEqual(button.stories, ['src/stories/pages/button/index.astro'])
+  } finally {
+    t.cleanup()
+  }
+})
+
 test('the README lists tiers in the taxonomy\'s order', () => {
   const r = spawnSync(process.execPath, [join(SCRIPTS, 'docs.mjs'), '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)

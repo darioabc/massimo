@@ -4,8 +4,15 @@
   "components": {
     "include": ["src/components/**/*.{astro,tsx,ts}"]
   },
-  "consumers": ["src/**/*.{astro,tsx,ts}"],
+  "consumers": ["src/**/*.{astro,tsx,ts,mdx}"],
   "aliases": { "@/": "src/" },
+  "stories": {
+    "lane": "manifest",
+    "include": ["src/stories/**/*.{astro,ts}"],
+    "manifest": "src/stories/manifest.ts",
+    "pages": "src/stories/pages/{slug}/index.astro",
+    "frames": "src/stories/pages/{slug}/frame.astro"
+  },
   "graph": {
     "keys": {
       "inputs": "definitions",
@@ -14,13 +21,15 @@
       "breakpoint": "breakpoint"
     },
     "taxonomy": {
-      "tiers": ["Foundations", "Primitives", "Components", "Pages", "Internal", "Explorations"],
+      "tiers": ["Foundations", "Primitives", "Components", "Shells", "Pages", "Internal", "Explorations"],
       "groups": {
         "Foundations / Icons": "draws a glyph, picked by name.",
         "Primitives / Actions": "something a reader presses or follows.",
         "Components / Cards": "knows a product concept and renders one unit of it.",
+        "Shells / Site": "frames every page.",
         "Pages / Home": "a route: the home page.",
         "Internal / Modules": "code a component needs, with no markup of its own.",
+        "Internal / Endpoints": "a route that is not a page.",
         "Explorations / Kept": "kept on purpose, marked @kept:, never counted as live."
       },
       "placement": {
@@ -28,6 +37,7 @@
           { "tier": "Explorations", "test": "it is kept on purpose but not live, and marked with an @kept: line." },
           { "tier": "Internal", "test": "it draws nothing: a module or an endpoint." },
           { "tier": "Pages", "test": "it is a route." },
+          { "tier": "Shells", "test": "it frames a whole page." },
           { "tier": "Components", "test": "it knows a product concept: a card, an order." },
           { "tier": "Foundations", "test": "it is a glyph or a texture that draws nothing a reader operates." },
           { "tier": "Primitives", "test": "it is a single-job part a reader presses or places content in." }
@@ -35,12 +45,19 @@
         "notes": ["Foundations is asked before Primitives because an icon is a single-job part too."]
       },
       "rules": [
+        { "files": "src/pages/index.astro", "group": "Pages / Home" },
+        { "files": "src/pages/**/*.ts", "group": "Internal / Endpoints" },
         { "files": "src/components/**/*.ts", "group": "Internal / Modules" }
       ],
       "parked": { "marker": "@kept:", "group": "Explorations / Kept" },
       "require": { "Primitives": ["use-when"] },
       "notLive": ["Internal", "Explorations"]
     },
+    "kinds": {
+      "layout": ["src/layouts/**/*.astro"],
+      "page": ["src/pages/**/*.{astro,ts}"]
+    },
+    "edges": ["mdx", "glob"],
     "header": "top"
   }
 }

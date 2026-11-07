@@ -1,0 +1,17 @@
+---
+import StoryFrame from '../../StoryFrame.astro'
+import StoryState from '../../StoryState.astro'
+import Stage from '../../Stage.astro'
+import Button from '../../../components/Button.astro'
+const hint = 'Hover it: the fill steps down.'
+---
+
+<StoryFrame title="Button">
+  <!-- <StoryState label="Retired"> is not a state: it sits in a comment. -->
+  <StoryState label="Solid" note={hint}>
+    <Stage><Button>Save changes</Button></Stage>
+  </StoryState>
+  <StoryState label={'Quiet'} note="On the tile ground, with no padding of its own." ground="tile" flush>
+    <Button tone="quiet">Cancel</Button>
+  </StoryState>
+</StoryFrame>

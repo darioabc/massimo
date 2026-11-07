@@ -61,6 +61,16 @@ function tokenize(src) {
 
 // Parse the object literal whose `{` is at `offset` in `src`.
 export function parseObjectAt(src, offset) {
+  return parseLiteralAt(src, offset, '{')
+}
+
+// Parse the array literal whose `[` is at `offset` in `src`, such as a list
+// of story entries; each item comes back as parseObjectAt reads a value.
+export function parseArrayAt(src, offset) {
+  return parseLiteralAt(src, offset, '[')
+}
+
+function parseLiteralAt(src, offset, open) {
   const tokens = tokenize(src.slice(offset))
   let p = 0
   const peek = () => tokens[p]
@@ -160,8 +170,8 @@ export function parseObjectAt(src, offset) {
     return out
   }
 
-  if (peek()?.kind !== '{') return null
-  return object()
+  if (peek()?.kind !== open) return null
+  return open === '{' ? object() : array()
 }
 
 // The first object literal after any of `patterns` (regexes ending just

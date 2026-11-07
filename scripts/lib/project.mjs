@@ -94,6 +94,9 @@ export const DEFAULTS = {
     taxonomy: null,
     // Node kinds beyond components, each a list of globs: { layout: [...], page: [...] }.
     kinds: {},
+    // Imports read beyond import statements: 'mdx' (the import lines of MDX
+    // files in the consumers) and 'glob' (import.meta.glob calls).
+    edges: [],
     // 'anywhere' reads a ds: line in any comment; 'top' reads the first
     // comment block only, and a ds: line anywhere else is a fault.
     header: 'anywhere',
