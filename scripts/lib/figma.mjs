@@ -30,14 +30,16 @@ function variables(doc) {
 const differences = (a, b, modes) => modes.filter((m) => m in a || m in b).filter((m) => !(m in a && m in b && sameValue(a[m], b[m])))
 
 // Check an export against what code wants and remember it as mirror.json.
-// Returns { mirror, mismatches }. A Figma collection with one mode where code
-// has several is a plan that allows one mode (Starter): only the default mode
-// is compared, and the mirror says so.
+// Returns { mirror, mismatches }. When every collection in the file has one
+// mode and code has several, the file is on a plan that allows one mode
+// (Starter): only the default mode is compared, and the mirror says so. A
+// one-mode collection in a file that has a two-mode one is just missing modes.
 export function recordMirror(wanted, exported, { fileKey, tokensHash, date, previous = {} } = {}) {
   const want = variables(wanted)
   const have = variables(exported)
   const mismatches = []
   const defaultMode = wanted.defaultMode ?? 'Light'
+  const oneModeFile = (exported?.collections ?? []).every((c) => (c.modes ?? []).length <= 1)
   let defaultOnly = false
   const recorded = {}
   for (const [name, w] of want) {
@@ -49,7 +51,7 @@ export function recordMirror(wanted, exported, { fileKey, tokensHash, date, prev
     if (h.collection !== w.collection) mismatches.push(`variable ${name} is in ${h.collection}, not ${w.collection}`)
     if (h.type !== w.type) mismatches.push(`variable ${name} is ${h.type}, not ${w.type}`)
     let modes = Object.keys(w.values)
-    if (h.modes.length === 1 && modes.length > 1) {
+    if (oneModeFile && modes.length > 1) {
       defaultOnly = true
       modes = [defaultMode]
     }

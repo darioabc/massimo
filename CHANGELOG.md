@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed
+
+- `tokens.mjs figma --record` decides the file allows one mode per collection (Figma's Starter plan) only when every collection in it has one mode. Before, a single one-mode collection was enough, so a missing Dark mode in a file that has two-mode collections went unreported.
+
 ## 0.2.0
 
 Extract a full design system from an existing repo, in the W3C Design Tokens format 2025.10. After updating, run `init.mjs --update-scripts`, rebuild the tokens once, and run `tokens.mjs migrate` when you want the new format.

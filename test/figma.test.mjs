@@ -81,6 +81,18 @@ test('recording names every mismatch, and a one-mode file mirrors the default on
   assert.deepEqual(Object.keys(mirror.variables['color/accent'].values), ['Light'])
 })
 
+test('a one-mode collection in a file that has a two-mode one is missing a mode, not on a one-mode plan', () => {
+  const partial = exportOf(wanted, (e) => {
+    e.collections[1].modes = ['Light']
+    delete e.collections[1].variables[0].values.Dark
+    e.collections.push({ name: 'Elsewhere', modes: ['Light', 'Dark'], variables: [] })
+    return e
+  })
+  const { mirror, mismatches } = recordMirror(wanted, partial, { date: 'd' })
+  assert.equal(mirror.modes, 'all')
+  assert.deepEqual(mismatches, ['variable color/accent (Dark) is missing in Figma, rgba(255, 255, 255, 1) in code'])
+})
+
 test('drift: each change is put down to code, to Figma, or to both', () => {
   const { mirror } = recordMirror(wanted, exportOf(wanted), { date: '2026-11-01' })
   const code = JSON.parse(JSON.stringify(wanted))
