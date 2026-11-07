@@ -587,13 +587,47 @@ export function parseCssBlocks(css, file = 'x.css') {
 
 const unquote = (s) => s.replace(/^['"]|['"]$/g, '')
 
+// A selector list split at its top-level commas (`:is(a, b)` stays whole).
+function selectorMembers(selector) {
+  const out = []
+  let depth = 0
+  let cur = ''
+  for (const c of selector) {
+    if (c === '(' || c === '[') depth++
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1)
+    if (c === ',' && depth === 0) {
+      out.push(cur.trim())
+      cur = ''
+    } else cur += c
+  }
+  if (cur.trim()) out.push(cur.trim())
+  return out
+}
+
+// One member of a selector list. A member that reaches into the page
+// (`html.dark .tone-block`, `.dark .card`) is a component's scope, never a
+// theme, whatever theme it names.
+function classifyMember(member) {
+  const s = member.replace(/:not\([^)]*\)/g, '').trim()
+  if (/[\s>+~]/.test(s.replace(/\[[^\]]*\]|\([^)]*\)/g, ''))) return { mode: 'default', scope: 'local' }
+  const named = /\[data-theme\s*=\s*["']?([\w-]+)["']?\]/i.exec(s)
+  if (named) return { mode: /dark/i.test(named[1]) ? 'dark' : /^(light|default)$/i.test(named[1]) ? 'default' : named[1], scope: 'selector' }
+  if (/\.dark\b|\.theme-dark\b|\[data-(?:theme|mode)[^\]]*dark[^\]]*\]/i.test(s)) return { mode: 'dark', scope: 'selector' }
+  if (/^(:root|html|:host|body)\b/.test(s)) return { mode: 'default', scope: 'root' }
+  return { mode: 'default', scope: 'local' }
+}
+
 // Where a block's declarations apply: which mode (default, dark, or a named
-// theme) and what kind of scope (root, @theme, DaisyUI theme plugin, or a
-// component-local selector).
+// theme) and what kind of scope (root, @theme, DaisyUI theme plugin, a
+// component-local selector, or `conditional`: a root value under a
+// condition other than colour scheme, such as a phone-width @media, which is
+// an override and never the default). Each member of a selector list is
+// classified on its own: `html.dark, .tone-ink` sets the dark theme.
 function classifyBlock(block) {
   const headers = block.headers
   const inner = headers[headers.length - 1]
   const media = headers.some((h) => /^@media[^{]*prefers-color-scheme\s*:\s*dark/i.test(h))
+  const conditions = headers.slice(0, -1).filter((h) => h.startsWith('@') && !/^@layer\b/i.test(h) && !/^@media[^{]*prefers-color-scheme\s*:\s*dark/i.test(h))
 
   if (/^@plugin\s+["']daisyui\/theme["']/i.test(inner)) {
     const meta = {}
@@ -608,22 +642,11 @@ function classifyBlock(block) {
   }
   if (inner.startsWith('@')) return { mode: media ? 'dark' : 'default', scope: 'local', selector: inner }
 
-  const selector = inner.replace(/:not\([^)]*\)/g, '')
-  const named = /\[data-theme\s*=\s*["']?([\w-]+)["']?\]/i.exec(selector)
-  const darkClass = /\.dark\b|\.theme-dark\b|\[data-(?:theme|mode)[^\]]*dark[^\]]*\]/i.test(selector)
-  const rootish = /(^|,)\s*(:root|html|:host|body)\b/.test(selector)
-  let mode = 'default'
-  let scope = 'local'
-  if (named) {
-    mode = /dark/i.test(named[1]) ? 'dark' : /^(light|default)$/i.test(named[1]) ? 'default' : named[1]
-    scope = 'selector'
-  } else if (darkClass) {
-    mode = 'dark'
-    scope = 'selector'
-  } else if (rootish) {
-    scope = 'root'
-  }
+  const members = selectorMembers(inner).map(classifyMember)
+  const pick = members.find((m) => m.scope === 'selector' && m.mode === 'dark') ?? members.find((m) => m.scope === 'selector') ?? members.find((m) => m.scope === 'root') ?? { mode: 'default', scope: 'local' }
+  let { mode, scope } = pick
   if (media) mode = 'dark'
+  if (scope !== 'local' && conditions.length > 0) return { mode, scope: 'conditional', selector: inner, condition: conditions.join(' ') }
   return { mode, scope, selector: inner }
 }
 

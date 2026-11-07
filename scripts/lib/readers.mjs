@@ -80,9 +80,19 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // (`--h1-size`, `--h1-leading`) come back as type steps.
 export function readCss(root, files) {
   const entries = new Map()
+  // Values set only inside a component's scope or under a condition: said in
+  // a note when the same property is a token, never taken as its value.
+  const elsewhere = new Map()
   for (const file of files) {
     for (const p of parseCustomProperties(readFileSync(join(root, file), 'utf8'), file)) {
-      if (p.scope === 'local' || p.name.startsWith('--tw-')) continue
+      if (p.name.startsWith('--tw-')) continue
+      if (p.scope === 'local' || p.scope === 'conditional') {
+        const list = elsewhere.get(p.name) ?? []
+        const where = p.scope === 'conditional' ? `${p.condition} ${p.selector}` : p.selector
+        if (!list.some((x) => x.where === where)) list.push({ where, conditional: p.scope === 'conditional' })
+        elsewhere.set(p.name, list)
+        continue
+      }
       const e = entries.get(p.name) ?? { default: undefined, modes: {}, source: file }
       const split = colorModes(p.value)
       if (split && p.mode === 'default') {
@@ -97,6 +107,14 @@ export function readCss(root, files) {
     }
   }
   const notes = []
+  for (const [name, list] of [...elsewhere].sort((a, b) => natural(a[0], b[0]))) {
+    if (!entries.has(name)) continue
+    const conditional = list.filter((x) => x.conditional).map((x) => x.where)
+    const scoped = list.filter((x) => !x.conditional).map((x) => x.where)
+    const few = (l) => `${l.slice(0, 3).join(', ')}${l.length > 3 ? ` and ${l.length - 3} more` : ''}`
+    if (conditional.length) notes.push(`${name} is also set under ${few(conditional)}; its token holds the value outside that, and massimo's outputs do not write the override`)
+    if (scoped.length) notes.push(`${name} is also set inside ${few(scoped)}; its token holds the page's value`)
+  }
   const allModes = [...new Set([...entries.values()].flatMap((e) => Object.keys(e.modes)))]
   const valueIn = (name, mode) => {
     const e = entries.get(name)

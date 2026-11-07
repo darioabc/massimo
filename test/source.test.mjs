@@ -225,3 +225,35 @@ test('parseCustomProperties: modes and scopes', () => {
     '--local=1px default/local',
   ])
 })
+
+test('parseCustomProperties: each member of a selector list, scopes that reach into the page, and conditions', () => {
+  const css = `
+:root,
+.tone-paper { --a: 1; }
+html.dark,
+.tone-ink { --a: 2; }
+html.dark .tone-block { --a: 3; }
+:root, .tone-paper, .tone-ink, .tone-block, .tone-quote { --lift: 4; }
+@media (max-width: 60rem) { :root { --gap: 5; } }
+@supports (color: oklch(0 0 0)) { :root { --a: 6; } }
+@layer base { .dark { --a: 7; } }
+.dark .card { --a: 8; }
+:is(.a, .b) { --a: 9; }
+[data-theme = "dark"] { --a: 10; }
+@media screen and (prefers-color-scheme: dark) { :root { --a: 11; } }
+`
+  const rows = parseCustomProperties(css).map((p) => `${p.value} ${p.mode}/${p.scope}${p.condition ? ` ${p.condition}` : ''}`)
+  assert.deepEqual(rows, [
+    '1 default/root',
+    '2 dark/selector',
+    '3 default/local',
+    '4 default/root',
+    '5 default/conditional @media (max-width: 60rem)',
+    '6 default/conditional @supports (color: oklch(0 0 0))',
+    '7 dark/selector',
+    '8 default/local',
+    '9 default/local',
+    '10 dark/selector',
+    '11 dark/root',
+  ])
+})

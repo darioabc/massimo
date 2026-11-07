@@ -72,6 +72,15 @@ test('CSS: families from names, colours from values, rgb(var()) and clamp() reso
   assert.deepEqual(typeSteps, [{ path: ['text', 'h1'], source: 'families.css', lineHeight: '1', fontWeight: '900', fontWeightRef: '{font-weight.h1}', letterSpacing: '-2.56px' }])
 })
 
+test('CSS: a scoped override or a phone-width value is noted, never taken as the token', () => {
+  const { tokens, notes } = readCss(dir, ['scopes.css'])
+  const t = byPath(tokens)
+  assert.deepEqual([t['color.text'].value, t['color.text'].modes.dark], ['#111111', '#eeeeee'])
+  assert.equal(t['spacing.base'].value, '4rem') // --gap is spacing by its name
+  assert.ok(notes.includes('--c-text is also set inside .tone-block, html.dark .tone-block; its token holds the page\'s value'), notes.join('\n'))
+  assert.ok(notes.includes("--gap is also set under @media (max-width: 60rem) :root; its token holds the value outside that, and massimo's outputs do not write the override"), notes.join('\n'))
+})
+
 test('Tailwind 3 config: read as text, theme and extend, DEFAULT as $root, skips named', () => {
   const { tokens, notes, typeSteps } = readTailwindConfig(dir, 'tailwind.config.mjs')
   const t = byPath(tokens)
