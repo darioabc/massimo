@@ -138,6 +138,26 @@ test('the start skill offers adopt when detect reports something adoptable, and 
   assert.match(adopt, /<plugin>\/templates\/design-system-shadow\.yml/)
 })
 
+test('the adopt skill moves the ledger inside each batch commit, finds a batch by an anchored search, and gives the visual proof step by step', () => {
+  const skill = read(SCRIPTS, '..', 'skills', 'adopt', 'SKILL.md')
+  const step = (n) => skill.slice(skill.indexOf(`\n${n}. **`), skill.indexOf(`\n${n + 1}. **`) === -1 ? undefined : skill.indexOf(`\n${n + 1}. **`))
+  // The ledger moves before the commit, so one revert undoes both.
+  const cut = step(6)
+  assert.ok(cut.indexOf('`mark <class> cut-over --batch <id>`') < cut.indexOf('commit on their OK'), 'mark before the commit')
+  assert.match(cut, /One `git revert` of that commit then undoes the batch and the ledger's move together/)
+  assert.match(step(7), /run `mark <class> retired`, so the ledger's move is in the same commit/)
+  // Searches are anchored, the retire commit with its own.
+  assert.match(cut, /`git log --grep '\^Adopt-Batch: graph-1\$'`/)
+  assert.match(step(7), /`git log --grep '\^Adopt-Batch: graph-1-retire\$'`/)
+  assert.doesNotMatch(skill, /--grep 'Adopt-Batch/)
+  // The visual proof: ask first, a worktree of main on a second port, the adopt branch on stories.port, shoot, then stop and remove.
+  const prove = step(5)
+  const order = ['ask the user before starting any server', '`git worktree add <dir> main`', '`stories.devCommand` on a second port', 'start `stories.devCommand` on `stories.port`', '--shoot', 'Stop both servers, then `git worktree remove <dir>`']
+  const at = order.map((s) => prove.indexOf(s))
+  assert.ok(at.every((i) => i !== -1), `missing: ${order.filter((_, i) => at[i] === -1).join(', ')}`)
+  assert.deepEqual([...at].sort((a, b) => a - b), at)
+})
+
 test('the shadow workflow runs on pull requests only, never blocks, and runs check.mjs', () => {
   const yml = read(SCRIPTS, '..', 'templates', 'design-system-shadow.yml')
   assert.match(yml, /\non:\n {2}pull_request:\n\njobs:/)
