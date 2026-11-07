@@ -88,7 +88,7 @@ Everything is plain Markdown, JSON and HTML, committed with your code. `npm run 
 
 ## Supported stacks
 
-Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript and JSON. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
+Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript, JSON and [DESIGN.md](https://github.com/google-labs-code/design.md) for coding agents. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
 
 ## Principles
 
