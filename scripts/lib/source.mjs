@@ -463,7 +463,7 @@ export function isTestFile(file) {
 
 export const RULE_KEYS = ['parents', 'children', 'never', 'use-when', 'group', 'no-story']
 
-const RULE_START = /(?:\/\/+|\/\*+|<!--+|^[ \t]*\*+(?!\/))[ \t]*ds:([a-z][a-z-]*):?(?:[ \t]+(.*?))?[ \t]*\r?$/
+const RULE_START = /(?:\/\/+|\/\*+|<!--+|^[ \t]*\*+(?!\/))[ \t]*ds:([a-z][a-z-]*)(:?)(?:[ \t]+(.*?))?[ \t]*\r?$/
 const COMMENT_CLOSE = /\*+\/\}?\s*$|--+>\s*$/
 
 // The text of a pure comment line with its markers removed, or null when the
@@ -483,16 +483,20 @@ function commentText(line) {
 // `<!-- -->`, `{/* */}`), one key per line: `ds:group Primitives / Actions`.
 // A value wraps onto the comment lines after it until a blank comment line,
 // code, or another `ds:` line. Repeated keys accumulate, joined by a space.
-// Returns { rules, unknown }: `rules` holds the known keys in RULE_KEYS order
-// (a bare `ds:no-story` is kept as ''); `unknown` lists keys not in RULE_KEYS.
+// Returns { rules, unknown, entries }: `rules` holds the known keys in
+// RULE_KEYS order (a bare `ds:no-story` is kept as ''); `unknown` lists keys not
+// in RULE_KEYS; `entries` is every `ds:` line as written, `{ key, value, line }`,
+// for checks that need a repeat or a position the joined `rules` lose.
 export function extractRules(source, extraKeys = []) {
   const keys = [...RULE_KEYS, ...extraKeys.filter((k) => !RULE_KEYS.includes(k))]
   const found = {}
   const unknown = []
+  const entries = []
   let current = null
   const finish = () => {
     if (!current) return
     const value = current.parts.join(' ')
+    entries.push({ key: current.key, value, line: current.line, ...(current.colon ? { colon: true } : {}) })
     if (!keys.includes(current.key)) {
       if (!unknown.includes(current.key)) unknown.push(current.key)
     } else if (value) {
@@ -502,12 +506,14 @@ export function extractRules(source, extraKeys = []) {
     }
     current = null
   }
-  for (const line of source.split(/\r?\n/)) {
+  const lines = source.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     const m = RULE_START.exec(line)
     if (m) {
       finish()
-      const first = (m[2] ?? '').replace(/\s*(?:\*+\/\}?|--+>)\s*$/, '').trim()
-      current = { key: m[1], parts: first ? [first] : [], open: !COMMENT_CLOSE.test(line) }
+      const first = (m[3] ?? '').replace(/\s*(?:\*+\/\}?|--+>)\s*$/, '').trim()
+      current = { key: m[1], colon: m[2] === ':', parts: first ? [first] : [], open: !COMMENT_CLOSE.test(line), line: i + 1 }
     } else if (current?.open) {
       const text = commentText(line)
       if (text) {
@@ -523,7 +529,7 @@ export function extractRules(source, extraKeys = []) {
   finish()
   const rules = {}
   for (const key of keys) if (found[key] !== undefined) rules[key] = found[key]
-  return { rules, unknown }
+  return { rules, unknown, entries }
 }
 
 // ── CSS custom properties ───────────────────────────────────────────────────
@@ -660,7 +666,7 @@ function classifyCompound(compound) {
 
 // One member of a selector list. A theme or the root only when every
 // compound in it is one (`[data-theme="dark"] body`, `html.dark`); a member
-// that reaches into the page (`html.dark .tone-block`, `.dark .card`) is a
+// that reaches into the page (`html.dark .band-block`, `.dark .card`) is a
 // component's scope, whatever theme it names.
 function classifyMember(member) {
   const parts = compounds(member).map(classifyCompound)
@@ -694,7 +700,7 @@ function atRuleKind(header) {
 // component-local selector, or `conditional`: a root value under a
 // condition, such as a phone-width @media, which is an override and never
 // the default). Each member of a selector list is classified on its own:
-// `html.dark, .tone-ink` sets the dark theme. A nested selector is read with
+// `html.dark, .band-dark` sets the dark theme. A nested selector is read with
 // its parent in place of `&`.
 function classifyBlock(block) {
   const headers = block.headers

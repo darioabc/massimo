@@ -39,6 +39,15 @@ test('no private leftovers', () => {
   }
 })
 
+// massimo learnt adoption on a real repo; its names and its own vocabulary
+// stay there, so fixtures and tests use generic ones.
+test('no names or vocabulary from the repos massimo was proven on', () => {
+  for (const f of [...docs, ...scripts, ...files('test', /\.mjs$/), ...files('test/fixtures', /./)]) {
+    if (f.endsWith('conventions.test.mjs')) continue
+    assert.ok(!/folio|dariocodipietro|@parked:|ds:island|ds:sheet|tone-ink|--paper-\d/i.test(text(f)), f)
+  }
+})
+
 test('sorting never depends on the locale', () => {
   for (const f of scripts) assert.ok(!text(f).includes('localeCompare'), f)
 })

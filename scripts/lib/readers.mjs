@@ -43,7 +43,7 @@ export function channelColor(value) {
 // suffixes systems name their families with: `--space-4` is spacing,
 // `--dur-2` a duration, and `--h1-size` with `--h1-leading` a type step. A
 // colour is known by its value instead, since its name rarely says so
-// (`--paper-200`, `--c-text`).
+// (`--sand-200`, `--c-text`).
 const PREFIX_GROUPS = [
   [/^(?:color|colour|clr|c)(?:-|$)/, 'color'],
   [/^(?:spacing|space|sp|gap)(?:-|$)/, 'spacing'],
@@ -508,7 +508,7 @@ export function readFigmaExport(root, file) {
   }
   // The CSS variable a variable's code syntax names goes to one variable only:
   // the one named like it, else the first (a scoped override such as
-  // tone-block/c-ground keeps its own name).
+  // band-block/c-ground keeps its own name).
   const claims = new Map()
   for (const c of collections) {
     for (const v of c.variables ?? []) {

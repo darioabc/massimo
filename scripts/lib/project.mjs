@@ -33,6 +33,12 @@ export const DEFAULTS = {
     url: null,
     storyUrl: null,
     port: 4650,
+    // A lane that lists its stories in a manifest (read as text, never run),
+    // and where a slug's page and frame live, as paths with `{slug}`. Null
+    // keeps finding stories by file name.
+    manifest: null,
+    pages: null,
+    frames: null,
   },
   tokens: {
     // Defaults to <projectDir>/tokens/tokens.json (see loadConfig).
@@ -52,17 +58,47 @@ export const DEFAULTS = {
     importFiles: [],
     figmaExport: null,
     outputs: [],
+    // The media widths the audit's breakpoint kind allows: { scale: ['40rem'],
+    // twins: ['40.0625rem'] }, the twins being each step's min-width partner.
+    breakpoints: null,
   },
   audit: {
     include: ['src/**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}'],
     // Stories stage components with fixture values on purpose; they are not drift.
     exclude: ['**/*.test.*', '**/*.spec.*', '**/*.d.ts', '**/*.stories.*', '**/*.story.*', 'src/stories/**'],
+    // Kinds turned off by name, as { length: false }.
+    kinds: {},
+    // Per kind, what it skips: { color: { roles: { theme: '*' }, tiers: [], groups: [], files: [] } }.
+    exempt: {},
+    // 'all' counts every Tailwind arbitrary value; 'color' only the colours.
+    arbitrary: 'all',
+    // --check also fails while the baseline is behind the code.
+    failWhenBehind: false,
+  },
+  guard: {
+    // Project commands ds:check runs as well, as [{ name, run }].
+    extraChecks: [],
   },
   ignore: ['node_modules', 'dist', 'build', '.git', '.next', '.nuxt', '.svelte-kit', '.astro', '.output', 'coverage', '.turbo', '.vercel', '.cache', 'out'],
   graph: {
     // ds: header keys a repo uses beyond the built-in ones (parents, children,
     // never, use-when, group, no-story), so they are read instead of reported.
     extraKeys: [],
+    // A repo's own keys with the role each plays (lib/roles.mjs): a role name,
+    // or { role, values, under }.
+    keys: {},
+    // { tiers, groups, placement, rules, parked, require }: the tiers in order,
+    // each group with a line on what belongs in it, the placement test, path
+    // rules that give a file its group, the marker of a parked file and its
+    // group, and the keys each tier needs. Null takes any group.
+    taxonomy: null,
+    // Node kinds beyond components, each a list of globs: { layout: [...], page: [...] }.
+    kinds: {},
+    // 'anywhere' reads a ds: line in any comment; 'top' reads the first
+    // comment block only, and a ds: line anywhere else is a fault.
+    header: 'anywhere',
+    // Header faults fail the write and --check, not only the report.
+    strictFaults: false,
   },
   ticketPattern: null,
   figma: { fileKey: null },

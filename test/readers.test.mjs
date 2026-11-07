@@ -50,7 +50,7 @@ test('CSS: families from names, colours from values, rgb(var()) and clamp() reso
   assert.equal(t['color.ink-900'].value, 'rgb(29 31 32)')
   assert.deepEqual([t['color.text'].value, t['color.text'].cssVar], ['{color.ink-900}', '--c-text'])
   // Each theme read on its own: an alias by default, a translucent colour or bare channels in dark.
-  assert.deepEqual([t['color.text'].modes.dark, t['color.text'].cssModes.dark], ['rgb(236 229 209 / 0.88)', 'rgb(var(--paper-200) / 0.88)'])
+  assert.deepEqual([t['color.text'].modes.dark, t['color.text'].cssModes.dark], ['rgb(236 229 209 / 0.88)', 'rgb(var(--sand-200) / 0.88)'])
   assert.deepEqual([t['color.block'].value, t['color.block'].modes.dark, t['color.block'].cssModes.dark], ['{color.ink-900}', 'rgb(0 0 0)', '0 0 0'])
   assert.equal(t['color.rgb-heading'].value, '{color.ink-900}')
   assert.equal(t['color.heading'].value, '{color.rgb-heading}')
@@ -77,7 +77,7 @@ test('CSS: a scoped override or a phone-width value is noted, never taken as the
   const t = byPath(tokens)
   assert.deepEqual([t['color.text'].value, t['color.text'].modes.dark], ['#111111', '#eeeeee'])
   assert.equal(t['spacing.base'].value, '4rem') // --gap is spacing by its name
-  assert.ok(notes.includes('--c-text is also set inside .tone-block, html.dark .tone-block; its token holds the page\'s value'), notes.join('\n'))
+  assert.ok(notes.includes('--c-text is also set inside .band-block, html.dark .band-block; its token holds the page\'s value'), notes.join('\n'))
   assert.ok(notes.includes("--gap is also set under @media (max-width: 60rem) :root; its token holds the value outside that, and massimo's outputs do not write the override"), notes.join('\n'))
 })
 

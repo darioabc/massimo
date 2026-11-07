@@ -32,6 +32,15 @@ Paths in `massimo.config.json` are repo-relative. `<project>/` is committed. `sh
 
 Config keys beyond the paths: `tokens.darkSelector`, `tokens.darkMedia`, `tokens.defaultMode` and `tokens.selectors` (how the app switches theme), `graph.extraKeys` (a repo's own `ds:` header keys), `graph.classLibraries` (extra class-based component libraries, see the graph skill), and `ticketPattern`: a regular expression for the repo's ticket ids (`"PROJ-\\d+"`). When it is set, the graph lists the ticket ids each component file mentions, so a reader can find the why behind a component.
 
+Keys for a repo that already has its own design-system setup, all inert until set:
+
+- `graph.keys` gives a repo's own `ds:` keys a role: `list`, `definitions` (custom properties a parent or a script sets), `scope` (one value, which audit exemptions can name) or `breakpoint` (`<width> <reason>`). A role is a name, or `{ role, values, under }` to limit a scope to a set or a list to files in a folder.
+- `graph.taxonomy` holds the tiers in order, each group with a line on what belongs in it, the placement test, path rules that give a file its group, the parked marker and its group, and the keys each tier needs.
+- `graph.kinds` adds node kinds beyond components, such as layouts and pages, each a list of globs. `graph.header` is `anywhere` or `top` (only the first comment block counts), and `graph.strictFaults` makes header faults fail the write and `--check`.
+- `stories.manifest`, `stories.pages` and `stories.frames` point at a lane's own list of stories and where each slug's page and frame live.
+- `audit.kinds` turns kinds off, `audit.exempt` skips a kind by role, tier, group or file, `audit.arbitrary` limits arbitrary values to colours, and `audit.failWhenBehind` fails `--check` while the baseline is behind the code.
+- `guard.extraChecks` lists project commands `ds:check` runs as well, and `tokens.breakpoints` is the width scale the breakpoint audit holds the code to.
+
 ## Phases
 
 `state.json` tracks seven phases in this order. Each has one skill.
