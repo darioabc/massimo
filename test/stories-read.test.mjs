@@ -60,6 +60,43 @@ test('what is not a literal is reported as not statically readable, never guesse
   assert.match(none.unreadable[0].detail, /m\.ts exports no array of entries with a slug/)
 })
 
+test('a list built from more than its literal is not read at all, never read in part', () => {
+  const list = "[{ slug: 'a', title: 'A' }, { slug: 'b', title: 'B' }]"
+  const whole = (text) => {
+    const m = readManifest(text, 'm.ts')
+    assert.deepEqual(m.unreadable.filter((u) => u.entry === null), [], text)
+    return m.entries.map((e) => e.slug)
+  }
+  for (const text of [
+    `export const stories = ${list}`,
+    `export const stories = ${list};\nexport const n = 2`,
+    `export const stories: StoryEntry[] = ${list}\nexport const ordered = [...stories].map((s) => s)`,
+    `export const stories = ${list} as const`,
+    `export const stories = ${list} satisfies ReadonlyArray<Entry<'x'>>;`,
+    `export const stories = ${list} as readonly StoryEntry[] // the list\n`,
+    `export const stories = ${list}, count = 2`,
+    `const list = ${list}\n\nexport { list as stories }`,
+  ]) {
+    assert.deepEqual(whole(text), ['a', 'b'], text)
+  }
+  const more = (text) => {
+    const m = readManifest(text, 'm.ts')
+    assert.deepEqual(m.entries, [], text)
+    assert.equal(m.unreadable.length, 1, text)
+    assert.equal(m.unreadable[0].entry, null)
+    return m.unreadable[0].detail
+  }
+  const built = 'stories is built from more than its array literal, so it is not statically readable'
+  assert.equal(more(`export const stories: StoryEntry[] = ${list}.concat(EXTRA)`), built)
+  assert.equal(more(`export const stories = ${list}\n  .map((s) => ({ ...s, root: 'A' }))`), built)
+  assert.equal(more(`export const stories = ${list} as StoryEntry[]\n  .filter(Boolean)`), built)
+  assert.equal(more(`export const stories = ${list} + more`), built)
+  assert.equal(more(`export default ${list}.concat(more)`), 'the default export is built from more than its array literal, so it is not statically readable')
+  assert.equal(more(`export const stories = ${list}\nstories.push({ slug: 'c' })`), 'stories is changed by push() after it is declared, so it is not statically readable')
+  // A list wrapped in a call is no array literal at all.
+  assert.equal(more(`export const stories = defineStories(${list})`), 'm.ts exports no array of entries with a slug')
+})
+
 const PAGE = `---
 import StoryState from '../../StoryState.astro'
 // <StoryState label="In the frontmatter"> is not a state.
@@ -89,6 +126,11 @@ test('state blocks give their label, note, ground and flush; a computed one says
     { label: { expr: '`${count} rows`' }, note: null, ground: null, flush: false },
     { label: 'Recipe style', note: null, ground: null, flush: false },
   ])
+})
+
+test('a state with no label is null; one only a spread could label says so', () => {
+  const page = '<StoryState>No label</StoryState>\n<StoryState {...first} note="x" />\n<StoryState label="Set" {...rest} />\n'
+  assert.deepEqual(readStoryStates(page).map((s) => s.label), [null, { spread: 'first' }, 'Set'])
 })
 
 test('a slug pattern names a file, and finds the slugs its files carry', () => {

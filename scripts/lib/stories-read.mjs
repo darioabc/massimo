@@ -1,7 +1,8 @@
 // A story lane read as text, never run: the manifest that lists its stories,
 // and the labelled state blocks on each story page. A value that is not a
-// literal (a call, a variable, a spread, a template with `${}`) is reported
-// as not statically readable, never guessed.
+// literal (a call, a variable, a spread, a template with `${}`), or a list
+// built from more than its literal, is reported as not statically readable,
+// never guessed.
 
 import { parseArrayAt } from './jsobject.mjs'
 import { stripComments } from './source.mjs'
@@ -27,6 +28,10 @@ const DECLARATION = /(?<![\w$.])(export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]
 const EXPORT_LIST = /(?<![\w$.])export\s*\{([^}]*)\}/g
 const EXPORT_DEFAULT_NAME = /(?<![\w$.])export\s+default\s+([A-Za-z_$][\w$]*)\s*;?\s*$/m
 const EXPORT_DEFAULT_ARRAY = /(?<![\w$.])export\s+default\s*\[/
+// What carries an expression on past a line break: `.concat(`, `[0]`, `+ x`...
+const CONTINUES = /^(?:[.[(`+\-*/%?&|^<>=!]|in\b|instanceof\b)/
+// A method that adds entries to an array or takes them out after it is declared.
+const MUTATORS = ['push', 'unshift', 'splice']
 
 // Every array literal the module exports, as { name, at } with `at` the
 // offset of its `[`: `export const x = [`, a const exported by name, and
@@ -50,14 +55,63 @@ function exportedArrays(code) {
   return out
 }
 
+// The end of a type after `as` or `satisfies` at `i`: the first `;`, `,`,
+// line break or closing bracket outside the type's own brackets.
+function skipType(code, i) {
+  let depth = 0
+  for (; i < code.length; i++) {
+    const c = code[i]
+    if (c === '"' || c === "'" || c === '`') i = skipQuoted(code, i)
+    else if (c === '=' && code[i + 1] === '>') i++
+    else if ('<([{'.includes(c)) depth++
+    else if ('>)]}'.includes(c)) {
+      if (depth === 0) return i
+      depth--
+    } else if (depth === 0 && (c === ';' || c === ',' || c === '\n')) return i
+  }
+  return i
+}
+
+// Whether the array literal that closes just before `i` is the whole value
+// of its declaration: what follows is the end of the statement (`;`, `,`
+// before another declarator, `}`, the end of the file, or a line break before
+// anything that does not carry the expression on), after any `as` or
+// `satisfies` type. `.concat(x)`, `.map(fn)` or `+ y` make it more.
+function wholeValue(code, i) {
+  for (;;) {
+    const gap = /^\s*/.exec(code.slice(i))[0]
+    i += gap.length
+    if (i >= code.length || ';,}'.includes(code[i])) return true
+    const word = /^(?:as|satisfies)\b/.exec(code.slice(i))
+    if (word) {
+      i = skipType(code, i + word[0].length)
+      continue
+    }
+    return gap.includes('\n') && !CONTINUES.test(code.slice(i))
+  }
+}
+
+// Why the array named `name`, whose `[` is at `at`, holds more entries than
+// its literal shows, or null: an expression after it, or a call that adds or
+// takes out entries later.
+function builtFromMore(code, name, at) {
+  const label = name === 'default' ? 'the default export' : name
+  const close = closeBracket(code, at)
+  if (close === -1 || !wholeValue(code, close + 1)) return `${label} is built from more than its array literal, so it is not statically readable`
+  if (name === 'default') return null
+  const call = new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}\\s*\\.\\s*(${MUTATORS.join('|')})\\s*\\(`).exec(code)
+  return call ? `${label} is changed by ${call[1]}() after it is declared, so it is not statically readable` : null
+}
+
 // A manifest's entries, read from the exported array whose items carry a
 // `slug` (one named `stories` first). Returns
 //   { name, entries, unreadable }
 // `entries` lines up with the array: each item's literal fields as written,
 // or null for an item that is not an object literal. `unreadable` lists what
 // was left out, as { entry, slug, field, detail }: `entry` is the item's
-// index, `field` is null when the whole item is unreadable, and `...` when
-// the item spreads another object in, so any field may come from there.
+// index, or null when the manifest as a whole cannot be read (then there are
+// no entries); `field` is null when the whole item is unreadable, and `...`
+// when the item spreads another object in, so any field may come from there.
 export function readManifest(text, file = 'manifest.ts') {
   const code = stripComments(text, file)
   const candidates = exportedArrays(code)
@@ -65,7 +119,12 @@ export function readManifest(text, file = 'manifest.ts') {
     .filter((c) => c.items.some((item) => isObject(item) && !isSkipped(item) && 'slug' in item))
     .sort((a, b) => (b.name === 'stories') - (a.name === 'stories'))
   const chosen = candidates[0]
-  if (!chosen) return { name: null, entries: [], unreadable: [{ entry: null, slug: null, field: null, detail: `${file} exports no array of entries with a slug` }] }
+  const whole = (name, detail) => ({ name, entries: [], unreadable: [{ entry: null, slug: null, field: null, detail }] })
+  if (!chosen) return whole(null, `${file} exports no array of entries with a slug`)
+  // Entries the literal does not show (`[...].concat(more)`, a later push)
+  // would make every check a guess, so none is made.
+  const more = builtFromMore(code, chosen.name, chosen.at)
+  if (more) return whole(chosen.name, more)
   const entries = []
   const unreadable = []
   chosen.items.forEach((item, index) => {
@@ -116,7 +175,7 @@ function skipTemplate(src, i) {
   for (i++; i < src.length && src[i] !== '`'; i++) {
     if (src[i] === '\\') i++
     else if (src[i] === '$' && src[i + 1] === '{') {
-      const close = closeBrace(src, i + 1)
+      const close = closeBracket(src, i + 1)
       if (close === -1) return src.length
       i = close
     }
@@ -124,15 +183,18 @@ function skipTemplate(src, i) {
   return i
 }
 
-// The `}` that closes the `{` at `open`, past strings and templates, or -1.
-function closeBrace(src, open) {
+// The `}` or `]` that closes the `{` or `[` at `open`, past strings and
+// templates, or -1.
+export function closeBracket(src, open) {
+  const opener = src[open]
+  const closer = opener === '[' ? ']' : '}'
   let depth = 0
   for (let i = open; i < src.length; i++) {
     const c = src[i]
     if (c === '"' || c === "'") i = skipQuoted(src, i)
     else if (c === '`') i = skipTemplate(src, i)
-    else if (c === '{') depth++
-    else if (c === '}' && --depth === 0) return i
+    else if (c === opener) depth++
+    else if (c === closer && --depth === 0) return i
   }
   return -1
 }
@@ -159,7 +221,7 @@ function readAttributes(src, i) {
     while (/\s/.test(src[i] ?? '')) i++
     if (src[i] === '>' || (src[i] === '/' && src[i + 1] === '>')) return attrs
     if (src[i] === '{') {
-      const close = closeBrace(src, i)
+      const close = closeBracket(src, i)
       if (close === -1) return null
       ;(attrs['...'] ??= []).push(src.slice(i + 1, close).trim())
       i = close + 1
@@ -181,7 +243,7 @@ function readAttributes(src, i) {
       attrs[name] = src.slice(j + 1, end)
       i = end + 1
     } else if (src[j] === '{') {
-      const close = closeBrace(src, j)
+      const close = closeBracket(src, j)
       if (close === -1) return null
       attrs[name] = expressionValue(src.slice(j + 1, close))
       i = close + 1
@@ -196,8 +258,9 @@ function readAttributes(src, i) {
 
 // Every state block on a story page, in order: its label (the `label` prop,
 // or `name` as the plain recipe writes it), note, ground and flush. A value
-// that is not a literal is { expr } with its source, so a check can tell a
-// label it cannot read from one that is missing.
+// that is not a literal is { expr } with its source, and a label that only a
+// spread (`{...props}`) could give is { spread } with the spread's source, so
+// a check can tell a label it cannot read from one that is missing (null).
 export function readStoryStates(text, { tag = 'StoryState' } = {}) {
   const template = templateOf(text)
   const out = []
@@ -205,7 +268,8 @@ export function readStoryStates(text, { tag = 'StoryState' } = {}) {
     const attrs = readAttributes(template, m.index + m[0].length)
     if (!attrs) continue
     const flush = attrs.flush === undefined ? false : attrs.flush === '' ? true : attrs.flush
-    out.push({ label: attrs.label ?? attrs.name ?? null, note: attrs.note ?? null, ground: attrs.ground ?? null, flush })
+    const label = attrs.label ?? attrs.name ?? (attrs['...'] ? { spread: attrs['...'].map((s) => s.replace(/^\.\.\.\s*/, '')).join(', ') } : null)
+    out.push({ label, note: attrs.note ?? null, ground: attrs.ground ?? null, flush })
   }
   return out
 }

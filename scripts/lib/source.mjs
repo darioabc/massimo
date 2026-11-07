@@ -403,7 +403,8 @@ export function createResolver(root, config = {}) {
 
   // Where a specifier points, as a repo-relative path, without checking that
   // anything is there: for an import.meta.glob pattern, whose files are
-  // matched afterwards. Null for a package or a URL.
+  // matched afterwards. A bare specifier sits under the first tsconfig
+  // baseUrl, as resolveImport reads it; without one it is a package: null.
   resolveImport.pathOf = (fromFile, spec) => {
     if (spec.startsWith('./') || spec.startsWith('../')) return toRel(resolve(dirname(join(root, fromFile)), spec))
     if (spec.startsWith('/')) return spec.replace(/^\/+/, '')
@@ -416,7 +417,7 @@ export function createResolver(root, config = {}) {
       if (!p.star || !spec.startsWith(p.prefix) || !spec.endsWith(p.suffix) || p.targets.length === 0) continue
       return toRel(resolve(p.base, p.targets[0].replace('*', spec.slice(p.prefix.length, spec.length - p.suffix.length))))
     }
-    return null
+    return baseUrls.length > 0 ? toRel(resolve(baseUrls[0], spec)) : null
   }
 
   return resolveImport

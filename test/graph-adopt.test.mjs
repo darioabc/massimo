@@ -4,8 +4,8 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { SCRIPTS, read, readJson, run, scratch } from './helpers.mjs'
 
@@ -15,7 +15,10 @@ after(() => ctx.cleanup())
 // A scratch copy with some files written over and the config patched.
 function variant(files = {}, patch = null) {
   const t = scratch('adopt')
-  for (const [path, text] of Object.entries(files)) writeFileSync(join(t.root, path), text)
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(t.root, path)), { recursive: true })
+    writeFileSync(join(t.root, path), text)
+  }
   if (patch) {
     const path = join(t.root, 'massimo.config.json')
     writeFileSync(path, JSON.stringify(patch(JSON.parse(readFileSync(path, 'utf8')))))
@@ -137,6 +140,21 @@ test('a top header: stray lines, a colon, a second group and a malformed line ar
   ])
 })
 
+test('a top header: a malformed ds: line ends the value above it, so the group holds', () => {
+  const t = variant({
+    'src/components/Card.astro': '---\n// ds:group Components / Cards\n// ds:no_story the home story shows it\n\nimport Button from "./Button.astro"\n---\n<Button />\n',
+  })
+  try {
+    assert.equal(run('graph', t).status, 0)
+    const g = readJson(t.project, 'graph.json')
+    assert.deepEqual(g.faults, [{ file: 'src/components/Card.astro', key: 'ds:', message: 'a line opens with ds: but is not "ds:key value"' }])
+    assert.equal(g.nodes.find((n) => n.file === 'src/components/Card.astro').group, 'Components / Cards')
+    assert.deepEqual(g.storyLane.problems, [])
+  } finally {
+    t.cleanup()
+  }
+})
+
 test('a header in an .astro file sits inside the frontmatter, after any blank line', () => {
   const faults = faultsOf({
     'src/components/Card.astro': '---\n\n// ds:group Components / Cards\nimport Button from "./Button.astro"\n// ds:theme print\n---\n<!-- ds:never in a list -->\n<Button />\n',
@@ -175,6 +193,18 @@ test('strictFaults: the run writes the files, then fails and says why; so does t
     assert.match(c.stderr, /graph\.strictFaults is on, so this fault fails the check/)
   } finally {
     t.cleanup()
+  }
+  // An unknown key is named with its file and line too, since its warning is not printed.
+  const unknown = variant(
+    { 'src/components/Icon.tsx': '// ds:group Foundations / Icons\n// ds:owner design team\nexport default function Icon() { return null }\n' },
+    (c) => ({ ...c, graph: { ...c.graph, strictFaults: true } }),
+  )
+  try {
+    const r = run('graph', unknown, ['--check'])
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /massimo graph: src\/components\/Icon\.tsx:2: unknown header key "ds:owner"\n/)
+  } finally {
+    unknown.cleanup()
   }
   const off = variant(broken)
   try {
@@ -228,6 +258,52 @@ test('without graph.edges, MDX files and glob calls add nothing, as before', () 
   }
 })
 
+test('a glob array is read to its closing bracket, past one inside a pattern; what it cannot follow is a warning', () => {
+  const shell = (globs) => `---\n// ds:group Shells / Site\n// ds:no-story the home story shows it\n\nimport Button from '../components/Button.astro'\n${globs}\n---\n<html lang="en"><body><slot /><Button /></body></html>\n`
+  const t = variant({
+    'src/layouts/Shell.astro': shell([
+      "const parts = import.meta.glob(['../components/[KL]*.astro', '!../components/Card.astro'])",
+      "const typed = import.meta.glob<Record<string, string>>('../components/format.ts', { eager: true })",
+      'const more = import.meta.glob(PATTERNS)',
+      "const bare = import.meta.glob('components/Icon.tsx')",
+    ].join('\n')),
+  })
+  try {
+    const r = run('graph', t)
+    assert.equal(r.status, 0, r.stderr)
+    assert.deepEqual(nodesByFile(t.project)['src/layouts/Shell.astro'].composes, ['Button', 'format', 'Legacy'])
+    assert.match(r.stderr, /src\/layouts\/Shell\.astro: an import\.meta\.glob call whose patterns cannot be read as plain strings, so the files it loads are not edges/)
+    assert.match(r.stderr, /src\/layouts\/Shell\.astro: the import\.meta\.glob pattern "components\/Icon\.tsx" is not relative, from the root, through an alias or under a tsconfig baseUrl, so it matches nothing/)
+  } finally {
+    t.cleanup()
+  }
+  // A bare pattern sits under the tsconfig baseUrl, as a bare import does.
+  const based = variant({
+    'tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: 'src' } }),
+    'src/layouts/Shell.astro': shell("const bare = import.meta.glob('components/Icon.tsx')"),
+  })
+  try {
+    const r = run('graph', based)
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(r.stderr, '')
+    assert.deepEqual(nodesByFile(based.project)['src/layouts/Shell.astro'].composes, ['Button', 'Icon'])
+  } finally {
+    based.cleanup()
+  }
+})
+
+test('graph.edges warns on a value it does not know, as graph.header does', () => {
+  const t = variant({}, (c) => ({ ...c, graph: { ...c.graph, edges: ['mdx', 'globs'] } }))
+  try {
+    const r = run('graph', t)
+    assert.equal(r.status, 0)
+    assert.match(r.stderr, /graph\.edges lists "globs"; its values are "mdx" and "glob", so that one adds no edges/)
+    assert.deepEqual(nodesByFile(t.project)['src/pages/feed.json.ts'].composes, [])
+  } finally {
+    t.cleanup()
+  }
+})
+
 test('a manifest lane covers directly what a story\'s page, frame and helpers import and what it names; what those compose, incidentally', () => {
   const coverage = Object.fromEntries(Object.values(nodesByFile(ctx.project)).map((n) => [n.name, [n.direct, n.incidental]]))
   assert.deepEqual(coverage, {
@@ -272,7 +348,7 @@ const ENTRIES = {
   card: { slug: 'card', title: 'Components / Cards / Card', root: 'Components', group: 'Cards', component: ['src/components/Card.astro'], frame: true },
   home: { slug: 'home', title: 'Pages / Home / Home', root: 'Pages', group: 'Home', component: 'src/pages/index.astro' },
 }
-const manifest = (entries, tail = '') => `export const stories = [\n${entries.map((e) => `  ${JSON.stringify(e)},`).join('\n')}\n${tail}]\n`
+const manifest = (entries, tail = '', after = '') => `export const stories = [\n${entries.map((e) => `  ${JSON.stringify(e)},`).join('\n')}\n${tail}]${after}\n`
 
 // The lane's problems for a variant, as "rule · file · detail" lines, and
 // the whole graph.json.
@@ -326,6 +402,40 @@ test('story-files: an entry without its page, a page without an entry, a frame f
   ])
 })
 
+test('story-files: a page or a frame with no entry each says which it is', () => {
+  const { colours, button, card, home } = ENTRIES
+  const { lines } = laneOf({
+    'src/stories/manifest.ts': manifest([colours, button, card, home]),
+    'src/stories/pages/extra/frame.astro': '---\nimport Card from "../../../components/Card.astro"\n---\n<Card />\n',
+  })
+  assert.deepEqual(lines, ['story-files · src/stories/pages/extra/frame.astro · extra: a frame with no manifest entry'])
+})
+
+test('a manifest built from more than its literal is one story-files problem, with no orphans or missing stories guessed', () => {
+  const { colours, button, card, home } = ENTRIES
+  const concat = laneOf({ 'src/stories/manifest.ts': `const EXTRA = [${JSON.stringify(home)}]\n${manifest([colours, button, card], '', '.concat(EXTRA)')}` })
+  assert.deepEqual(concat.lines, ['story-files · src/stories/manifest.ts · stories is built from more than its array literal, so it is not statically readable'])
+  assert.equal(concat.graph.storyLane.entries, 0)
+  assert.equal(concat.graph.storyLane.unreadable, undefined)
+  // A list wrapped in a call, under strictFaults: one problem fails the run, not one per page and node.
+  const wrapped = variant(
+    { 'src/stories/manifest.ts': `export const stories = defineStories(${manifest([colours, button, card, home]).replace(/^export const stories = /, '')})` },
+    (c) => ({ ...c, graph: { ...c.graph, strictFaults: true } }),
+  )
+  try {
+    const r = run('graph', wrapped)
+    assert.equal(r.status, 1)
+    assert.deepEqual(readJson(wrapped.project, 'graph.json').storyLane.problems, [
+      { rule: 'story-files', file: 'src/stories/manifest.ts', detail: 'src/stories/manifest.ts exports no array of entries with a slug' },
+    ])
+    assert.match(r.stderr, /src\/stories\/manifest\.ts: story-files: src\/stories\/manifest\.ts exports no array of entries with a slug/)
+    assert.match(r.stderr, /graph\.strictFaults is on, so this fault fails the run/)
+    assert.doesNotMatch(r.stderr, /no manifest entry/)
+  } finally {
+    wrapped.cleanup()
+  }
+})
+
 test('story-states: a states list is the page\'s labels in order; a label it cannot read is reported, not guessed', () => {
   const { colours, button, card, home } = ENTRIES
   const swapped = laneOf({ 'src/stories/manifest.ts': manifest([colours, { ...button, states: ['Quiet', 'Solid'] }, card, home]) })
@@ -335,6 +445,13 @@ test('story-states: a states list is the page\'s labels in order; a label it can
   assert.deepEqual(computed.lines, [])
   assert.deepEqual(computed.graph.storyLane.unreadable, [{ file: page, detail: 'button: a state label is not statically readable, so its states are not checked' }])
   assert.match(computed.md, /Not statically readable, so not checked:\n\n- `src\/stories\/pages\/button\/index\.astro`: button: a state label/)
+  // A state with no label is the page's fault; one only a spread could label is not read.
+  const missing = laneOf({ [page]: '---\nimport Stage from "../../Stage.astro"\n---\n<StoryState label="Solid" /><StoryState><Stage /></StoryState>\n' })
+  assert.deepEqual(missing.lines, ['story-states · src/stories/pages/button/index.astro · button: a state with no label'])
+  assert.equal(missing.graph.storyLane.unreadable, undefined)
+  const spread = laneOf({ [page]: '---\nimport Stage from "../../Stage.astro"\nconst quiet = { label: "Quiet" }\n---\n<StoryState label="Solid" /><StoryState {...quiet}><Stage /></StoryState>\n' })
+  assert.deepEqual(spread.lines, [])
+  assert.deepEqual(spread.graph.storyLane.unreadable, [{ file: page, detail: 'button: a state label is not statically readable, so its states are not checked' }])
 })
 
 test('no-story: a live node with no direct story and no ds:no-story, whatever covers it incidentally', () => {
@@ -401,10 +518,11 @@ test('stories.lane: "manifest" needs stories.manifest, and "native" leaves a man
   assert.deepEqual(gone.lines.filter((l) => l.startsWith('story-files')), ['story-files · src/stories/list.ts · stories.manifest names src/stories/list.ts, which does not exist'])
 })
 
-test('the README lists tiers in the taxonomy\'s order', () => {
+test('the README lists tiers in the taxonomy\'s order, and counts nodes when graph.kinds is set', () => {
   const r = spawnSync(process.execPath, [join(SCRIPTS, 'docs.mjs'), '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
   const md = read(ctx.project, 'README.md')
+  assert.match(md, /^8 nodes, 4 with a story, 1 with a usage rule\./m)
   const order = ['### Foundations', '### Primitives', '### Components', '### Internal', '### Explorations'].map((s) => md.indexOf(s))
   assert.ok(order.every((i, k) => i > 0 && (k === 0 || i > order[k - 1])), order.join(', '))
 })

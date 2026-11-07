@@ -35,7 +35,7 @@ import {
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
-import { componentsOf, readManifest, readStoryStates, slugFiles, slugPath } from './lib/stories-read.mjs'
+import { closeBracket, componentsOf, readManifest, readStoryStates, slugFiles, slugPath } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
@@ -44,8 +44,12 @@ const CODE_EXTS = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro)$/
 const MDX_EXT = /\.mdx$/i
 // A story title: Root / Group / Name.
 const STORY_TITLE = /^([^/]+?) \/ ([^/]+?) \/ ([^/]+)$/
-// import.meta.glob('pattern') or (['a', '!b']), with or without a type argument.
-const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?\s*(?:<[^>()]*>)?\s*\(\s*(\[[^\]]*\]|(['"`])[^'"`\n]+\2)/g
+// import.meta.glob, and in group 1 the opening of its call up to the first
+// argument, with or without a type argument (one level of nesting).
+const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?(?![\w$])(\s*(?:<(?:[^<>()]|<[^<>()]*>)*>)?\s*\(\s*)?/g
+// A string literal with no `${}`, its text in group 2.
+const PLAIN_STRING = /(['"`])((?:\\.|(?!\1)[^\\\n$]|\$(?!\{))*)\1/g
+const EDGE_KINDS = ['mdx', 'glob']
 const TOKEN_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'other']
 
 const MAX_COMPONENT_LIST = 40
@@ -106,6 +110,23 @@ function mdxImports(text) {
     out.push(open ? line : '')
   }
   return out.join('\n')
+}
+
+// The patterns of an import.meta.glob call whose first argument starts at
+// `at`: one string, or an array of strings. Null when they are not plain
+// literals, which Vite would refuse too.
+function globPatterns(code, at) {
+  let args
+  if (code[at] === '[') {
+    const close = closeBracket(code, at)
+    if (close === -1) return null
+    args = code.slice(at + 1, close)
+  } else {
+    args = new RegExp(PLAIN_STRING.source, 'y').exec(code.slice(at))?.[0]
+    if (!args) return null
+  }
+  if (args.replace(PLAIN_STRING, '').replace(/[\s,]/g, '') !== '') return null
+  return [...args.matchAll(PLAIN_STRING)].map((m) => m[2].replace(/\\(.)/g, '$1'))
 }
 
 // Area a non-node importer is grouped under: the first directory under `src/`,
@@ -197,11 +218,16 @@ function headerBlock(lines, file) {
 // reads every comment, as massimo always has. 'top' reads the first comment
 // block only, and names as problems a `ds:` line anywhere else, a key
 // written with a colon, a second ds:group and a line that opens with `ds:`
-// but is not `ds:key value`; each problem is { key, line, message }.
+// but is not `ds:key value`; each problem is { key, line, message }. In
+// 'top' every `ds:` line is a line of its own, so a malformed one ends the
+// value above it instead of wrapping into it.
 function readHeader(source, file, keys, mode) {
-  const all = extractRules(source, keys)
+  let all = extractRules(source, keys)
   if (mode !== 'top') return { ...all, problems: [] }
   const lines = source.split(/\r?\n/)
+  const keyLines = new Set(all.entries.map((e) => e.line))
+  const malformed = new Set(lines.flatMap((line, k) => (DS_LINE.test(line) && !keyLines.has(k + 1) ? [k + 1] : [])))
+  if (malformed.size > 0) all = extractRules(lines.map((line, k) => (malformed.has(k + 1) ? '' : line)).join('\n'), keys)
   const [from, to] = headerBlock(lines, file) ?? [0, -1]
   const known = [...RULE_KEYS, ...keys.filter((k) => !RULE_KEYS.includes(k))]
   const where = /\.astro$/i.test(file) ? 'the first comment block inside the frontmatter' : 'the first comment block at the top of the file'
@@ -222,10 +248,7 @@ function readHeader(source, file, keys, mode) {
       else if (e.key === 'no-story' && found[e.key] === undefined) found[e.key] = ''
     }
   }
-  const lineSet = new Set(all.entries.map((e) => e.line))
-  lines.forEach((line, k) => {
-    if (DS_LINE.test(line) && !lineSet.has(k + 1)) problems.push({ key: 'ds:', line: k + 1, message: 'a line opens with ds: but is not "ds:key value"' })
-  })
+  for (const line of malformed) problems.push({ key: 'ds:', line, message: 'a line opens with ds: but is not "ds:key value"' })
   const rules = {}
   for (const key of known) if (found[key] !== undefined) rules[key] = found[key]
   return { rules, unknown, entries, problems }
@@ -309,19 +332,29 @@ export function buildGraph(root, config, command = "graph.mjs") {
     }
   }
   const edgeKinds = new Set([].concat(config.graph?.edges ?? []))
+  for (const kind of edgeKinds) {
+    if (!EDGE_KINDS.includes(kind)) warnings.push(`graph.edges lists "${kind}"; its values are "mdx" and "glob", so that one adds no edges`)
+  }
 
   // Every file an import.meta.glob call in `code` matches, its patterns read
   // relative to the file, from the root or through the aliases; a `!`
-  // pattern takes its matches back out, as Vite does.
+  // pattern takes its matches back out, as Vite does. A call or a pattern
+  // it cannot follow is a warning, never a silent gap.
   function globTargets(file, code) {
     const out = new Set()
     for (const m of code.matchAll(GLOB_CALL)) {
+      const patterns = m[1] === undefined ? null : globPatterns(code, m.index + m[0].length)
+      if (!patterns) {
+        warnings.push(`${file}: an import.meta.glob call whose patterns cannot be read as plain strings, so the files it loads are not edges`)
+        continue
+      }
       const keep = []
       const drop = []
-      for (const [, , pattern] of m[1].matchAll(/(['"`])([^'"`\n]+)\1/g)) {
+      for (const pattern of patterns) {
         const negated = pattern.startsWith('!')
         const path = resolveImport.pathOf(file, negated ? pattern.slice(1) : pattern)
         if (path) (negated ? drop : keep).push(path)
+        else warnings.push(`${file}: the import.meta.glob pattern "${pattern}" is not relative, from the root, through an alias or under a tsconfig baseUrl, so it matches nothing`)
       }
       const take = compileGlobs(keep)
       const leave = compileGlobs(drop)
@@ -477,7 +510,8 @@ export function buildGraph(root, config, command = "graph.mjs") {
     const read = readManifest(readFileSync(join(root, manifest), 'utf8'), manifest)
     lane.entries = read.entries
     lane.skipped = read.unreadable
-    for (const u of read.unreadable) lane.unreadable.push({ file: manifest, detail: u.slug ? `${u.slug}: ${u.detail}` : u.detail })
+    // A manifest unreadable as a whole is a problem of its own (laneProblems).
+    for (const u of read.unreadable) if (u.entry !== null) lane.unreadable.push({ file: manifest, detail: u.slug ? `${u.slug}: ${u.detail}` : u.detail })
     for (const entry of lane.entries) {
       if (typeof entry?.slug !== 'string') continue
       const page = pageOf(entry.slug)
@@ -514,18 +548,29 @@ export function buildGraph(root, config, command = "graph.mjs") {
   //   story-title   a title that is not Root / Group / Name under its root and
   //                 group fields, a place that is not its component's group, or
   //                 no component outside stories.componentless
-  //   story-files   an entry without its page, a page without an entry, a frame
-  //                 flag and a frame file that disagree
-  //   story-states  a states list that is not the page's state labels, in order
+  //   story-files   an entry without its page, a page or frame without an
+  //                 entry, a frame flag and a frame file that disagree
+  //   story-states  a states list that is not the page's state labels, in
+  //                 order, and a state with no label on a page whose entry
+  //                 lists its states (reported against the page)
   //   no-story      a live node with no direct story and no ds:no-story
   // `file` is the manifest, the page with no entry, or the node with no story.
-  // A field the manifest does not hold as a literal is not checked.
+  // A field the manifest does not hold as a literal is not checked. A
+  // manifest that cannot be read at all is one story-files problem, like a
+  // missing one, and nothing is checked against it.
   function laneProblems(lane, nodes, live) {
     const { manifest, pageOf, frameOf, fileSet } = lane
     const out = []
     const add = (rule, file, detail) => out.push({ rule, file, detail })
     if (!fileSet.has(manifest)) {
       add('story-files', manifest, `stories.manifest names ${manifest}, which does not exist`)
+      return out
+    }
+    // With no entries read, every page would look like an orphan and every
+    // live node like one with no story.
+    const whole = lane.skipped.find((u) => u.entry === null)
+    if (whole) {
+      add('story-files', manifest, whole.detail)
       return out
     }
     const byFile = new Map(nodes.map((n) => [n.file, n]))
@@ -571,8 +616,11 @@ export function buildGraph(root, config, command = "graph.mjs") {
         if (entry.frame !== true && fileSet.has(frame)) add('story-files', manifest, `${slug}: ${frame} with no frame: true`)
       }
       if (Array.isArray(entry.states) && lane.blocks.has(page)) {
+        // A label that is missing is a fault of the page; one that is there
+        // but not a literal leaves the list unchecked.
         const labels = lane.blocks.get(page).map((s) => s.label)
-        if (labels.some((l) => typeof l !== 'string')) lane.unreadable.push({ file: page, detail: `${slug}: a state label is not statically readable, so its states are not checked` })
+        if (labels.includes(null)) add('story-states', page, `${slug}: a state with no label`)
+        else if (labels.some((l) => typeof l !== 'string')) lane.unreadable.push({ file: page, detail: `${slug}: a state label is not statically readable, so its states are not checked` })
         else if (labels.join('\n') !== entry.states.join('\n')) add('story-states', manifest, `${slug}: states [${entry.states.join(', ')}] but the page labels [${labels.join(', ')}]`)
       }
     })
@@ -580,10 +628,11 @@ export function buildGraph(root, config, command = "graph.mjs") {
     if (!lane.entries.some((e) => !e || typeof e.slug !== 'string')) {
       const slugs = new Set(lane.entries.map((e) => e.slug))
       const orphans = new Map()
-      for (const pattern of [config.stories.pages, config.stories.frames].filter(Boolean)) {
-        for (const [slug, file] of slugFiles(pattern, all)) if (!slugs.has(slug) && !orphans.has(slug)) orphans.set(slug, file)
+      for (const [pattern, what] of [[config.stories.pages, 'page'], [config.stories.frames, 'frame']]) {
+        if (!pattern) continue
+        for (const [slug, file] of slugFiles(pattern, all)) if (!slugs.has(slug) && !orphans.has(slug)) orphans.set(slug, { file, what })
       }
-      for (const [slug, file] of orphans) add('story-files', file, `${slug}: a page with no manifest entry`)
+      for (const [slug, { file, what }] of orphans) add('story-files', file, `${slug}: a ${what} with no manifest entry`)
     }
     for (const n of nodes) if (live(n) && n.direct.length === 0 && n.noStory === null) add('no-story', n.file, 'no direct story')
     const seen = new Set()
@@ -699,6 +748,9 @@ export function buildGraph(root, config, command = "graph.mjs") {
     for (const key of header.unknown) {
       warnings.push(`${file}: unknown header key "ds:${key}"`)
       faults.push({ file, key: `ds:${key}` })
+      // Where it sits, for a strict run to name, since the warning is not printed.
+      const line = header.entries.find((e) => e.key === key)?.line
+      faultLines.push(`${file}${line ? `:${line}` : ''}: unknown header key "ds:${key}"`)
     }
     const fault = (key, message, line = null) => {
       faults.push({ file, key, message })
@@ -990,7 +1042,7 @@ function renderLane(lane) {
   const out = ['## Story lane', '']
   out.push(`${code(lane.manifest)} lists ${lane.entries} ${lane.entries === 1 ? 'story' : 'stories'}, with ${lane.states} ${lane.states === 1 ? 'state' : 'states'} on their pages. A story covers a node directly when its page or frame imports it (itself or through the lane's own helpers) or its entry names it, and covers what that node composes only incidentally.`, '')
   out.push(`- Direct: ${lane.direct} · seen only inside a parent's story: ${lane.incidental} · none: ${lane.none}.`, '')
-  out.push('The checks: `story-title` (a title is Root / Group / Name under its root and group, which are its component\'s group), `story-files` (every entry has its page, every page an entry, and a frame flag its frame), `story-states` (a states list is the page\'s state labels, in order) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, the first three fail the run; the audit ratchets `no-story`.', '')
+  out.push('The checks: `story-title` (a title is Root / Group / Name under its root and group, which are its component\'s group), `story-files` (the manifest can be read, every entry has its page, every page and frame an entry, and a frame flag its frame), `story-states` (a states list is the page\'s state labels, in order, and every state there has a label) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, the first three fail the run; the audit ratchets `no-story`.', '')
   if (lane.problems.length === 0) out.push('None of them finds a problem.', '')
   else {
     for (const p of lane.problems) out.push(`- ${code(p.rule)} · ${code(p.file)} · ${p.detail}`)

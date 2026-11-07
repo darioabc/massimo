@@ -193,7 +193,7 @@ export const stories: StoryEntry[] = [
 ]
 ```
 
-Keep every value a literal. The graph reads this file without running it, and lists any field it cannot read (a call, a variable, a spread) as not checked.
+Keep every value a literal. The graph reads this file without running it, and lists any field it cannot read (a call, a variable, a spread) as not checked. Keep the list itself one array literal too: a list wrapped in a call, extended with `.concat()` or `.map()`, or changed later with `push()` cannot be read at all, which is a `story-files` problem.
 
 ### The integration
 
@@ -269,8 +269,8 @@ Mark the frame with a class only the lane uses, so the leak check can look for i
 With `stories.lane` set to `manifest`, `graph.mjs` reads the manifest and every page, and reports in `graph.json` → `storyLane.problems`:
 
 - `story-title`: the title is not Root / Group / Name under the entry's root and group, they are not its component's group, or it names no component outside `componentless`;
-- `story-files`: an entry without its page, a page without an entry, or a frame flag and frame file that disagree;
-- `story-states`: a `states` list that is not the page's labels, in order;
+- `story-files`: a manifest it cannot read as text, an entry without its page, a page or frame without an entry, or a frame flag and frame file that disagree;
+- `story-states`: a `states` list that is not the page's labels, in order, or a state on that page with no label;
 - `no-story`: a live node with no direct story and no `ds:no-story` line.
 
 A node is covered directly when its story's page or frame imports it, or a lane helper the page imports does, or the entry names it; a node it only composes is covered incidentally, which does not count. With `graph.strictFaults`, the first three fail the graph run; the audit ratchets `no-story`.

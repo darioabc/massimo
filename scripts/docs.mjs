@@ -78,7 +78,9 @@ export function docsBlock({ root, config, projectDir }) {
   } else {
     const nodes = graph.nodes ?? []
     const ruled = nodes.filter((n) => n.rules?.['use-when'])
-    lines.push(`${nodes.length} components, ${nodes.filter((n) => n.stories?.length).length} with a story, ${ruled.length} with a usage rule. The full map, with who uses what, is \`${projectRel}/graph.md\`.`, '')
+    // With graph.kinds, layouts and pages are nodes too, so the count says nodes.
+    const noun = graph.summary?.kinds ? ['node', 'nodes'] : ['component', 'components']
+    lines.push(`${nodes.length} ${noun[1]}, ${nodes.filter((n) => n.stories?.length).length} with a story, ${ruled.length} with a usage rule. The full map, with who uses what, is \`${projectRel}/graph.md\`.`, '')
     const byTier = new Map()
     for (const n of nodes.filter((x) => x.tier)) {
       if (!byTier.has(n.tier)) byTier.set(n.tier, [])
@@ -96,7 +98,7 @@ export function docsBlock({ root, config, projectDir }) {
       lines.push('')
     }
     const untiered = nodes.filter((n) => !n.tier)
-    if (untiered.length) lines.push(`${untiered.length} ${untiered.length === 1 ? 'component has' : 'components have'} no \`ds:group\` yet: ${untiered.slice(0, 12).map((n) => n.name).join(', ')}${untiered.length > 12 ? ', and more' : ''}.`, '')
+    if (untiered.length) lines.push(`${untiered.length} ${untiered.length === 1 ? `${noun[0]} has` : `${noun[1]} have`} no \`ds:group\` yet: ${untiered.slice(0, 12).map((n) => n.name).join(', ')}${untiered.length > 12 ? ', and more' : ''}.`, '')
   }
 
   // Checks, Figma, designing.
