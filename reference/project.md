@@ -22,7 +22,7 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── explorations/<topic>/      one folder per design topic in the ux loop (brief.md, round-N/, index.html)
 ├── handoffs/<topic>.md        translate specs ready to build
 ├── tidy/backlog.md            the tidy batches, their status and results
-├── figma/                     mirror.json (Figma ids ↔ tokens/components), drift.md
+├── figma/                     export.json (what the file holds, read by read-library.js), mirror.json (what was mirrored, with ids), drift.md
 ├── shots/                     screenshots (gitignored; regenerate any time), except shots/kept/
 │   └── kept/<topic>/          screenshots a handoff, brief or baseline links to (committed)
 └── scripts/                   vendored massimo scripts, so CI and teammates without the plugin can run them

@@ -1,5 +1,7 @@
 {
   "generatedBy": "massimo tokens",
+  "format": 2,
+  "defaultMode": "Light",
   "collections": [
     {
       "name": "Primitives",
@@ -10,6 +12,9 @@
         {
           "name": "color/ink",
           "type": "COLOR",
+          "scopes": [
+            "TEXT_FILL"
+          ],
           "values": {
             "Light": {
               "r": 0,
@@ -26,6 +31,10 @@
         {
           "name": "color/teal",
           "type": "COLOR",
+          "scopes": [
+            "ALL_FILLS",
+            "STROKE_COLOR"
+          ],
           "values": {
             "Light": {
               "r": 0.251831,
@@ -42,6 +51,10 @@
         {
           "name": "color/vivid",
           "type": "COLOR",
+          "scopes": [
+            "ALL_FILLS",
+            "STROKE_COLOR"
+          ],
           "values": {
             "Light": {
               "r": 1,
@@ -58,6 +71,10 @@
         {
           "name": "color/white",
           "type": "COLOR",
+          "scopes": [
+            "ALL_FILLS",
+            "STROKE_COLOR"
+          ],
           "values": {
             "Light": {
               "r": 1,
@@ -74,6 +91,10 @@
         {
           "name": "color/film",
           "type": "COLOR",
+          "scopes": [
+            "ALL_FILLS",
+            "STROKE_COLOR"
+          ],
           "values": {
             "Light": {
               "r": 0.594683,
@@ -90,6 +111,10 @@
         {
           "name": "color/bg",
           "type": "COLOR",
+          "scopes": [
+            "FRAME_FILL",
+            "SHAPE_FILL"
+          ],
           "values": {
             "Light": {
               "r": 1,
@@ -106,8 +131,11 @@
         {
           "name": "font/family/sans",
           "type": "STRING",
+          "scopes": [
+            "FONT_FAMILY"
+          ],
           "values": {
-            "Light": "Inter, sans-serif"
+            "Light": "Inter"
           },
           "description": "",
           "codeSyntax": {
@@ -117,8 +145,11 @@
         {
           "name": "font/family/mono",
           "type": "STRING",
+          "scopes": [
+            "FONT_FAMILY"
+          ],
           "values": {
-            "Light": "\"JetBrains Mono\""
+            "Light": "JetBrains Mono"
           },
           "description": "",
           "codeSyntax": {
@@ -128,6 +159,9 @@
         {
           "name": "font/weight/regular",
           "type": "FLOAT",
+          "scopes": [
+            "FONT_WEIGHT"
+          ],
           "values": {
             "Light": 400
           },
@@ -139,6 +173,9 @@
         {
           "name": "font/weight/strong",
           "type": "FLOAT",
+          "scopes": [
+            "FONT_WEIGHT"
+          ],
           "values": {
             "Light": 600
           },
@@ -150,6 +187,9 @@
         {
           "name": "size/lg",
           "type": "FLOAT",
+          "scopes": [
+            "WIDTH_HEIGHT"
+          ],
           "values": {
             "Light": 18
           },
@@ -161,6 +201,9 @@
         {
           "name": "size/hairline",
           "type": "FLOAT",
+          "scopes": [
+            "STROKE_FLOAT"
+          ],
           "values": {
             "Light": 1
           },
@@ -172,6 +215,9 @@
         {
           "name": "space/1",
           "type": "FLOAT",
+          "scopes": [
+            "GAP"
+          ],
           "values": {
             "Light": 4
           },
@@ -183,6 +229,9 @@
         {
           "name": "space/2",
           "type": "FLOAT",
+          "scopes": [
+            "GAP"
+          ],
           "values": {
             "Light": 8
           },
@@ -194,6 +243,9 @@
         {
           "name": "radius/md",
           "type": "FLOAT",
+          "scopes": [
+            "CORNER_RADIUS"
+          ],
           "values": {
             "Light": 6
           },
@@ -205,6 +257,9 @@
         {
           "name": "radius/full",
           "type": "FLOAT",
+          "scopes": [
+            "CORNER_RADIUS"
+          ],
           "values": {
             "Light": 9999
           },
@@ -214,43 +269,11 @@
           }
         },
         {
-          "name": "text/body",
-          "type": "STRING",
-          "values": {
-            "Light": "400 1.125rem/1.5 Inter, sans-serif"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--text-body)"
-          }
-        },
-        {
-          "name": "text/label",
-          "type": "STRING",
-          "values": {
-            "Light": "600 0.75rem/1.2 Inter, sans-serif"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--text-label)"
-          }
-        },
-        {
-          "name": "border/thin",
-          "type": "STRING",
-          "values": {
-            "Light": "1px solid #00000033"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--border-thin)"
-          }
-        },
-        {
           "name": "motion/fast",
-          "type": "STRING",
+          "type": "FLOAT",
+          "scopes": [],
           "values": {
-            "Light": "150ms"
+            "Light": 150
           },
           "description": "",
           "codeSyntax": {
@@ -258,74 +281,9 @@
           }
         },
         {
-          "name": "motion/ease",
-          "type": "STRING",
-          "values": {
-            "Light": "cubic-bezier(0.4, 0, 0.2, 1)"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--motion-ease)"
-          }
-        },
-        {
-          "name": "motion/emphasis",
-          "type": "STRING",
-          "values": {
-            "Light": "150ms cubic-bezier(0.4, 0, 0.2, 1) 0ms"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--motion-emphasis)"
-          }
-        },
-        {
-          "name": "gradient/sky",
-          "type": "STRING",
-          "values": {
-            "Light": "linear-gradient(#0000ff 0%, oklch(0.7 0.1 200) 100%)"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--gradient-sky)"
-          }
-        },
-        {
-          "name": "shadow/card",
-          "type": "STRING",
-          "values": {
-            "Light": "0px 1px 2px 0px #00000033"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--shadow-card)"
-          }
-        },
-        {
-          "name": "shadow/ring",
-          "type": "STRING",
-          "values": {
-            "Light": "0px 4px 12px 0px #0000001a, inset 0px 0px 0px 1px #00000033"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--shadow-ring)"
-          }
-        },
-        {
-          "name": "stroke/focus",
-          "type": "STRING",
-          "values": {
-            "Light": "dashed"
-          },
-          "description": "",
-          "codeSyntax": {
-            "WEB": "var(--stroke-focus)"
-          }
-        },
-        {
           "name": "layer/modal",
           "type": "FLOAT",
+          "scopes": [],
           "values": {
             "Light": 50
           },
@@ -337,6 +295,9 @@
         {
           "name": "opacity/scrim",
           "type": "FLOAT",
+          "scopes": [
+            "OPACITY"
+          ],
           "values": {
             "Light": 0.6
           },
@@ -356,6 +317,9 @@
         {
           "name": "color/text",
           "type": "COLOR",
+          "scopes": [
+            "TEXT_FILL"
+          ],
           "values": {
             "Light": {
               "alias": "color/ink",
@@ -368,6 +332,152 @@
           }
         }
       ]
+    }
+  ],
+  "textStyles": [
+    {
+      "name": "text/body",
+      "description": "",
+      "fontFamily": "Inter",
+      "fontWeight": 400,
+      "fontStyle": "Regular",
+      "fontSize": 18,
+      "lineHeight": {
+        "unit": "PERCENT",
+        "value": 150
+      },
+      "letterSpacing": {
+        "unit": "PIXELS",
+        "value": 0
+      },
+      "boundVariables": {
+        "fontFamily": {
+          "variable": "font/family/sans",
+          "collection": "Primitives"
+        },
+        "fontWeight": {
+          "variable": "font/weight/regular",
+          "collection": "Primitives"
+        },
+        "fontSize": {
+          "variable": "size/lg",
+          "collection": "Primitives"
+        }
+      }
+    },
+    {
+      "name": "text/label",
+      "description": "",
+      "fontFamily": "Inter",
+      "fontWeight": 600,
+      "fontStyle": "SemiBold",
+      "fontSize": 12,
+      "lineHeight": {
+        "unit": "PERCENT",
+        "value": 120
+      },
+      "letterSpacing": {
+        "unit": "PIXELS",
+        "value": 0.32
+      }
+    }
+  ],
+  "effectStyles": [
+    {
+      "name": "shadow/card",
+      "description": "",
+      "effects": [
+        {
+          "type": "DROP_SHADOW",
+          "color": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 0.2
+          },
+          "offset": {
+            "x": 0,
+            "y": 1
+          },
+          "radius": 2,
+          "spread": 0,
+          "boundVariables": {
+            "color": {
+              "variable": "color/ink",
+              "collection": "Primitives"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "shadow/ring",
+      "description": "",
+      "effects": [
+        {
+          "type": "DROP_SHADOW",
+          "color": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 0.101961
+          },
+          "offset": {
+            "x": 0,
+            "y": 4
+          },
+          "radius": 12,
+          "spread": 0
+        },
+        {
+          "type": "INNER_SHADOW",
+          "color": {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+            "a": 0.2
+          },
+          "offset": {
+            "x": 0,
+            "y": 0
+          },
+          "radius": 0,
+          "spread": 1,
+          "boundVariables": {
+            "color": {
+              "variable": "color/ink",
+              "collection": "Primitives"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "notMirrored": [
+    {
+      "token": "border.thin",
+      "type": "border",
+      "reason": "Figma has no border variable"
+    },
+    {
+      "token": "motion.ease",
+      "type": "cubicBezier",
+      "reason": "Figma has no cubicBezier variable"
+    },
+    {
+      "token": "motion.emphasis",
+      "type": "transition",
+      "reason": "Figma has no transition variable"
+    },
+    {
+      "token": "gradient.sky",
+      "type": "gradient",
+      "reason": "Figma has no gradient variable"
+    },
+    {
+      "token": "stroke.focus",
+      "type": "strokeStyle",
+      "reason": "Figma has no strokeStyle variable"
     }
   ]
 }

@@ -139,7 +139,7 @@ test('figma: em stays a string, aliases name their collection, each collection k
     const figma = readJson(t.project, 'tokens', 'figma-variables.json')
     const byName = (n) => figma.collections.flatMap((c) => c.variables).find((v) => v.name === n)
     // Primitives has a Dark mode (color.surface changes), so every primitive fills it.
-    assert.deepEqual(byName('space/md'), { name: 'space/md', type: 'FLOAT', values: { Light: 16, Dark: 16 }, description: '', codeSyntax: { WEB: 'var(--space-md)' } })
+    assert.deepEqual(byName('space/md'), { name: 'space/md', type: 'FLOAT', scopes: ['GAP'], values: { Light: 16, Dark: 16 }, description: '', codeSyntax: { WEB: 'var(--space-md)' } })
     assert.equal(byName('space/tight').type, 'STRING')
     assert.equal(byName('space/tight').values.Light, '-0.02em')
     assert.deepEqual(byName('color/accent').values, { Light: { alias: 'color/blue', collection: 'Primitives' } })

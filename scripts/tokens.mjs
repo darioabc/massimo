@@ -17,13 +17,15 @@
 //   node <project>/scripts/tokens.mjs preview    write tokens/preview.html
 //   node <project>/scripts/tokens.mjs hash       print the tokens' hash, as the Figma mirror records it
 //   node <project>/scripts/tokens.mjs migrate    convert a tokens.json from before 0.2.0 to 2025.10 [--to legacy] [--force]
+//   node <project>/scripts/tokens.mjs figma      --record <export.json> [--file-key K] | --drift <export.json>
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { colorCss, contrastRatio, parseColor } from './lib/color.mjs'
+import { driftReport, recordMirror } from './lib/figma.mjs'
 import {
   FORMAT_VERSION,
   checkValue,
@@ -35,6 +37,7 @@ import {
   isResolver,
   looksLegacy,
   readResolver,
+  splitCss,
   tokenJson,
   typedFromLegacy,
   writeLegacy,
@@ -760,63 +763,220 @@ function buildTs(model) {
   ].join('\n')
 }
 
-// ── Figma variables ─────────────────────────────────────────────────────────
+// ── Figma variables and styles ─────────────────────────────────────────────
 
 const figmaMode = (model, mode) => titleCase(model.modeLabel(mode))
 
-// Figma has no em: a length in em depends on the text it sits in, so it stays a string.
-const FIGMA_FLOAT = /^(-?[\d.]+)(px|rem)?$/
-
-function figmaValue(model, t, mode, type, collectionOf) {
-  const next = model.target(t, mode)
-  if (next) return { alias: next.path.join('/'), collection: collectionOf(next) }
-  const css = literal(model, t, mode)
-  if (type === 'COLOR') {
-    const c = parseColor(css)
-    return { r: round(c.r), g: round(c.g), b: round(c.b), a: round(c.a) }
+// A token's value as CSS text without its CSS override: what the DTCG value
+// says, which is what Figma and every place outside CSS should show.
+function valueText(model, t, mode) {
+  let depth = 0
+  const ref = (alias) => {
+    const next = model.byName.get(aliasPath(alias))
+    if (++depth > 32) throw new Error(`reference ${alias} goes round in a cycle`)
+    return cssText(model.typeOf(next), model.resolved(next, mode), ref)
   }
-  if (type === 'FLOAT') {
-    const m = FIGMA_FLOAT.exec(css)
-    return round(m[2] === 'rem' ? parseFloat(m[1]) * 16 : parseFloat(m[1]), 4)
-  }
-  return css
+  return cssText(model.typeOf(t), model.resolved(t, mode), ref)
 }
+
+// Figma's units: px for lengths (a rem is 16px), ms for durations. A length in
+// em depends on the text it sits in, so it has no Figma number.
+const LENGTH_PX = /^(-?\d*\.?\d+)(px|rem)?$/
+const TIME_MS = /^(-?\d*\.?\d+)(ms|s)$/
+function figmaNumber(type, text) {
+  const time = type === 'duration' && TIME_MS.exec(text)
+  if (time) return round(parseFloat(time[1]) * (time[2] === 's' ? 1000 : 1), 4)
+  const len = type !== 'duration' && LENGTH_PX.exec(text)
+  if (len) return round(parseFloat(len[1]) * (len[2] === 'rem' ? 16 : 1), 4)
+  return null
+}
+
+// Types Figma holds as styles or not at all, rather than as variables.
+const STYLE_TYPES = new Set(['typography', 'shadow'])
+const NO_VARIABLE = new Set(['cubicBezier', 'transition', 'gradient', 'border', 'strokeStyle', 'css'])
 
 function figmaType(model, t) {
   const type = model.typeOf(t)
-  const all = model.modes.map((m) => literal(model, t, m))
-  if (type === 'color' && all.every((v) => parseColor(v))) return 'COLOR'
-  if (['dimension', 'number', 'fontWeight', 'duration'].includes(type) && all.every((v) => FIGMA_FLOAT.test(v))) return 'FLOAT'
+  if (STYLE_TYPES.has(type) || NO_VARIABLE.has(type)) return null
+  const all = model.modes.map((m) => valueText(model, t, m))
+  if (type === 'color') return all.every((v) => parseColor(v)) ? 'COLOR' : 'STRING'
+  if (['dimension', 'number', 'fontWeight', 'duration'].includes(type)) return all.every((v) => figmaNumber(type, v) !== null) ? 'FLOAT' : 'STRING'
   return 'STRING'
 }
 
-// Each collection carries only the modes its own variables change in; an alias
-// names the collection of the variable it points at, since one name can sit in two.
+const firstFamily = (text) => splitCss(text)[0]?.replace(/^(['"])(.*)\1$/, '$2') ?? text
+
+function figmaValue(model, t, mode, type, collectionOf) {
+  const next = model.target(t, mode)
+  if (next) return { alias: figmaName(next), collection: collectionOf(next) }
+  const text = valueText(model, t, mode)
+  if (type === 'COLOR') {
+    const c = parseColor(text)
+    return { r: round(c.r), g: round(c.g), b: round(c.b), a: round(c.a) }
+  }
+  if (type === 'FLOAT') return figmaNumber(model.typeOf(t), text)
+  return model.typeOf(t) === 'fontFamily' ? firstFamily(text) : text
+}
+
+const figmaName = (t) => t.path.filter((p) => p !== '$root').join('/')
+
+// Where a variable may be picked in Figma, from its type and its name. The
+// steps of a colour ramp (`neutral/500`) hide once semantic colours exist, so
+// designers pick by meaning; a variable is never left on every scope.
+function figmaScopes(model, t, type, collection, hideRamps) {
+  const name = figmaName(t).toLowerCase()
+  const kind = model.typeOf(t)
+  const has = (re) => re.test(name)
+  if (type === 'COLOR') {
+    if (hideRamps && collection === 'Primitives' && /(^|[/-])\d+$/.test(name)) return []
+    if (has(/shadow|elevation/)) return ['EFFECT_COLOR']
+    if (has(/(^|\/)(bg|background|surface|canvas|base-\d+|backdrop|fill)\b/)) return ['FRAME_FILL', 'SHAPE_FILL']
+    if (has(/(^|\/)(text|fg|foreground|content|ink)\b|-content$|(^|\/)on-/)) return ['TEXT_FILL']
+    if (has(/(^|\/)(border|stroke|outline|divider|ring|separator)\b/)) return ['STROKE_COLOR']
+    return ['ALL_FILLS', 'STROKE_COLOR']
+  }
+  if (type === 'STRING') return kind === 'fontFamily' ? ['FONT_FAMILY'] : []
+  if (kind === 'fontWeight') return ['FONT_WEIGHT']
+  if (kind === 'duration') return []
+  if (has(/opacity|alpha/)) return ['OPACITY']
+  if (has(/(^|\/)(z|z-index|zindex|layer)\b/)) return []
+  if (has(/line-?height|leading/)) return ['LINE_HEIGHT']
+  if (has(/letter|tracking/)) return ['LETTER_SPACING']
+  if (has(/radius|radii|rounded|corner/)) return ['CORNER_RADIUS']
+  if (has(/(^|\/)(text|font|type)(\/|-)(size|[a-z0-9-]*$)/) && kind === 'dimension') return ['FONT_SIZE']
+  if (has(/border|stroke|outline|hairline/)) return ['STROKE_FLOAT']
+  if (has(/blur|shadow/)) return ['EFFECT_FLOAT']
+  if (has(/space|spacing|gap|padding|margin|inset|gutter/)) return ['GAP']
+  if (has(/size|width|height|max|min|container|page/)) return ['WIDTH_HEIGHT']
+  return kind === 'number' ? [] : ['GAP', 'WIDTH_HEIGHT']
+}
+
+// Figma names a font's weights itself; these are the usual names, to match
+// against the styles the font actually has.
+const FONT_STYLES = { 100: 'Thin', 200: 'ExtraLight', 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'SemiBold', 700: 'Bold', 800: 'ExtraBold', 900: 'Black', 950: 'ExtraBlack' }
+
+// Figma variables, collections and modes, plus text styles from typography
+// tokens and effect styles from shadow tokens, bound to the variables their
+// parts point at. Each collection carries only the modes its own variables
+// change in; an alias names the collection it points into.
 function buildFigma(model) {
   const collectionOf = (t) => t.collection ?? (isAlias(t.value) ? 'Semantic' : 'Primitives')
   const members = new Map()
+  const notMirrored = []
+  const variableOf = new Map()
   for (const t of model.tokens) {
-    if (model.typeOf(t) === 'css') continue // a CSS-only value has no Figma variable
+    const type = figmaType(model, t)
+    const kind = model.typeOf(t)
+    if (!type) {
+      if (!STYLE_TYPES.has(kind)) notMirrored.push({ token: t.name, type: kind, reason: kind === 'css' ? 'a CSS-only value' : `Figma has no ${kind} variable` })
+      continue
+    }
     const name = collectionOf(t)
     if (!members.has(name)) members.set(name, [])
     members.get(name).push(t)
+    variableOf.set(t.name, { variable: figmaName(t), collection: name, type })
   }
+  const hideRamps = model.tokens.some((t) => model.typeOf(t) === 'color' && collectionOf(t) !== 'Primitives')
   const collection = (name) => {
     const list = members.get(name)
     const modes = model.modes.filter((m) => m === 'default' || list.some((t) => m in t.modes))
     const variables = list.map((t) => {
-      const type = figmaType(model, t)
+      const type = variableOf.get(t.name).type
       const values = {}
       for (const mode of modes) values[figmaMode(model, mode)] = figmaValue(model, t, mode, type, collectionOf)
-      return { name: t.path.join('/'), type, values, description: t.description, codeSyntax: { WEB: `var(${t.cssVar})` } }
+      return { name: figmaName(t), type, scopes: figmaScopes(model, t, type, name, hideRamps), values, description: t.description, codeSyntax: { WEB: `var(${t.cssVar})` } }
     })
     return { name, modes: modes.map((m) => figmaMode(model, m)), variables }
   }
+
+  // A part of a composite: its value in the default mode, and the variable it is bound to when it points at one.
+  const part = (x, type) => {
+    if (!isAlias(x)) return { text: cssText(type, x, (a) => valueText(model, model.byName.get(aliasPath(a)), 'default')), bound: null }
+    const target = model.byName.get(aliasPath(x))
+    return { text: valueText(model, target, 'default'), bound: variableOf.get(target.name) ?? null }
+  }
+  const bind = (into, field, p) => {
+    if (p.bound) into[field] = { variable: p.bound.variable, collection: p.bound.collection }
+  }
+  const layersOf = (t) => {
+    const v = model.resolved(t, 'default')
+    return [].concat(v).flatMap((layer) => (isAlias(layer) ? layersOf(model.byName.get(aliasPath(layer))) : [layer]))
+  }
+
+  const textStyles = []
+  const effectStyles = []
+  for (const t of model.tokens) {
+    const kind = model.typeOf(t)
+    if (kind === 'typography') {
+      const v = model.resolved(t, 'default')
+      if (!v || typeof v !== 'object') continue
+      const style = { name: figmaName(t), description: t.description }
+      const boundVariables = {}
+      if (v.fontFamily !== undefined) {
+        const p = part(v.fontFamily, 'fontFamily')
+        style.fontFamily = firstFamily(p.text)
+        bind(boundVariables, 'fontFamily', p)
+      }
+      if (v.fontWeight !== undefined) {
+        const p = part(v.fontWeight, 'fontWeight')
+        style.fontWeight = Number(p.text)
+        style.fontStyle = FONT_STYLES[style.fontWeight] ?? 'Regular'
+        bind(boundVariables, 'fontWeight', p)
+      }
+      if (v.fontSize !== undefined) {
+        const p = part(v.fontSize, 'dimension')
+        style.fontSize = figmaNumber('dimension', p.text)
+        bind(boundVariables, 'fontSize', p)
+      }
+      if (v.lineHeight !== undefined) {
+        const p = part(v.lineHeight, 'number')
+        const px = /(px|rem)$/.test(p.text) ? figmaNumber('dimension', p.text) : null
+        style.lineHeight = px !== null ? { unit: 'PIXELS', value: px } : { unit: 'PERCENT', value: round(parseFloat(p.text) * 100, 4) }
+        bind(boundVariables, 'lineHeight', p)
+      }
+      if (v.letterSpacing !== undefined) {
+        const p = part(v.letterSpacing, 'dimension')
+        const em = /^(-?\d*\.?\d+)em$/.exec(p.text)
+        style.letterSpacing = em ? { unit: 'PERCENT', value: round(parseFloat(em[1]) * 100, 4) } : { unit: 'PIXELS', value: figmaNumber('dimension', p.text) ?? 0 }
+        bind(boundVariables, 'letterSpacing', p)
+      }
+      if (Object.keys(boundVariables).length > 0) style.boundVariables = boundVariables
+      textStyles.push(style)
+    } else if (kind === 'shadow') {
+      const layers = layersOf(t)
+      if (!layers.every((l) => l && typeof l === 'object' && 'offsetX' in l)) {
+        notMirrored.push({ token: t.name, type: kind, reason: 'a shadow written as CSS text; migrate it to a shadow object' })
+        continue
+      }
+      const effects = layers.map((l) => {
+        const boundVariables = {}
+        const color = part(l.color ?? '#000000', 'color')
+        const c = parseColor(color.text) ?? { r: 0, g: 0, b: 0, a: 1 }
+        bind(boundVariables, 'color', color)
+        const effect = { type: l.inset ? 'INNER_SHADOW' : 'DROP_SHADOW', color: { r: round(c.r), g: round(c.g), b: round(c.b), a: round(c.a) } }
+        const [x, y, blur, spread] = [['offsetX', l.offsetX], ['offsetY', l.offsetY], ['radius', l.blur], ['spread', l.spread]].map(([field, value]) => {
+          const p = part(value ?? '0px', 'dimension')
+          bind(boundVariables, field, p)
+          return figmaNumber('dimension', p.text) ?? 0
+        })
+        Object.assign(effect, { offset: { x, y }, radius: blur, spread })
+        if (Object.keys(boundVariables).length > 0) effect.boundVariables = boundVariables
+        return effect
+      })
+      effectStyles.push({ name: figmaName(t), description: t.description, effects })
+    }
+  }
+
   const order = ['Primitives', 'Semantic', ...[...members.keys()].filter((k) => k !== 'Primitives' && k !== 'Semantic').sort(compare)]
   return jsonText({
     $comment: HEADER,
     generatedBy: 'massimo tokens',
+    format: FORMAT_VERSION,
+    defaultMode: figmaMode(model, 'default'),
     collections: order.filter((n) => members.has(n)).map(collection),
+    textStyles,
+    effectStyles,
+    notMirrored,
   })
 }
 
@@ -1023,20 +1183,53 @@ export function canonicalJson(v) {
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex')
 
-function tokensHash(root, config) {
-  return sha256(canonicalJson(readJson(join(root, config.tokens.source))))
+// The hash of every file the token set is read from: one file's canonical
+// JSON, or, for a resolver document, the document and each file it names.
+function tokensHash(root, files) {
+  if (files.length === 1) return sha256(canonicalJson(readJson(join(root, files[0]))))
+  return sha256(canonicalJson(files.map((f) => [f, readJson(join(root, f))])))
 }
 
 // Whether figma/mirror.json was recorded from the tokens as they are now. A
 // mirror made before 0.2.0 hashed the file's bytes, which still counts.
-function figmaMirror(root, projectDir, config) {
+function figmaMirror(root, projectDir, config, files) {
   const path = join(projectDir, 'figma', 'mirror.json')
   if (!existsSync(path)) return null
   const mirror = readJson(path)
   if (typeof mirror?.tokensHash !== 'string') return null
   const source = join(root, config.tokens.source)
-  const current = mirror.tokensHash === tokensHash(root, config) || mirror.tokensHash === sha256(readFileSync(source))
+  const current = mirror.tokensHash === tokensHash(root, files) || mirror.tokensHash === sha256(readFileSync(source))
   return { current, syncedAt: mirror.syncedAt ?? 'an unknown date' }
+}
+
+// Record what the Figma file holds as the mirror, or report how it drifted
+// since. The export is the JSON skills/figma/read-library.js returns.
+function figmaCommand({ root, config, projectDir, flags, shown, tokens }) {
+  const record = typeof flags.record === 'string' ? flags.record : null
+  const drift = typeof flags.drift === 'string' ? flags.drift : null
+  if (!record === !drift) fail('usage: tokens.mjs figma --record <export.json> [--file-key <key>] | --drift <export.json>', 2)
+  const exportPath = resolve(record ?? drift)
+  if (!existsSync(exportPath)) fail(`no export at ${exportPath}; save what read-library.js returns there first`)
+  const exported = readJson(exportPath)
+  const { files } = buildOutputs(root, projectDir, config, tokens)
+  const wanted = JSON.parse(files.find((f) => f.path.endsWith('figma-variables.json')).text)
+  const mirrorPath = join(projectDir, 'figma', 'mirror.json')
+  if (record) {
+    const previous = readJson(mirrorPath, {}) ?? {}
+    const fileKey = typeof flags['file-key'] === 'string' ? flags['file-key'] : undefined
+    const { mirror, mismatches } = recordMirror(wanted, exported, { fileKey, tokensHash: tokensHash(root, tokens.files), date: today(), previous })
+    writeText(mirrorPath, jsonText(mirror))
+    for (const m of mismatches) process.stderr.write(`  mismatch: ${m}\n`)
+    const count = Object.keys(mirror.variables).length
+    process.stdout.write(`massimo tokens figma: recorded ${count} variables, ${Object.keys(mirror.textStyles).length} text styles and ${Object.keys(mirror.effectStyles).length} effect styles in ${shown(mirrorPath)}${mirror.modes === 'default only' ? '; the file allows one mode per collection, so only the default mode is mirrored' : ''}; ${mismatches.length} ${mismatches.length === 1 ? 'mismatch' : 'mismatches'} with code\n`)
+    if (mismatches.length > 0) process.exit(1)
+    return
+  }
+  if (!existsSync(mirrorPath)) fail(`no ${shown(mirrorPath)} yet; record the mirror first with --record`)
+  const { markdown, total } = driftReport(wanted, readJson(mirrorPath), exported, { date: today() })
+  const out = join(projectDir, 'figma', 'drift.md')
+  writeText(out, markdown)
+  process.stdout.write(`massimo tokens figma: ${total} ${total === 1 ? 'difference' : 'differences'} since the mirror; wrote ${shown(out)}\n`)
 }
 
 const warnAll = (model) => {
@@ -1157,7 +1350,7 @@ function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { _: positionals, flags } = parseArgs(argv)
   const mode = positionals[0]
-  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash', 'migrate']
+  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash', 'migrate', 'figma']
   if (!MODES.includes(mode)) fail(`usage: tokens.mjs <${MODES.join('|')}> [--strict]`, 2)
   const { root, config, projectDir, configPath } = loadConfig(flags)
   HEADER = `Generated by massimo tokens from ${config.tokens.source}. Do not edit by hand: change the tokens, then run ${scriptCommand(root, projectDir, 'tokens', 'build')}`
@@ -1207,8 +1400,10 @@ function main() {
   // A blank project still gets a kit, so the ux loop can start before there are tokens.
   if (tokens.tokens.length === 0 && mode !== 'kit') fail(`${tokens.origin === 'tokens' ? `${config.tokens.source} defines` : 'the style files define'} no tokens`)
 
+  if (mode === 'figma') return figmaCommand({ root, config, projectDir, flags, shown, tokens })
+
   if (mode === 'hash') {
-    process.stdout.write(`${tokensHash(root, config)}\n`)
+    process.stdout.write(`${tokensHash(root, tokens.files)}\n`)
     return
   }
 
@@ -1247,7 +1442,7 @@ function main() {
   const failures = contrastChecks(model).filter((c) => !c.pass)
   const strict = truthy(flags.strict)
   // The Figma library is a mirror, so drift is reported, never failed on.
-  const mirror = tokens.origin === 'tokens' ? figmaMirror(root, projectDir, config) : null
+  const mirror = tokens.origin === 'tokens' ? figmaMirror(root, projectDir, config, tokens.files) : null
   if (mirror && !mirror.current) {
     process.stderr.write(`  figma: the mirror was synced on ${mirror.syncedAt} from other tokens; run the figma skill's drift check\n`)
   }
