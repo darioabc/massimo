@@ -230,10 +230,113 @@ function parseFunctional(name, args) {
     if (space === 'srgb') return { r: clamp01(c[0]), g: clamp01(c[1]), b: clamp01(c[2]), a }
     if (space === 'srgb-linear') return rgbaFromLinear(c[0], c[1], c[2], a)
     if (space === 'display-p3') return displayP3ToRgb(c[0], c[1], c[2], a)
+    if (space === 'xyz-d65' || space === 'xyz') return xyzD65ToRgb(c[0], c[1], c[2], a)
+    if (space === 'xyz-d50') return xyzD65ToRgb(...d50ToD65(c[0], c[1], c[2]), a)
+    if (space === 'a98-rgb') {
+      const lin = c.map((v) => Math.sign(v) * Math.abs(v) ** (563 / 256))
+      return xyzD65ToRgb(...mul(A98_TO_XYZ, lin), a)
+    }
+    if (space === 'prophoto-rgb') {
+      const lin = c.map((v) => (Math.abs(v) <= 16 / 512 ? v / 16 : Math.sign(v) * Math.abs(v) ** 1.8))
+      return xyzD65ToRgb(...d50ToD65(...mul(PROPHOTO_TO_XYZ_D50, lin)), a)
+    }
+    if (space === 'rec2020') {
+      const alpha = 1.09929682680944
+      const beta = 0.018053968510807
+      const lin = c.map((v) => (Math.abs(v) < beta * 4.5 ? v / 4.5 : Math.sign(v) * ((Math.abs(v) + alpha - 1) / alpha) ** (1 / 0.45)))
+      return xyzD65ToRgb(...mul(REC2020_TO_XYZ, lin), a)
+    }
     return null
   }
   return null
 }
+
+// Linear RGB to XYZ for the wide-gamut spaces CSS color() names (CSS Color 4).
+const A98_TO_XYZ = [
+  [0.5766690429101305, 0.1855582379065463, 0.1882286462349947],
+  [0.29734497525053605, 0.6273635662554661, 0.07529145849399788],
+  [0.02703136138641234, 0.07068885253582723, 0.9913375368376388],
+]
+const PROPHOTO_TO_XYZ_D50 = [
+  [0.7977604896723027, 0.13518583717574031, 0.0313493495815248],
+  [0.2880711282292934, 0.7118432178101014, 0.00008565396060525902],
+  [0, 0, 0.8251046025104601],
+]
+const REC2020_TO_XYZ = [
+  [0.6369580483012914, 0.14461690358620832, 0.1688809751641721],
+  [0.2627002120112671, 0.6779980715188708, 0.05930171646986196],
+  [0, 0.028072693049087428, 1.060985057710791],
+]
+const mul = (m, [x, y, z]) => m.map((row) => row[0] * x + row[1] * y + row[2] * z)
+// Bradford adaptation from D50 to D65, as in labToRgb.
+const d50ToD65 = (x, y, z) => [
+  0.9555766 * x - 0.0230393 * y + 0.0631636 * z,
+  -0.0282895 * x + 1.0099416 * y + 0.0210077 * z,
+  0.0122982 * x - 0.020483 * y + 1.3299098 * z,
+]
+
+// ── DTCG colour objects ─────────────────────────────────────────────────────
+
+// The colour spaces the DTCG 2025.10 colour module allows.
+export const DTCG_COLOR_SPACES = ['srgb', 'srgb-linear', 'hsl', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'display-p3', 'a98-rgb', 'prophoto-rgb', 'rec2020', 'xyz-d65', 'xyz-d50']
+
+const r4 = (n) => (n === 'none' ? n : Number(n.toFixed(4)))
+
+// A DTCG colour object as CSS: hex for an sRGB colour, the space's own
+// function (`oklch()`, `hsl()`…) or `color()` for the rest.
+export function colorCss(v) {
+  const { colorSpace, components, alpha } = v
+  const text = (n) => (n === 'none' ? 'none' : String(Number(n.toFixed(6))))
+  const a = alpha === undefined || alpha === 1 ? '' : ` / ${text(alpha)}`
+  if (colorSpace === 'srgb' && components.every((c) => typeof c === 'number')) {
+    return toHex({ r: components[0], g: components[1], b: components[2], a: alpha ?? 1 })
+  }
+  if (colorSpace === 'hsl' || colorSpace === 'hwb') {
+    const [h, x, y] = components.map(text)
+    const pct = (s) => (s === 'none' ? s : `${s}%`)
+    return `${colorSpace}(${h} ${pct(x)} ${pct(y)}${a})`
+  }
+  if (['lab', 'lch', 'oklab', 'oklch'].includes(colorSpace)) return `${colorSpace}(${components.map(text).join(' ')}${a})`
+  return `color(${colorSpace} ${components.map(text).join(' ')}${a})`
+}
+
+// A CSS colour as a DTCG colour object in the space it was written in, with a
+// six-digit sRGB `hex` fallback; null when it is not a colour this module
+// reads (var(), currentColor, color-mix() with a var()…).
+export function colorFromCss(input) {
+  if (typeof input !== 'string') return null
+  const str = input.trim().toLowerCase()
+  const srgb = parseColor(str)
+  if (!srgb) return null
+  const hex = toHex({ ...srgb, a: 1 })
+  const withAlpha = (obj, a) => (a < 1 ? { ...obj, alpha: r4(a) } : obj)
+  const m = /^(rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(\s*([\s\S]*?)\s*\)$/.exec(str)
+  if (!m || /^rgba?$/.test(m[1])) {
+    return withAlpha({ colorSpace: 'srgb', components: [srgb.r, srgb.g, srgb.b].map(r4), hex }, srgb.a)
+  }
+  const slash = m[2].indexOf('/')
+  let parts = (slash === -1 ? m[2] : m[2].slice(0, slash)).split(/[\s,]+/).filter(Boolean)
+  if (slash === -1 && parts.length === 4) parts = parts.slice(0, 3)
+  const value = (p, pctScale) => (p === 'none' ? 'none' : p.endsWith('%') ? r4((parseFloat(p) / 100) * pctScale) : r4(parseFloat(p)))
+  const hue = (p) => (p === 'none' ? 'none' : r4(((hueToDeg(p) % 360) + 360) % 360))
+  let space = m[1].replace(/a$/, '')
+  let components
+  if (space === 'hsl' || space === 'hwb') components = [hue(parts[0]), value(parts[1], 100), value(parts[2], 100)]
+  else if (space === 'lab') components = [value(parts[0], 100), value(parts[1], 125), value(parts[2], 125)]
+  else if (space === 'lch') components = [value(parts[0], 100), value(parts[1], 150), hue(parts[2])]
+  else if (space === 'oklab') components = [value(parts[0], 1), value(parts[1], 0.4), value(parts[2], 0.4)]
+  else if (space === 'oklch') components = [value(parts[0], 1), value(parts[1], 0.4), hue(parts[2])]
+  else {
+    space = parts[0] === 'xyz' ? 'xyz-d65' : parts[0]
+    if (!DTCG_COLOR_SPACES.includes(space)) return null
+    components = parts.slice(1).map((p) => value(p, 1))
+  }
+  // The legacy hsl() syntax writes saturation and lightness as percentages; bare numbers mean the same.
+  return withAlpha({ colorSpace: space, components, hex }, srgb.a)
+}
+
+// sRGB `{ r, g, b, a }` of a DTCG colour object, for contrast and Figma.
+export const colorToSrgb = (v) => parseColor(colorCss(v))
 
 // Parse a CSS colour string to sRGB `{ r, g, b, a }` (each 0-1), or null when
 // it is not a colour this module understands (var(), currentColor, calc()...).

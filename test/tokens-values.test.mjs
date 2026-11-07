@@ -124,12 +124,12 @@ test('the preview shows typography as text set in it', () => {
   assert.match(html, /style="font: var\(--text-body\); letter-spacing: var\(--text-body-letter-spacing\)"/)
 })
 
-test('a colour CSS cannot write is an error naming the token', () => {
-  const bad = withTokens({ color: { $type: 'color', odd: { $value: { colorSpace: 'cmyk', components: [0, 0, 0] } }, ok: { $value: { colorSpace: 'cmyk', components: [0, 0, 0], hex: '#123456' } } } })
+test('a colour space DTCG does not have is an error naming the token', () => {
+  const bad = withTokens({ color: { $type: 'color', odd: { $value: { colorSpace: 'cmyk', components: [0, 0, 0] } } } })
   try {
     const r = run('tokens', bad, ['build'])
     assert.equal(r.status, 1)
-    assert.match(r.stderr, /color\.odd: colour space "cmyk" is not one CSS can write/)
+    assert.match(r.stderr, /color\.odd: the color has colorSpace "cmyk", which is not one of srgb/)
   } finally {
     bad.cleanup()
   }

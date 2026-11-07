@@ -39,6 +39,19 @@ export function run(name, ctx, args = []) {
 export const read = (...parts) => readFileSync(join(...parts), 'utf8')
 export const readJson = (...parts) => JSON.parse(read(...parts))
 
+// Compare `text` with the golden file test/golden/<name>. Run the tests with
+// UPDATE_GOLDEN=1 to write the golden files from what the code produces now;
+// review the diff before committing it.
+export function golden(name, text) {
+  const path = join(here, 'golden', name)
+  if (process.env.UPDATE_GOLDEN) {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, text)
+    return
+  }
+  return readFileSync(path, 'utf8')
+}
+
 // A scratch copy of the app fixture with its tokens.json replaced, and its
 // config's `tokens` block patched when `tokensConfig` is given.
 export function withTokens(doc, tokensConfig = null) {

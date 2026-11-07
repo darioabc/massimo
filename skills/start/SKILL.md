@@ -35,7 +35,7 @@ Look for `massimo.config.json` at the repo root (git toplevel).
 ## Resume
 
 1. Run `node <project>/scripts/state.mjs show` and read `<project>/STATUS.md`.
-2. **Scripts current?** Compare the vendored `<project>/scripts/lib/project.mjs` `SCRIPTS_VERSION` with `<plugin>/scripts/lib/project.mjs`. If the plugin is newer, offer `node <plugin>/scripts/init.mjs --update-scripts` and say what changed if the plugin's CHANGELOG says.
+2. **Scripts current?** Compare the vendored `<project>/scripts/lib/project.mjs` `SCRIPTS_VERSION` with `<plugin>/scripts/lib/project.mjs`. If the plugin is newer, offer `node <plugin>/scripts/init.mjs --update-scripts` and say what changed if the plugin's CHANGELOG says. After an update, rebuild the tokens once (`tokens.mjs build`) so the generated files carry the new header, and run `init.mjs` again only to see its warnings. A project whose tokens are still the `tokens.json` from before 0.2.0 can move to the 2025.10 format with `tokens.mjs migrate`; offer it, never run it unasked.
 3. **Tell the user where things stand** in three lines: what is done, what is in progress (with its progress note), and the single next step. Mention open explorations from the ux loop and any open question in STATUS.md.
 4. **Route.** If the user said what they want ("let's do tokens", "keep going on the checkout redesign"), go there. Otherwise propose the next phase. On a yes, invoke the phase skill: `graph`, `stories`, `tokens`, `tidy`, `guard`, `figma`, or `ux <topic>` for an exploration.
 

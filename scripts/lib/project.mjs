@@ -189,15 +189,22 @@ export function loadConfig(flags = {}) {
   const configPath = flags.config ? resolve(flags.config) : join(root, CONFIG_FILE)
   const exists = existsSync(configPath)
   const raw = exists ? readJson(configPath, {}) : {}
-  const config = deepMerge(DEFAULTS, raw)
+  const config = deepMerge(structuredClone(DEFAULTS), raw)
   const projectDirFlag = flags['project-dir']
   const projectDir = projectDirFlag
     ? resolve(projectDirFlag)
     : isAbsolute(config.projectDir)
       ? config.projectDir
       : join(root, config.projectDir)
-  // The token source lives in the project folder unless the config says otherwise.
-  config.tokens.source ??= `${rel(root, isAbsolute(config.projectDir) ? config.projectDir : join(root, config.projectDir))}/tokens/tokens.json`
+  // The token source lives in the project folder unless the config says
+  // otherwise: the 2025.10 resolver document, or an older tokens.json.
+  if (!config.tokens.source) {
+    const dir = rel(root, isAbsolute(config.projectDir) ? config.projectDir : join(root, config.projectDir))
+    const older = `${dir}/tokens/tokens.json`
+    const source = existsSync(join(root, older)) && !existsSync(join(root, dir, 'tokens', 'tokens.resolver.json')) ? older : `${dir}/tokens/tokens.resolver.json`
+    // A copy: deepMerge shares DEFAULTS' nested objects, which must stay as they are.
+    config.tokens = { ...config.tokens, source }
+  }
   return { root, configPath, exists, config, projectDir }
 }
 
