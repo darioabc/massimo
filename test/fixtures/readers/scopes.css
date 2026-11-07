@@ -1,0 +1,18 @@
+:root,
+.tone-paper {
+  --c-text: #111111;
+  --gap: 4rem;
+}
+html.dark,
+.tone-ink {
+  --c-text: #eeeeee;
+}
+.tone-block {
+  --c-text: #fafafa;
+}
+html.dark .tone-block {
+  --c-text: #000000;
+}
+@media (max-width: 60rem) {
+  :root { --gap: 3rem; }
+}

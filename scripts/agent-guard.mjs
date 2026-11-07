@@ -43,7 +43,8 @@ async function main() {
   // counts in a repo with a massimo project, so another plugin's "reviewer"
   // elsewhere is left alone.
   const { findRoot, loadConfig } = await import('./lib/project.mjs')
-  const { exists, projectDir } = loadConfig({ root: findRoot(cwd) })
+  // A config these scripts cannot use is still a massimo project: keep guarding.
+  const { exists, projectDir } = loadConfig({ root: findRoot(cwd) }, { gate: false })
   if (!scoped && !exists) return
   if (READ_ONLY.has(name)) deny(`massimo's ${name} reviews and writes nothing; return the findings instead.`)
   const file = input.tool_input?.file_path ?? input.tool_input?.notebook_path

@@ -72,6 +72,25 @@ test('CSS: families from names, colours from values, rgb(var()) and clamp() reso
   assert.deepEqual(typeSteps, [{ path: ['text', 'h1'], source: 'families.css', lineHeight: '1', fontWeight: '900', fontWeightRef: '{font-weight.h1}', letterSpacing: '-2.56px' }])
 })
 
+test('CSS: a scoped override or a phone-width value is noted, never taken as the token', () => {
+  const { tokens, notes } = readCss(dir, ['scopes.css'])
+  const t = byPath(tokens)
+  assert.deepEqual([t['color.text'].value, t['color.text'].modes.dark], ['#111111', '#eeeeee'])
+  assert.equal(t['spacing.base'].value, '4rem') // --gap is spacing by its name
+  assert.ok(notes.includes('--c-text is also set inside .tone-block, html.dark .tone-block; its token holds the page\'s value'), notes.join('\n'))
+  assert.ok(notes.includes("--gap is also set under @media (max-width: 60rem) :root; its token holds the value outside that, and massimo's outputs do not write the override"), notes.join('\n'))
+})
+
+test('CSS: light and dark by media query, and a token set only under a condition takes that value', () => {
+  const { tokens, notes } = readCss(dir, ['conditions.css'])
+  const t = byPath(tokens)
+  assert.deepEqual([t['color.bg'].value, t['color.bg'].modes.dark], ['#ffffff', '#000000'])
+  assert.deepEqual([t['color.brand'].value, t['color.brand'].modes.dark], ['#0055ff', '#88aaff'])
+  assert.equal(t['duration.base'].value, '200ms')
+  assert.ok(notes.includes('--brand is set only under @supports (--css: variables); its token takes that value'), notes.join('\n'))
+  assert.ok(notes.includes('--duration-base is set only under @media (prefers-reduced-motion: no-preference); its token takes that value'))
+})
+
 test('Tailwind 3 config: read as text, theme and extend, DEFAULT as $root, skips named', () => {
   const { tokens, notes, typeSteps } = readTailwindConfig(dir, 'tailwind.config.mjs')
   const t = byPath(tokens)
@@ -140,6 +159,8 @@ test('Figma variables from the REST API: paths, themes, aliases, types from scop
           v3: { id: 'v3', name: 'space/md', resolvedType: 'FLOAT', scopes: ['GAP'], variableCollectionId: 'c1', valuesByMode: { m1: 16, m2: 16 } },
           v4: { id: 'v4', name: 'weight/bold', resolvedType: 'FLOAT', scopes: ['FONT_WEIGHT'], variableCollectionId: 'c1', valuesByMode: { m1: 700, m2: 700 } },
           v5: { id: 'v5', name: 'flag/beta', resolvedType: 'BOOLEAN', variableCollectionId: 'c1', valuesByMode: { m1: true, m2: false } },
+          v6: { id: 'v6', name: 'surface', resolvedType: 'COLOR', variableCollectionId: 'c1', codeSyntax: { WEB: 'var(--surface)' }, valuesByMode: { m1: { r: 1, g: 1, b: 1, a: 1 }, m2: { r: 0, g: 0, b: 0, a: 1 } } },
+          v7: { id: 'v7', name: 'band/surface', resolvedType: 'COLOR', variableCollectionId: 'c1', codeSyntax: { WEB: 'var(--surface)' }, valuesByMode: { m1: { r: 1, g: 0, b: 0, a: 1 }, m2: { r: 1, g: 0, b: 0, a: 1 } } },
         },
       },
     }))
@@ -150,7 +171,11 @@ test('Figma variables from the REST API: paths, themes, aliases, types from scop
     assert.equal(t['color.accent'].value, '{color.blue}')
     assert.deepEqual([t['space.md'].type, t['space.md'].value], ['dimension', '16px'])
     assert.equal(t['weight.bold'].type, 'fontWeight')
-    assert.match(notes[0], /flag\/beta is a boolean variable, which has no design token/)
+    assert.ok(notes.some((n) => /flag\/beta is a boolean variable, which has no design token/.test(n)))
+    // A code syntax names the CSS variable; one variable takes it, the one named like it.
+    assert.equal(t.surface.cssVar, '--surface')
+    assert.equal(t['band.surface'].cssVar, null)
+    assert.ok(notes.some((n) => /band\/surface also names --surface in its code syntax; only surface takes it/.test(n)))
   } finally {
     rmSync(base, { recursive: true, force: true })
   }

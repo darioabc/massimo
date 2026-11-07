@@ -9,9 +9,10 @@
 import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const CONFIG_FILE = 'massimo.config.json'
-export const SCRIPTS_VERSION = '0.2.0'
+export const SCRIPTS_VERSION = '0.2.1'
 
 export const DEFAULTS = {
   version: 1,
@@ -191,11 +192,67 @@ export function readJson(path, fallback = null) {
 
 // Load the config for a repo. Flags: --root <dir>, --config <file>,
 // --project-dir <dir> (overrides config.projectDir, used by tests and dry runs).
-export function loadConfig(flags = {}) {
+// Version strings compared part by part: 0.2.10 is newer than 0.2.9.
+const versionParts = (v) => String(v).split('.').map((n) => Number.parseInt(n, 10) || 0)
+export function olderThan(a, b) {
+  const [x, y] = [versionParts(a), versionParts(b)]
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0)
+  return false
+}
+
+// The version of the scripts vendored in a project: null when there are
+// none, `unknown` when its declaration cannot be read. Either quote style
+// counts, since a formatter may have rewritten the copy.
+export function vendoredVersion(projectDir) {
+  const p = join(projectDir, 'scripts', 'lib', 'project.mjs')
+  if (!existsSync(p)) return null
+  return readFileSync(p, 'utf8').match(/^export const SCRIPTS_VERSION = ['"]([^'"]+)['"]/m)?.[1] ?? 'unknown'
+}
+
+// Whether a vendored copy is known to be older; an unreadable one is not.
+export const vendoredOlder = (version) => Boolean(version) && version !== 'unknown' && olderThan(version, SCRIPTS_VERSION)
+
+// What to do about a file or config newer than these scripts.
+const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts for the project\'s copy'
+
+// The newest format of each file this version reads. A file in a newer one
+// was written by a newer massimo, and reading it as an older one would guess.
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 1 }
+const newerMessage = (kind, version, where) =>
+  typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null
+export function refuseNewer(kind, version, where) {
+  const message = newerMessage(kind, version, where)
+  if (message) fail(message)
+}
+
+// Why a config cannot be used by these scripts, or null.
+function configRefusal(raw) {
+  const newer = newerMessage('config', raw?.version, CONFIG_FILE)
+  if (newer) return newer
+  if (typeof raw?.minScripts === 'string' && olderThan(SCRIPTS_VERSION, raw.minScripts)) return `${CONFIG_FILE} needs massimo scripts ${raw.minScripts} or later, and these are ${SCRIPTS_VERSION}: ${UPDATE}`
+  return null
+}
+
+// Run from the plugin rather than the project's vendored copy, a script
+// says when that copy is older, since CI and teammates run the copy.
+export function warnIfVendoredOlder(projectDir, scriptUrl) {
+  const here = dirname(fileURLToPath(scriptUrl))
+  if (resolve(here) === resolve(join(projectDir, 'scripts'))) return
+  const vendored = vendoredVersion(projectDir)
+  if (vendoredOlder(vendored)) {
+    process.stderr.write(`massimo: warn: the project's vendored scripts are ${vendored}, older than this ${SCRIPTS_VERSION}; run init.mjs --update-scripts so CI reads what this writes\n`)
+  }
+}
+
+// Scripts stop on a config they cannot use; a hook passes `gate: false`,
+// carries on, and reads `refusal` to say why, since a hook must never fail.
+export function loadConfig(flags = {}, { gate = true } = {}) {
   const root = flags.root ? resolve(flags.root) : findRoot()
   const configPath = flags.config ? resolve(flags.config) : join(root, CONFIG_FILE)
   const exists = existsSync(configPath)
   const raw = exists ? readJson(configPath, {}) : {}
+  const refusal = configRefusal(raw)
+  if (refusal && gate) fail(refusal)
   const config = deepMerge(structuredClone(DEFAULTS), raw)
   const projectDirFlag = flags['project-dir']
   const projectDir = projectDirFlag
@@ -212,7 +269,7 @@ export function loadConfig(flags = {}) {
     // A copy: deepMerge shares DEFAULTS' nested objects, which must stay as they are.
     config.tokens = { ...config.tokens, source }
   }
-  return { root, configPath, exists, config, projectDir }
+  return { root, configPath, exists, config, projectDir, refusal }
 }
 
 // The command that runs a vendored script, from the repo root, for messages

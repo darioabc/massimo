@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CONFIG_FILE, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, readJson, rel } from './lib/project.mjs'
+import { CONFIG_FILE, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, readJson, rel, vendoredVersion as vendoredVersionOf } from './lib/project.mjs'
 import { emptyState, renderStatus, saveState, setPhase } from './lib/state.mjs'
 
 const { flags } = parseArgs()
@@ -99,11 +99,7 @@ if (!existsSync(join(projectDir, 'state.json'))) {
 
 // 3. Vendored scripts, so CI and teammates without the plugin can run them.
 const vendorDir = join(projectDir, 'scripts')
-const vendoredVersion = (() => {
-  const p = join(vendorDir, 'lib', 'project.mjs')
-  if (!existsSync(p)) return null
-  return readFileSync(p, 'utf8').match(/SCRIPTS_VERSION = '([^']+)'/)?.[1] ?? 'unknown'
-})()
+const vendoredVersion = vendoredVersionOf(projectDir)
 const sameDir = resolve(vendorDir) === resolve(here)
 if (sameDir) {
   report.warnings.push('running from the vendored copy: scripts were not refreshed (run the plugin copy with --update-scripts to update)')

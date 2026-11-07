@@ -1,6 +1,6 @@
 {
   "name": "massimo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Design-system automation for any front-end repo: extract a full system from an existing codebase, a component graph, a native story lane (no Storybook or Ladle), W3C design tokens, guided tidy-up, an iterative UX design loop, and an optional Figma mirror. Keeps a resumable project in the repo so work carries across sessions.",
   "author": {
     "name": "Dario Codipietro",
