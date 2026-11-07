@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { colorModes, parseColor, toHex } from '../scripts/lib/color.mjs'
+import { colorFromCss, colorModes, parseColor, toHex } from '../scripts/lib/color.mjs'
 import { findObject } from '../scripts/lib/jsobject.mjs'
 import { channelColor, fromTokensStudio, isTokensStudio, readCss, readFigmaExport, readTailwindConfig, readThemeObject } from '../scripts/lib/readers.mjs'
 import { FIXTURES } from './helpers.mjs'
@@ -23,6 +23,8 @@ test('colours: every CSS named colour, color-mix() and light-dark()', () => {
   assert.equal(parseColor('color-mix(in srgb, var(--x), red)'), null)
   assert.equal(toHex(parseColor('light-dark(#fff, #000)')), '#ffffff')
   assert.deepEqual(colorModes('light-dark(white, #111111)'), { light: 'white', dark: '#111111' })
+  // Written in CSS, a colour keeps the precision it was written with.
+  assert.deepEqual(colorFromCss('oklch(97.807% 0.029 256.847)').components, [0.97807, 0.029, 256.847])
 })
 
 test('CSS: channel triplets keep their channels as CSS, light-dark() splits into themes', () => {
@@ -33,12 +35,41 @@ test('CSS: channel triplets keep their channels as CSS, light-dark() splits into
   const { tokens } = readCss(dir, ['channels.css'])
   const t = byPath(tokens)
   assert.deepEqual(
-    { type: t['other.rgb-base-100'].type, value: t['other.rgb-base-100'].value, css: t['other.rgb-base-100'].css, dark: t['other.rgb-base-100'].modes.dark, darkCss: t['other.rgb-base-100'].cssModes.dark },
+    { type: t['color.rgb-base-100'].type, value: t['color.rgb-base-100'].value, css: t['color.rgb-base-100'].css, dark: t['color.rgb-base-100'].modes.dark, darkCss: t['color.rgb-base-100'].cssModes.dark },
     { type: 'color', value: 'rgb(236 229 209)', css: '236 229 209', dark: 'rgb(20 18 16)', darkCss: '20 18 16' },
   )
-  assert.equal(t['other.background'].value, 'hsl(210 40% 98%)')
-  assert.deepEqual([t['other.surface'].value, t['other.surface'].modes.dark], ['#ffffff', '#111111'])
-  assert.equal(t['other.brand'].cssVar, '--brand')
+  assert.equal(t['color.background'].value, 'hsl(210 40% 98%)') // a colour by its value, whatever its name
+  assert.deepEqual([t['color.surface'].value, t['color.surface'].modes.dark], ['#ffffff', '#111111'])
+  assert.equal(t['color.brand'].cssVar, '--brand')
+})
+
+test('CSS: families from names, colours from values, rgb(var()) and clamp() resolved, type steps from stems', () => {
+  const { tokens, notes, typeSteps } = readCss(dir, ['families.css'])
+  const t = byPath(tokens)
+  // A colour by its value: channels, rgb(var(--x)) as a reference, through var() chains.
+  assert.equal(t['color.ink-900'].value, 'rgb(29 31 32)')
+  assert.deepEqual([t['color.text'].value, t['color.text'].cssVar], ['{color.ink-900}', '--c-text'])
+  // Each theme read on its own: an alias by default, a translucent colour or bare channels in dark.
+  assert.deepEqual([t['color.text'].modes.dark, t['color.text'].cssModes.dark], ['rgb(236 229 209 / 0.88)', 'rgb(var(--paper-200) / 0.88)'])
+  assert.deepEqual([t['color.block'].value, t['color.block'].modes.dark, t['color.block'].cssModes.dark], ['{color.ink-900}', 'rgb(0 0 0)', '0 0 0'])
+  assert.equal(t['color.rgb-heading'].value, '{color.ink-900}')
+  assert.equal(t['color.heading'].value, '{color.rgb-heading}')
+  // rgb(var(--x) / a): the colour it makes in each theme, its CSS kept.
+  assert.deepEqual(
+    { value: t['color.line'].value, css: t['color.line'].css, dark: t['color.line'].modes.dark },
+    { value: 'rgb(29 31 32 / 0.14)', css: 'rgb(var(--ink-900) / 0.14)', dark: 'rgb(250 250 247 / 0.14)' },
+  )
+  // Families by prefix, each keeping its own variable.
+  assert.deepEqual(['spacing.1-5', 'radius.2', 'duration.1', 'ease.out', 'z.modal'].map((p) => t[p]?.cssVar), ['--space-1-5', '--radius-2', '--dur-1', '--ease-out', '--z-modal'])
+  // Type parts by suffix where a stem has two of them; a lone -size is not type.
+  assert.deepEqual(['text.h1', 'leading.h1', 'tracking.h1', 'font-weight.h1'].map((p) => t[p]?.cssVar), ['--h1-size', '--h1-leading', '--h1-tracking', '--h1-weight'])
+  assert.ok(t['other.icon-size'])
+  assert.ok(t['other.measure-text'])
+  // A fluid size holds its largest value, its clamp() kept and said.
+  assert.deepEqual([t['text.h1'].value, t['text.h1'].css], ['4rem', 'clamp(2.5rem, 1.6rem + 3vw, 4rem)'])
+  assert.ok(notes.some((n) => /--h1-size is fluid .* holds the largest size, 4rem/.test(n)))
+  // The stem as a type step, tracking in em turned to px at its size.
+  assert.deepEqual(typeSteps, [{ path: ['text', 'h1'], source: 'families.css', lineHeight: '1', fontWeight: '900', fontWeightRef: '{font-weight.h1}', letterSpacing: '-2.56px' }])
 })
 
 test('Tailwind 3 config: read as text, theme and extend, DEFAULT as $root, skips named', () => {

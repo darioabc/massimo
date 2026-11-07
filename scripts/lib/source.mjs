@@ -640,17 +640,6 @@ export function parseCustomProperties(css, file = 'x.css') {
   return out
 }
 
-const VAR_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'size']
-
-// `--color-primary` -> { group: 'color', rest: 'primary' }; anything outside the
-// known prefixes lands in group `other` with the whole name as `rest`.
-export function splitVarName(name) {
-  const bare = name.replace(/^--/, '')
-  const [first, ...tail] = bare.split('-')
-  if (VAR_GROUPS.includes(first)) return { group: first, rest: tail.join('-') }
-  return { group: 'other', rest: bare }
-}
-
 // ── Class-based component libraries, shared by graph and audit ─────────────
 
 // What the graph and audit know about a library whose components are CSS

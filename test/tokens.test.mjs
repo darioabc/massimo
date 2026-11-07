@@ -12,7 +12,7 @@ test('extract writes a 2025.10 draft from CSS blocks, themes and aliases; never 
   const before = read(ctx.root, 'design-system', 'tokens', 'tokens.json')
   const r = run('tokens', ctx, ['extract'])
   assert.equal(r.status, 0, r.stderr)
-  assert.match(r.stdout, /^massimo tokens extract: 14 tokens \(10 from 1 source, 4 from the code\), \d+ too rare to propose; wrote /)
+  assert.match(r.stdout, /^massimo tokens extract: 13 tokens \(10 from 1 file, 3 from the code\), \d+ values not proposed; wrote /)
   assert.equal(read(ctx.root, 'design-system', 'tokens', 'tokens.json'), before)
   const resolver = readJson(ctx.project, 'tokens', 'draft', 'tokens.resolver.json')
   assert.equal(resolver.version, '2025.10')
@@ -24,8 +24,8 @@ test('extract writes a 2025.10 draft from CSS blocks, themes and aliases; never 
   assert.deepEqual(base.color['base-100'].$value, { colorSpace: 'oklch', components: [1, 0, 0], hex: '#ffffff' })
   assert.deepEqual(dark.color['base-100'].$value, { colorSpace: 'oklch', components: [0.2533, 0.016, 252.42], hex: '#1d232a' })
   assert.equal(dark.color.primary.$value.hex, '#2dd4bf')
-  assert.equal(base.color.brand.$value, '{other.brand-teal}') // var(--brand-teal) became an alias
-  assert.deepEqual(base.other['brand-teal'].$extensions.massimo, { cssVar: '--brand-teal' })
+  assert.equal(base.color.brand.$value, '{color.brand-teal}') // var(--brand-teal) became an alias
+  assert.deepEqual(base.color['brand-teal'].$extensions.massimo, { cssVar: '--brand-teal' }) // a colour by its value, its name kept
   assert.deepEqual(dark.other['page-max'].$value, { value: 70, unit: 'rem' }) // prefers-color-scheme block
   assert.equal(base.spacing.base.$extensions.massimo.cssVar, '--spacing')
   assert.deepEqual(base.font.sans.$value, ['Geist Sans', 'system-ui', 'sans-serif'])
@@ -133,7 +133,7 @@ test('kit with no tokens.json falls back to the style files', () => {
     assert.match(kit, /Source: custom properties extracted from src\/styles\/theme\.css/)
     assert.match(kit, /--color-primary: #14b8a6;/)
     assert.match(kit, /--color-brand: #00d3bb;/) // var() chain resolved
-    assert.match(kit, /\[data-theme="dark"\] \{\n {2}color-scheme: dark;\n {2}--color-base-100: oklch\(25\.33% 0\.016 252\.42\);/)
+    assert.match(kit, /\[data-theme="dark"\] \{\n {2}color-scheme: dark;\n {2}--brand-teal: #00ffee;\n {2}--color-base-100: oklch\(25\.33% 0\.016 252\.42\);/)
     assert.match(kit, /font-family: var\(--font-sans\);/)
     assert.equal(run('tokens', t, ['build', '--config', join(t.root, 'massimo.config.json')]).status, 1) // build needs tokens.json
   } finally {

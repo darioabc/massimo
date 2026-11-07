@@ -8,15 +8,18 @@
 //
 // propose({ sources, audit }) returns { tokens, report, outliers, notes }:
 // tokens in the readers' shape, a report line per token
-// ({ family, token, value, from, note }), values seen too rarely to become a
+// ({ family, token, value, from, note }), the values the code uses that did not become a
 // token, and plain notes.
 
 import { parseColor, toHex, toOklab } from './color.mjs'
 import { compare } from './glob.mjs'
-import { isAlias } from './source.mjs'
+import { aliasPath, cssVarFor, isAlias } from './source.mjs'
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const key = (path) => path.join('.')
+
+// The family each reader group reports under.
+const FAMILY_OF_GROUP = { spacing: 'spacing', space: 'spacing', radius: 'radius', shadow: 'shadow', 'border-width': 'border', duration: 'motion', ease: 'motion', z: 'z-index', opacity: 'opacity' }
 
 export const FAMILIES = ['color', 'typography', 'spacing', 'radius', 'shadow', 'border', 'motion', 'z-index', 'opacity']
 
@@ -30,23 +33,55 @@ export function mergeSources(sources) {
   const tokens = []
   const notes = []
   const seen = new Map()
+  // Two names for one CSS variable are one token: a Tailwind config's
+  // base.100 and a stylesheet's --color-base-100. The first source keeps it,
+  // and references to the other name are pointed at it.
+  const byCssVar = new Map()
+  const renamed = new Map()
+  const varOf = (t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))
   for (const kind of order) {
     for (const src of sources.filter((s) => s.kind === kind)) {
       for (const t of src.tokens) {
         const k = key(t.path)
-        if (seen.has(k)) {
-          if (JSON.stringify(seen.get(k).value) !== JSON.stringify(t.value)) notes.push(`${k} is in ${seen.get(k).source} and ${t.source}; kept the one from ${seen.get(k).source}`)
+        const same = seen.get(k) ?? byCssVar.get(varOf(t))
+        if (same) {
+          const kept = key(same.path)
+          if (kept !== k) {
+            renamed.set(k, kept)
+            notes.push(`${k} (${t.source}) and ${kept} (${same.source}) are both ${varOf(t)}; kept ${kept}`)
+          } else if (JSON.stringify(same.value) !== JSON.stringify(t.value)) {
+            notes.push(`${k} is in ${same.source} and ${t.source}; kept the one from ${same.source}`)
+          }
           continue
         }
         const copy = { ...t, modes: { ...t.modes } }
         seen.set(k, copy)
+        byCssVar.set(varOf(copy), copy)
         tokens.push(copy)
       }
       notes.push(...(src.notes ?? []))
     }
   }
+  // A token whose name another source uses as a group (--c-accent read as
+  // color.accent, beside Tailwind's accent.DEFAULT and accent.foreground)
+  // takes its own variable's name, or the group's $root, so neither is lost.
+  const paths = new Set(tokens.map((t) => key(t.path)))
+  const groups = new Set(tokens.flatMap((t) => t.path.slice(0, -1).map((_, i) => key(t.path.slice(0, i + 1)))))
+  for (const t of tokens) {
+    const k = key(t.path)
+    if (!groups.has(k)) continue
+    const free = (p) => !paths.has(key(p)) && !groups.has(key(p))
+    const next = [t.cssVar ? [t.path[0], t.cssVar.slice(2)] : null, [...t.path, '$root']].find((p) => p && free(p))
+    if (!next) continue
+    renamed.set(k, key(next))
+    notes.push(`${k} (${t.source}) is also a group of other tokens; named it ${key(next)}`)
+    paths.delete(k)
+    paths.add(key(next))
+    t.path = next
+  }
   const byVar = new Map(tokens.filter((t) => t.cssVar).map((t) => [t.cssVar, t]))
   const resolveVar = (v) => {
+    if (isAlias(v) && renamed.has(aliasPath(v))) return `{${renamed.get(aliasPath(v))}}`
     const m = typeof v === 'string' && /^var\(\s*(--[\w-]+)\s*\)$/.exec(v.trim())
     const target = m && byVar.get(m[1])
     return target ? `{${key(target.path)}}` : v
@@ -75,11 +110,14 @@ function guessType(t) {
   const v = String(t.value ?? '').trim()
   if (Array.isArray(t.value)) return t.path[0] === 'font' ? 'fontFamily' : null
   if (parseColor(v)) return 'color'
-  if (/^-?\d*\.?\d+(px|rem)$/.test(v) || v === '0') return 'dimension'
+  // A bare 0 is a length only where the group is one (DaisyUI's --noise: 0 is a flag).
+  if (/^-?\d*\.?\d+(px|rem)$/.test(v) || (v === '0' && ['spacing', 'space', 'radius', 'size', 'border-width', 'text'].includes(t.path[0]))) return 'dimension'
   if (/^-?\d*\.?\d+(ms|s)$/.test(v)) return 'duration'
   if (/^cubic-bezier\(/.test(v)) return 'cubicBezier'
   if (['font', 'fonts', 'font-family'].includes(t.path[0]) && !/^\d/.test(v)) return /^\d{3}$/.test(v) ? 'fontWeight' : 'fontFamily'
   if (['shadow', 'shadows', 'elevation'].includes(t.path[0])) return 'shadow'
+  if (t.path[0] === 'font-weight' && /^\d{3}$/.test(v)) return 'fontWeight'
+  if (['z', 'opacity', 'leading'].includes(t.path[0]) && /^-?\d*\.?\d+$/.test(v)) return 'number'
   return null
 }
 
@@ -103,6 +141,19 @@ const familyOf = (c) => {
 }
 // Ramp steps by OKLCH lightness, the way most scales are named.
 const STEPS = [[50, 0.97], [100, 0.94], [200, 0.88], [300, 0.81], [400, 0.71], [500, 0.62], [600, 0.53], [700, 0.45], [800, 0.37], [900, 0.29], [950, 0.2]]
+// The step a lightness falls at between the standard ones, by straight lines
+// between them: L 0.66 is about 455. Lighter than 50 runs toward 0, darker
+// than 950 toward 1000.
+const stepAt = (L) => {
+  if (L >= STEPS[0][1]) return 50 * (1 - (L - STEPS[0][1]) / (1 - STEPS[0][1]))
+  for (let i = 1; i < STEPS.length; i++) {
+    const [s0, l0] = STEPS[i - 1]
+    const [s1, l1] = STEPS[i]
+    if (L >= l1) return s0 + ((l0 - L) / (l0 - l1)) * (s1 - s0)
+  }
+  const [s, l] = STEPS[STEPS.length - 1]
+  return s + ((l - L) / l) * (1000 - s)
+}
 
 // A name for the job a role does: bg, text, border…
 const ROLE_NAMES = { bg: ['bg', 'default', 'subtle', 'muted'], text: ['text', 'default', 'muted', 'subtle'], border: ['border', 'default', 'subtle', 'strong'] }
@@ -138,8 +189,16 @@ function pairByName(t, byLast) {
   }
   const on = /^(.+)-(content|foreground|fg)$/.exec(last) ?? /^on-(.+)$/.exec(last)
   if (!on) return null
-  const sibling = byLast.get(key([...parentPath, on[1]])) ?? byLast.get(key([...parentPath, on[1], '$root']))
-  if (sibling) return key(sibling.path)
+  // on-block-strong is strong text on block: try block-strong, then block,
+  // each also as a -bg (pill-solid-content sits on pill-solid-bg).
+  const words = on[1].split('-')
+  for (let n = words.length; n > 0; n--) {
+    const name = words.slice(0, n).join('-')
+    for (const guess of [name, `${name}-bg`, `${name}-background`]) {
+      const sibling = byLast.get(key([...parentPath, guess])) ?? byLast.get(key([...parentPath, guess, '$root']))
+      if (sibling && sibling !== t) return key(sibling.path)
+    }
+  }
   // DaisyUI and shadcn pair base-content with base-100, foreground with background.
   for (const guess of [`${on[1]}-100`, 'background', 'base-100']) {
     const g = byLast.get(key([...parentPath, guess]))
@@ -167,7 +226,11 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   }
   const mostIn = (hex) => [...(fileOf.get(hex) ?? new Map()).entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))[0]?.[0]
 
-  // Primitives: clusters the code uses with no token near them.
+  // Primitives: clusters the code uses with no token near them, in a group
+  // no token already holds (DaisyUI's color.neutral is a token: its greys
+  // go in gray).
+  const names = new Set(existing.map((t) => key(t.path)))
+  const groupFor = (family) => [family, ...(family === 'neutral' ? ['gray'] : []), `${family}-scale`].find((g) => !names.has(`color.${g}`))
   const used = new Map()
   const proposed = []
   for (const cl of audit?.colorClusters ?? []) {
@@ -176,6 +239,11 @@ function proposeColors(existing, audit, report, outliers, minCount) {
     // A colour only ever used inside a shadow belongs to the shadow token.
     const roles = Object.keys(cl.roles ?? {})
     if (roles.length > 0 && roles.every((r) => r === 'shadow')) continue
+    // Never set as a style anywhere: data in a script (an avatar palette, a chart's series).
+    if (roles.length > 0 && roles.every((r) => r === 'other')) {
+      outliers.push({ family: 'color', value: cl.representative, count: cl.count, note: `only in data or scripts, never as a style${mostIn(cl.representative) ? `, most in ${mostIn(cl.representative)}` : ''}` })
+      continue
+    }
     const match = near(c)
     if (match) {
       noteOn(report, key(match.t.path), `covers ${cl.representative}, used ${cl.count}× in code`)
@@ -186,16 +254,34 @@ function proposeColors(existing, audit, report, outliers, minCount) {
       outliers.push({ family: 'color', value: cl.representative, count: cl.count, note: 'used once; use a token instead, or keep it with a reason' })
       continue
     }
-    // A translucent colour is an overlay, named by its opacity; a solid one a ramp step.
-    const family = c.a < 1 ? 'overlay' : familyOf(c)
+    // A translucent colour is an overlay, named by its base and opacity
+    // (black-12, white-6, blue-20); a solid one a ramp step by lightness. When
+    // the nearest standard step is taken, the step between that its lightness
+    // gives (85, 435…) keeps the ramp in order; a repeated name gets a suffix.
+    const family = groupFor(c.a < 1 ? 'overlay' : familyOf(c))
     const { L } = oklch(c)
     const taken = used.get(family) ?? new Set()
-    const step = family === 'overlay'
-      ? String(Math.round(c.a * 100))
-      : STEPS.slice().sort((a, b) => Math.abs(a[1] - L) - Math.abs(b[1] - L)).map(([s]) => s).find((s) => !taken.has(s))
+    let step
+    if (family.startsWith('overlay')) {
+      const solid = { ...c, a: 1 }
+      const base = familyOf(solid) !== 'neutral' ? familyOf(solid) : oklch(solid).L > 0.9 ? 'white' : oklch(solid).L < 0.25 ? 'black' : 'neutral'
+      const name = `${base}-${Math.round(c.a * 100)}`
+      step = name
+      for (let i = 2; taken.has(step); i++) step = `${name}-${i}`
+    } else {
+      const nearest = String(STEPS.slice().sort((x, y) => Math.abs(x[1] - L) - Math.abs(y[1] - L))[0][0])
+      if (!taken.has(nearest)) {
+        step = nearest
+      } else {
+        let n = Math.min(995, Math.max(5, Math.round(stepAt(L) / 5) * 5))
+        while (taken.has(String(n)) && n < 995) n += 5
+        while (taken.has(String(n))) n -= 5
+        step = String(n)
+      }
+    }
     taken.add(step)
     used.set(family, taken)
-    const path = ['color', family, String(step)]
+    const path = ['color', family, step]
     const value = c.a < 1 ? toHex(c) : cl.representative
     proposed.push({ path, cluster: cl })
     out.push({ path, type: 'color', value, modes: {}, description: '', source: 'audit' })
@@ -210,12 +296,21 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   if (hasSemantics) {
     for (const t of existing) {
       if (t.type !== 'color' && !(isAlias(t.value) && t.type === 'color')) continue
-      const d = describeByName(key(t.path))
+      const on = pairByName(t, byLast)
+      // Text on something says what it sits on: on-block-strong is strong text on block.
+      const last = t.path.filter((p) => p !== '$root').pop()
+      let d = describeByName(key(t.path))
+      const subject = /^on-(.+)$/.exec(last)?.[1] ?? /^(.+)-(?:content|foreground|fg)$/.exec(last)?.[1] ?? (/^(content|foreground|fg)$/.test(last) ? t.path.filter((p) => p !== '$root').slice(-2, -1)[0] : null)
+      const target = on?.split('.').filter((p) => p !== '$root').pop()?.replace(/-(?:bg|background)$/, '')
+      // Only a pair found by name says what it sits on; a fallback guess does not.
+      if (subject && target && (subject === target || subject.startsWith(`${target}-`))) {
+        const extra = subject.slice(target.length + 1)
+        d = `Text and icons on ${/^base(-\d+)?$/.test(target) ? 'base backgrounds' : target}${extra ? `, ${extra}` : ''}`
+      }
       if (d && !t.description) {
         t.description = d
         noteOn(report, key(t.path), `description drafted from its name: "${d}"; check it`)
       }
-      const on = pairByName(t, byLast)
       if (on && !t.contrast) {
         t.contrast = { on, use: 'text' }
         noteOn(report, key(t.path), `contrast checked as text on ${on}`)
@@ -290,6 +385,12 @@ function proposeSpacing(existing, audit, report, outliers, minCount) {
   const out = []
   for (const s of histogram) {
     if (s.px === 0 || have.has(s.px)) continue
+    // Three or more steps in the sources are a scale, and the code's other
+    // values are drift for tidy; fewer (Tailwind 4's --spacing) leave gaps.
+    if (have.size >= 3) {
+      outliers.push({ family: 'spacing', value: `${s.px}px`, count: s.count, note: 'not on the existing spacing scale' })
+      continue
+    }
     if (s.count < minCount || s.px % base !== 0) {
       outliers.push({ family: 'spacing', value: `${s.px}px`, count: s.count, note: s.px % base !== 0 ? `off the ${base}px grid` : 'used once' })
       continue
@@ -310,8 +411,8 @@ function proposeRadius(existing, audit, report, outliers, minCount) {
   const out = []
   let i = 0
   for (const [px, count] of values) {
-    if (count < minCount) {
-      outliers.push({ family: 'radius', value: `${px}px`, count, note: 'used once' })
+    if (count < minCount || have.size >= 3) {
+      outliers.push({ family: 'radius', value: `${px}px`, count, note: have.size >= 3 ? 'not on the existing radius scale' : 'used once' })
       continue
     }
     const name = px >= 999 ? 'full' : names[i++] ?? String(px)
@@ -326,6 +427,8 @@ const WEIGHT_CLASSES = { thin: 100, extralight: 200, light: 300, normal: 400, me
 const LEADING_CLASSES = { none: 1, tight: 1.25, snug: 1.375, normal: 1.5, relaxed: 1.625, loose: 2 }
 const SIZE_NAMES_UP = ['lg', 'xl', '2xl', '3xl', '4xl', '5xl', '6xl', '7xl']
 const SIZE_NAMES_DOWN = ['sm', 'xs', '2xs']
+// Tailwind's own type scale, by size: its name and line height (px, or unitless).
+const TAILWIND_TEXT = { 12: ['xs', 16], 14: ['sm', 20], 16: ['base', 24], 18: ['lg', 28], 20: ['xl', 28], 24: ['2xl', 32], 30: ['3xl', 36], 36: ['4xl', 40], 48: ['5xl', 1], 60: ['6xl', 1], 72: ['7xl', 1], 96: ['8xl', 1], 128: ['9xl', 1] }
 
 const inventoryCounts = (audit, family, read) => {
   const out = new Map()
@@ -336,7 +439,7 @@ const inventoryCounts = (audit, family, read) => {
   return [...out.entries()].sort((a, b) => b[1] - a[1] || compare(String(a[0]), String(b[0])))
 }
 
-function proposeType(existing, audit, typeSteps, report, outliers, minCount) {
+function proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind) {
   const out = []
   // Families: the sources' first, then the audit's.
   const families = existing.filter((t) => t.type === 'fontFamily')
@@ -351,6 +454,7 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount) {
     }
   }
   const familyRef = existing.find((t) => t.type === 'fontFamily' && /sans|body|base|default/.test(key(t.path))) ?? families[0] ?? out.find((t) => t.type === 'fontFamily')
+  const displayRef = existing.find((t) => t.type === 'fontFamily' && t !== familyRef && /display|heading|serif|title/.test(key(t.path)))
   // Weights.
   const weights = inventoryCounts(audit, 'fontWeight', (v) => {
     const c = /^class font-(\w+)$/.exec(v)
@@ -373,20 +477,29 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount) {
   })
   // Sizes: the sources' first, then the audit's, named around the body size.
   const haveSizes = existingPx(existing, ['text', 'font-size'])
-  const sizes = (audit?.typeSizes ?? []).filter((s) => s.count >= minCount && !haveSizes.has(s.px)).sort((a, b) => a.px - b.px)
-  for (const s of (audit?.typeSizes ?? []).filter((s) => s.count < minCount)) outliers.push({ family: 'typography', value: `${s.px}px`, count: s.count, note: 'a font size used once' })
+  // Three or more sizes in the sources are a scale; fewer leave gaps to fill.
+  const onScale = haveSizes.size < 3
+  const sizes = (audit?.typeSizes ?? []).filter((s) => s.count >= minCount && !haveSizes.has(s.px) && onScale).sort((a, b) => a.px - b.px)
+  for (const s of (audit?.typeSizes ?? []).filter((s) => !haveSizes.has(s.px) && (s.count < minCount || !onScale))) {
+    outliers.push({ family: 'typography', value: `${s.px}px`, count: s.count, note: onScale ? 'a font size used once' : 'not on the existing type scale' })
+  }
   const body = [...(audit?.typeSizes ?? [])].filter((s) => s.px >= 14 && s.px <= 18).sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16))[0]?.px ?? 16
   const below = sizes.filter((s) => s.px < body).reverse()
   const above = sizes.filter((s) => s.px > body)
-  const named = [
-    ...below.map((s, i) => [SIZE_NAMES_DOWN[i] ?? `${i + 3}xs`, s]),
-    ...sizes.filter((s) => s.px === body).map((s) => ['base', s]),
-    ...above.map((s, i) => [SIZE_NAMES_UP[i] ?? `${i + 2}xl`, s]),
-  ]
+  // A Tailwind repo already names its sizes: keep Tailwind's names, and name
+  // the rest by their size. Elsewhere, name them around the body size.
+  const named = tailwind
+    ? sizes.map((s) => [TAILWIND_TEXT[s.px]?.[0] ?? String(s.px).replace('.', '_'), s])
+    : [
+        ...below.map((s, i) => [SIZE_NAMES_DOWN[i] ?? `${i}xs`, s]),
+        ...sizes.filter((s) => s.px === body).map((s) => ['base', s]),
+        ...above.map((s, i) => [SIZE_NAMES_UP[i] ?? `${i}xl`, s]),
+      ]
   for (const [name, s] of named) {
     const path = ['font', 'size', name]
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
-    report.push({ family: 'typography', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note: name === 'base' ? 'the body size' : '' })
+    const note = tailwind ? (TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size") : name === 'base' ? 'the body size' : ''
+    report.push({ family: 'typography', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note })
   }
   // Composites: exact from a Tailwind config's type steps, otherwise one per
   // size from the most-used parts, with every assumed part said.
@@ -396,9 +509,13 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount) {
     report.push({ family: 'typography', token: '(none)', value: '', from: '', note: 'the code sets no font family, so no typography composites were proposed; add font.family.sans first' })
     return out
   }
-  const commonLeading = leadings[0]?.[0]
-  const bodyWeight = weights.find(([w]) => w <= 500)?.[0] ?? 400
-  const headingWeight = weights.find(([w]) => w >= 600)?.[0] ?? bodyWeight
+  // leading-none on an icon or a badge says nothing about running text: body
+  // text takes the most used line height of 1.2 or more, headings 1 to 1.3.
+  const bodyLeading = leadings.find(([v]) => v >= 1.2)?.[0]
+  const headingLeading = leadings.find(([v]) => v >= 1 && v <= 1.3)?.[0]
+  // Body text that sets no weight is 400, however often the code sets 500.
+  const bodyWeight = 400
+  const headingWeight = weights.find(([w]) => w >= 600)?.[0]
   const ref = (t) => `{${key(t.path)}}`
   const weightRef = (w) => {
     const t = [...existing, ...out].find((x) => x.type === 'fontWeight' && Number(x.value) === w)
@@ -413,22 +530,33 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount) {
         const lh = pxOf(step.lineHeight)
         return lh !== null ? Number((lh / px).toFixed(4)) : Number(step.lineHeight)
       }
-      if (commonLeading !== undefined) {
-        assumed.push(`line height ${commonLeading}, the most used`)
-        return commonLeading
+      const tw = tailwind && size.source === 'audit' && TAILWIND_TEXT[px]
+      if (tw) {
+        const lh = tw[1] === 1 ? 1 : Number((tw[1] / px).toFixed(4))
+        assumed.push(`line height ${lh}, Tailwind's for text-${tw[0]}`)
+        return lh
       }
-      assumed.push(`line height ${px >= 24 ? 1.2 : 1.5}, as no line height is set in the code`)
+      const common = px >= 24 ? headingLeading : bodyLeading
+      if (common !== undefined) {
+        assumed.push(`line height ${common}, the most used for ${px >= 24 ? 'headings' : 'body text'}`)
+        return common
+      }
+      assumed.push(`line height ${px >= 24 ? 1.2 : 1.5}, as the code sets none for ${px >= 24 ? 'headings' : 'body text'}`)
       return px >= 24 ? 1.2 : 1.5
     })()
-    const weight = step?.fontWeight !== undefined ? Number(step.fontWeight) : px >= 24 ? headingWeight : bodyWeight
-    if (step?.fontWeight === undefined) assumed.push(`weight ${weight}, the most used ${px >= 24 ? 'heavy' : 'regular'} weight`)
+    const weight = step?.fontWeight !== undefined ? Number(step.fontWeight) : px >= 24 ? headingWeight ?? bodyWeight : bodyWeight
+    if (step?.fontWeight === undefined) assumed.push(px >= 24 && headingWeight ? `weight ${weight}, the most used heading weight` : px >= 24 ? 'weight 400, as the code sets no heading weight' : 'weight 400, the default')
+    const name = size.path.filter((p) => p !== '$root').slice(-1)[0]
+    // A heading step takes the display face where the system has one.
+    const heading = displayRef && /^(h[1-6]|display|heading|title|hero|name)(\b|-|$)/.test(name)
+    if (heading) assumed.push(`the ${key(displayRef.path)} face, for a heading step`)
+    else if (step && displayRef) assumed.push(`the ${key(familyRef.path)} face`)
     const letterSpacing = step?.letterSpacing ?? '0px'
     if (step?.letterSpacing === undefined) assumed.push('no letter spacing')
-    const name = size.path.filter((p) => p !== '$root').slice(-1)[0]
     const path = ['typography', name]
-    const value = { fontFamily: ref(familyRef), fontSize: ref(size), fontWeight: weightRef(weight), lineHeight, letterSpacing }
+    const value = { fontFamily: ref(heading ? displayRef : familyRef), fontSize: ref(size), fontWeight: step?.fontWeightRef ?? weightRef(weight), lineHeight, letterSpacing }
     out.push({ path, type: 'typography', value, modes: {}, description: '', source: step ? step.source ?? 'config' : 'audit' })
-    report.push({ family: 'typography', token: key(path), value: `${size.value} / ${lineHeight}, weight ${weight}`, from: step ? 'a type step in the config' : 'the size scale', note: assumed.length ? `assumed ${assumed.join(', ')}` : '' })
+    report.push({ family: 'typography', token: key(path), value: `${size.value} / ${lineHeight}, weight ${weight}`, from: step ? `a type step in ${step.source ?? 'the config'}` : 'the size scale', note: assumed.length ? `assumed ${assumed.join(', ')}` : '' })
   }
   return out
 }
@@ -489,18 +617,28 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
       const m = /^(\d*\.?\d+)(ms|s)$/.exec(v)
       return m ? Number(m[1]) * (m[2] === 's' ? 1000 : 1) : null
     }).sort((a, b) => a[0] - b[0])
-    const names = ms.length <= 3 ? ['fast', 'normal', 'slow'].slice(ms.length === 1 ? 1 : 0) : []
-    ms.forEach(([v, count], i) => {
+    const kept = ms.filter(([v, count]) => {
+      if (count >= minCount && v > 0) return true
+      if (v > 0) outliers.push({ family: 'motion', value: `${v}ms`, count, note: 'used once' })
+      return false
+    })
+    const names = kept.length <= 3 ? ['fast', 'normal', 'slow'].slice(kept.length === 1 ? 1 : 0) : []
+    kept.forEach(([v, count], i) => {
       const path = ['duration', names[i] ?? String(v)]
       out.push({ path, type: 'duration', value: `${v}ms`, modes: {}, description: '', source: 'audit' })
       report.push({ family: 'motion', token: key(path), value: `${v}ms`, from: `used ${count}× in code`, note: '' })
     })
   }
   if (!has('cubicBezier')) {
+    // A Tailwind ease-* class is Tailwind's curve, not the CSS keyword of that name.
     const easings = inventoryCounts(audit, 'easing', (v) => {
       const c = /^class ease-(\w[\w-]*)$/.exec(v)
-      if (c) return { linear: 'linear', in: 'ease-in', out: 'ease-out', 'in-out': 'ease-in-out' }[c[1]] ?? null
+      if (c) return { linear: 'linear', in: 'cubic-bezier(0.4, 0, 1, 1)', out: 'cubic-bezier(0, 0, 0.2, 1)', 'in-out': 'cubic-bezier(0.4, 0, 0.2, 1)' }[c[1]] ?? null
       return /^steps\(/.test(v) ? null : v
+    }).filter(([v, count]) => {
+      if (count >= minCount) return true
+      outliers.push({ family: 'motion', value: v, count, note: 'used once' })
+      return false
     })
     easings.forEach(([v, count], i) => {
       const name = i === 0 ? 'standard' : { 'ease-in': 'in', 'ease-out': 'out', 'ease-in-out': 'in-out', linear: 'linear', ease: 'ease' }[v] ?? `alt-${i}`
@@ -513,6 +651,10 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
   if (!existing.some((t) => t.path[0] === 'z')) {
     for (const [v, count] of inventoryCounts(audit, 'zIndex', (x) => (/^class -?z-(\d+)$/.exec(x)?.[1] ?? (/^-?\d+$/.test(x) ? x : null)))) {
       if (Number(v) === 0) continue
+      if (count < minCount) {
+        outliers.push({ family: 'z-index', value: String(v), count, note: 'used once' })
+        continue
+      }
       out.push({ path: ['z', String(v)], type: 'number', value: String(v), modes: {}, description: '', source: 'audit' })
       report.push({ family: 'z-index', token: `z.${v}`, value: String(v), from: `used ${count}× in code`, note: '' })
     }
@@ -535,20 +677,25 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
 // ── The whole proposal ─────────────────────────────────────────────────────
 
 // `fromCss` is dtcg.mjs's converter, passed in so this module stays small.
-export function propose({ sources, audit, fromCss, minCount = 2 }) {
+export function propose({ sources, audit, fromCss, minCount = 2, styling = [] }) {
   const { tokens: existing, notes } = mergeSources(sources)
   const report = []
   const outliers = []
   for (const t of existing) {
-    const family = t.type === 'color' ? 'color' : ['fontFamily', 'fontWeight', 'typography'].includes(t.type) || ['text', 'font', 'leading', 'tracking'].includes(t.path[0]) ? 'typography' : t.path[0] === 'spacing' || t.path[0] === 'space' ? 'spacing' : t.path[0] === 'radius' ? 'radius' : t.type === 'shadow' ? 'shadow' : t.type === 'duration' || t.type === 'cubicBezier' ? 'motion' : 'other'
+    const family = t.type === 'color' || t.path[0] === 'color'
+      ? 'color'
+      : ['fontFamily', 'fontWeight', 'typography'].includes(t.type) || ['text', 'font', 'font-weight', 'leading', 'tracking'].includes(t.path[0])
+        ? 'typography'
+        : FAMILY_OF_GROUP[t.path[0]] ?? (t.type === 'shadow' ? 'shadow' : t.type === 'duration' || t.type === 'cubicBezier' ? 'motion' : 'other')
     report.push({ family, token: key(t.path), value: isObject(t.value) || Array.isArray(t.value) ? JSON.stringify(t.value) : String(t.value), from: t.source, note: '' })
   }
   const colors = proposeColors(existing, audit, report, outliers, minCount)
   const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
+  const tailwind = (styling ?? []).some((s) => /^tailwind/.test(s))
   const out = [
     ...existing,
     ...colors,
-    ...proposeType(existing, audit, typeSteps, report, outliers, minCount),
+    ...proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind),
     ...proposeSpacing(existing, audit, report, outliers, minCount),
     ...proposeRadius(existing, audit, report, outliers, minCount),
   ]

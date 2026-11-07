@@ -431,9 +431,14 @@ function declarations(model, t, mode, linked) {
   const next = linked ? model.target(t, mode) : null
   const value = linked ? model.raw(t, mode) : model.resolved(t, mode)
   // A value the spec cannot hold exactly keeps its exact CSS beside it.
+  const cssOf = (x) => (mode !== 'default' && (mode in (x.cssModes ?? {}) || mode in x.modes) ? x.cssModes?.[mode] ?? null : x.css ?? null)
   const owner = linked ? t : model.final(t, mode)
-  const css = mode !== 'default' && (mode in (owner.cssModes ?? {}) || mode in owner.modes) ? owner.cssModes?.[mode] ?? null : owner.css ?? null
-  const out = [[t.cssVar, next ? `var(${next.cssVar})` : css ?? cssText(type, value, ref)]]
+  // A reference with CSS of its own wraps its target (rgb(var(--ink-900))
+  // over a channel triplet): linked, that CSS is the value; as a literal,
+  // the colour, not the target's channels.
+  const own = isAlias(model.raw(t, mode)) ? cssOf(t) : null
+  const css = linked ? (next ? own : cssOf(t)) : own !== null ? null : cssOf(owner)
+  const out = [[t.cssVar, linked && next ? css ?? `var(${next.cssVar})` : css ?? cssText(type, value, ref)]]
   if (type === 'typography') {
     for (const [key, part, partType] of typographyParts(model, t)) {
       out.push([`${t.cssVar}-${part}`, next ? `var(${next.cssVar}-${part})` : cssText(partType, value[key], ref)])
@@ -545,7 +550,7 @@ const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spa
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
 // The draft's report: what each token is and where it came from, family by
-// family, then the values too rare to propose, notes and conversion losses.
+// family, then the values not proposed, notes and conversion losses.
 function draftReport({ sources, audit, report, outliers, notes, losses, count }) {
   const read = sources.map((s) => [...new Set(s.tokens.map((t) => t.source))].join(', ')).filter(Boolean)
   const lines = ['# Draft tokens', '']
@@ -558,7 +563,7 @@ function draftReport({ sources, audit, report, outliers, notes, losses, count })
     lines.push('')
   }
   if (outliers.length) {
-    lines.push('## Too rare to propose', '', 'Each was used too few times, or off the grid, to become a token. Replace it with a token in the tidy phase, or keep it with a reason.', '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
+    lines.push('## Not proposed', '', 'Values the code uses that did not become tokens: used once, off the grid, off a scale the sources already define, or only ever data. Replace each with a token in the tidy phase, or keep it with a reason.', '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
     for (const o of outliers) lines.push(`| ${FAMILY_TITLES[o.family] ?? o.family} | ${cell(o.value)} | ${o.count} | ${cell(o.note)} |`)
     lines.push('')
   }
@@ -1155,14 +1160,18 @@ const USE_TEXT = { text: 'for text', 'large-text': 'for large text', ui: 'for UI
 
 // Every contrast pair in every theme. A translucent colour is composited
 // over what it sits on first.
+// A colour in a mode: its CSS, or else its value, since a channel triplet's
+// exact CSS (`236 229 209`) is not a colour on its own.
+const colorIn = (model, t, mode) => parseColor(literal(model, t, mode)) ?? parseColor(cssText('color', model.resolved(t, mode), () => ''))
+
 function contrastChecks(model) {
   const results = []
   for (const t of model.tokens) {
     if (!t.on) continue
     const bgToken = model.byName.get(t.on)
     for (const mode of model.modes) {
-      const fg = parseColor(literal(model, t, mode))
-      const bg = parseColor(literal(model, bgToken, mode))
+      const fg = colorIn(model, t, mode)
+      const bg = colorIn(model, bgToken, mode)
       if (!fg || !bg) continue
       const ratio = contrastRatio(fg, bg)
       const use = t.use ? ` ${USE_TEXT[t.use]}` : ''
@@ -1495,7 +1504,7 @@ function main() {
     // What the sources define, then the code's own values for the gaps.
     const { sources } = readSources(root, config)
     const audit = runAudit(root, config)
-    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2) })
+    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling })
     if (proposal.tokens.length === 0) fail('found nothing to propose: no style files, config, theme or token files, and no raw values in the code')
     const { tokens, losses, defaultMode } = draftFrom(proposal.tokens, config)
     const set = writeTokenSet({
@@ -1507,8 +1516,9 @@ function main() {
     const dir = join(projectDir, 'tokens', 'draft')
     for (const [name, text] of Object.entries(set)) writeText(join(dir, name), text)
     writeText(join(dir, 'report.md'), draftReport({ sources, audit, ...proposal, losses, count: tokens.length }))
-    const fromSources = sources.reduce((n, s) => n + s.tokens.length, 0)
-    process.stdout.write(`massimo tokens extract: ${tokens.length} tokens (${fromSources} from ${sources.length} ${sources.length === 1 ? 'source' : 'sources'}, ${tokens.length - Math.min(fromSources, tokens.length)} from the code), ${proposal.outliers.length} too rare to propose; wrote ${shown(join(dir, 'tokens.resolver.json'))} and report.md\n`)
+    const fromCode = proposal.tokens.filter((t) => t.source === 'audit').length
+    const files = new Set(proposal.tokens.filter((t) => t.source !== 'audit').map((t) => t.source)).size
+    process.stdout.write(`massimo tokens extract: ${tokens.length} tokens (${tokens.length - fromCode} from ${files} ${files === 1 ? 'file' : 'files'}, ${fromCode} from the code), ${proposal.outliers.length} values not proposed; wrote ${shown(join(dir, 'tokens.resolver.json'))} and report.md\n`)
     return
   }
 

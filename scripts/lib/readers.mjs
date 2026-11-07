@@ -14,9 +14,9 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { colorModes } from './color.mjs'
+import { colorModes, parseColor } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
-import { isAlias, parseCustomProperties, splitVarName } from './source.mjs'
+import { isAlias, parseCustomProperties } from './source.mjs'
 import { findObject, leaves } from './jsobject.mjs'
 import { natural } from './text.mjs'
 
@@ -38,9 +38,45 @@ export function channelColor(value) {
   return null
 }
 
+// The group a custom property's token goes in, from the prefixes and
+// suffixes systems name their families with: `--space-4` is spacing,
+// `--dur-2` a duration, and `--h1-size` with `--h1-leading` a type step. A
+// colour is known by its value instead, since its name rarely says so
+// (`--paper-200`, `--c-text`).
+const PREFIX_GROUPS = [
+  [/^(?:color|colour|clr|c)(?:-|$)/, 'color'],
+  [/^(?:spacing|space|sp|gap)(?:-|$)/, 'spacing'],
+  [/^(?:radius|radii|rounded)(?:-|$)/, 'radius'],
+  [/^(?:font-size|fs|text)(?:-|$)/, 'text'],
+  [/^(?:font-weight|fw)(?:-|$)/, 'font-weight'],
+  [/^(?:line-height|lh|leading)(?:-|$)/, 'leading'],
+  [/^(?:letter-spacing|tracking)(?:-|$)/, 'tracking'],
+  [/^(?:font-family|font|ff)(?:-|$)/, 'font'],
+  [/^(?:shadow|elevation)(?:-|$)/, 'shadow'],
+  [/^(?:duration|dur)(?:-|$)/, 'duration'],
+  [/^(?:easing|ease)(?:-|$)/, 'ease'],
+  [/^(?:z-index|z|layer)(?:-|$)/, 'z'],
+  [/^opacity(?:-|$)/, 'opacity'],
+  [/^(?:border-width|stroke)(?:-|$)/, 'border-width'],
+  [/^size(?:-|$)/, 'size'],
+]
+const SUFFIX_GROUPS = [
+  [/-(?:font-size|size|fs)$/, 'text'],
+  [/-(?:line-height|leading|lh)$/, 'leading'],
+  [/-(?:letter-spacing|tracking)$/, 'tracking'],
+  [/-(?:font-weight|weight)$/, 'font-weight'],
+]
+const WRAPPED = /^(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*\)\s*(?:\/\s*(\d*\.?\d+%?)\s*)?\)$/
+const VAR = /^var\(\s*(--[\w-]+)\s*\)$/
+const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|rem))\s*\)$/
+
 // Every custom property the style files declare outside a component's own
 // selector, by name, with its value per theme. A light-dark() value splits
-// into its two themes.
+// into its two themes. `rgb(var(--x))` over a channel triplet is a
+// reference to it, and `rgb(var(--x) / 0.14)` the colour it makes in each
+// theme, its exact CSS kept. A fluid clamp() size takes its largest value,
+// its CSS kept too. Stems with a size and a line height, weight or tracking
+// (`--h1-size`, `--h1-leading`) come back as type steps.
 export function readCss(root, files) {
   const entries = new Map()
   for (const file of files) {
@@ -59,17 +95,74 @@ export function readCss(root, files) {
       entries.set(p.name, e)
     }
   }
-  const idOf = new Map()
+  const notes = []
+  const allModes = [...new Set([...entries.values()].flatMap((e) => Object.keys(e.modes)))]
+  const valueIn = (name, mode) => {
+    const e = entries.get(name)
+    return e && (e.modes[mode] ?? e.default ?? Object.values(e.modes)[0])
+  }
+  // The channel triplet a property holds in a theme, through var() chains.
+  const channelsOf = (name, mode, depth = 0) => {
+    const v = valueIn(name, mode)
+    if (v === undefined || depth > 8) return null
+    if (channelColor(v)) return v
+    const m = VAR.exec(v)
+    return m ? channelsOf(m[1], mode, depth + 1) : null
+  }
+  const colorish = (name, depth = 0) => {
+    const v = valueIn(name, 'default')
+    if (v === undefined || depth > 8) return false
+    if (channelColor(v) || parseColor(v) || /^(?:color-mix|light-dark)\(/.test(v)) return true
+    const m = VAR.exec(v) ?? WRAPPED.exec(v)
+    return m ? (m[2] ? channelsOf(m[2], 'default') !== null : colorish(m[1], depth + 1)) : false
+  }
+  // Stems that two type suffixes share (`--h1-size` and `--h1-leading`).
+  const stems = new Map()
   for (const name of entries.keys()) {
-    const { group, rest } = splitVarName(name)
-    idOf.set(name, [group, rest || 'base'])
+    const bare = name.slice(2)
+    for (const [re, group] of SUFFIX_GROUPS) {
+      if (!re.test(bare)) continue
+      const stem = bare.replace(re, '')
+      stems.set(stem, new Set([...(stems.get(stem) ?? []), group]))
+    }
+  }
+  const idOf = new Map()
+  const taken = new Set()
+  for (const name of [...entries.keys()].sort(natural)) {
+    const bare = name.slice(2)
+    let path
+    if (colorish(name)) {
+      path = ['color', bare.replace(/^(?:color|colour|clr|c)(?:-|$)/, '')]
+    } else {
+      const prefix = PREFIX_GROUPS.find(([re]) => re.test(bare))
+      const suffix = SUFFIX_GROUPS.find(([re]) => re.test(bare))
+      if (prefix && prefix[1] !== 'color') path = [prefix[1], bare.replace(prefix[0], '')]
+      else if (suffix && stems.get(bare.replace(suffix[0], ''))?.size >= 2) path = [suffix[1], bare.replace(suffix[0], '')]
+      else path = ['other', bare]
+    }
+    if (!path[1]) path[1] = 'base'
+    // Two properties with one name after their prefix keep their whole names.
+    if (taken.has(path.join('.'))) path = [path[0] === 'other' ? 'other' : path[0], bare]
+    if (taken.has(path.join('.'))) path = ['other', bare]
+    taken.add(path.join('.'))
+    idOf.set(name, path)
   }
   const aliasOf = (value) => {
-    const m = /^var\(\s*(--[\w-]+)\s*\)$/.exec(value)
-    const id = m && idOf.get(m[1])
-    return id ? `{${id.join('.')}}` : value
+    const m = VAR.exec(value)
+    if (m && idOf.get(m[1])) return `{${idOf.get(m[1]).join('.')}}`
+    const w = WRAPPED.exec(value)
+    if (w && !w[3] && idOf.get(w[2]) && channelsOf(w[2], 'default') !== null) return `{${idOf.get(w[2]).join('.')}}`
+    return value
+  }
+  // `rgb(var(--x) / 0.14)`: the colour it makes in a theme.
+  const withAlpha = (value, mode) => {
+    const w = WRAPPED.exec(value)
+    if (!w || !w[3]) return null
+    const channels = channelsOf(w[2], mode)
+    return channels ? `${w[1].replace(/a$/, '')}(${channels} / ${w[3]})` : null
   }
   const tokens = []
+  const typeSteps = []
   for (const name of [...entries.keys()].sort(natural)) {
     const e = entries.get(name)
     const path = idOf.get(name)
@@ -78,22 +171,65 @@ export function readCss(root, files) {
     // A theme that repeats the default adds nothing; with no default, the first theme is it.
     const extra = e.default !== undefined ? Object.entries(e.modes) : Object.entries(e.modes).slice(1)
     for (const [mode, v] of extra) if (aliasOf(v) !== t.value) t.modes[mode] = aliasOf(v)
-    const channels = !isAlias(t.value) && channelColor(t.value)
-    if (channels) {
+    // Each theme's value on its own terms: channels, or rgb(var(--x) / a).
+    const colorFrom = (v, mode) => {
+      if (isAlias(v)) return null
+      const c = channelColor(v)
+      if (c) return c
+      const w = withAlpha(v, mode)
+      return w ? { value: w, css: v } : null
+    }
+    const own = colorFrom(t.value, 'default')
+    if (own) Object.assign(t, { type: 'color', css: own.css, value: own.value })
+    // rgb(var(--x)) became a reference to --x, which holds channels: the CSS
+    // keeps the wrapper, so the variable still holds a colour.
+    if (isAlias(t.value) && WRAPPED.test(first.trim())) t.css = first.trim()
+    for (const [mode, v] of Object.entries(t.modes)) {
+      const raw = e.modes[mode]
+      if (isAlias(v) && raw !== undefined && WRAPPED.test(raw.trim())) t.cssModes = { ...(t.cssModes ?? {}), [mode]: raw.trim() }
+      const c = colorFrom(v, mode)
+      if (!c) continue
       t.type = 'color'
-      t.css = channels.css
-      t.value = channels.value
-      for (const [mode, v] of Object.entries(t.modes)) {
-        const c = !isAlias(v) && channelColor(v)
-        if (c) {
-          t.modes[mode] = c.value
-          t.cssModes = { ...(t.cssModes ?? {}), [mode]: c.css }
+      t.modes[mode] = c.value
+      t.cssModes = { ...(t.cssModes ?? {}), [mode]: c.css }
+    }
+    // rgb(var(--x) / a) with no value of its own in a theme follows --x there.
+    if (withAlpha(first, 'default')) {
+      for (const mode of allModes) {
+        if (mode in e.modes) continue
+        const v = withAlpha(first, mode)
+        if (v && v !== t.value) {
+          t.modes[mode] = v
+          t.cssModes = { ...(t.cssModes ?? {}), [mode]: first }
         }
       }
     }
+    const fluid = typeof t.value === 'string' && CLAMP.exec(t.value)
+    if (fluid) {
+      t.css = t.value
+      t.value = fluid[2]
+      notes.push(`${name} is fluid (${t.css}); its token holds the largest size, ${fluid[2]}, and the CSS output keeps the clamp()`)
+    }
     tokens.push(t)
   }
-  return { tokens, notes: [], count: entries.size }
+  for (const [stem, groups] of stems) {
+    if (!groups.has('text') || groups.size < 2) continue
+    const size = tokens.find((t) => t.cssVar && idOf.get(t.cssVar)?.join('.') === `text.${stem}`)
+    if (!size) continue
+    const part = (group) => tokens.find((t) => t.path[0] === group && t.path[1] === stem)
+    const step = { path: size.path, source: size.source }
+    const lh = part('leading')
+    if (lh && !isAlias(lh.value)) step.lineHeight = lh.value
+    const w = part('font-weight')
+    if (w && /^\d{3}$/.test(String(w.value))) Object.assign(step, { fontWeight: w.value, fontWeightRef: `{${w.path.join('.')}}` })
+    const tr = part('tracking')
+    const sizePx = /^(-?\d*\.?\d+)(px|rem)$/.exec(String(size.value))
+    const em = tr && /^(-?\d*\.?\d+)em$/.exec(String(tr.value))
+    if (em && sizePx) step.letterSpacing = `${Number((Number(em[1]) * Number(sizePx[1]) * (sizePx[2] === 'rem' ? 16 : 1)).toFixed(3))}px`
+    else if (tr && /^-?\d*\.?\d+(px|rem)$/.test(String(tr.value))) step.letterSpacing = tr.value
+    typeSteps.push(step)
+  }
+  return { tokens, notes, typeSteps, count: entries.size }
 }
 
 // ── A Tailwind 3 config ────────────────────────────────────────────────────

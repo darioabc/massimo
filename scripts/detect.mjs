@@ -61,7 +61,13 @@ function listFiles() {
   return found
 }
 
-const files = listFiles()
+// A folder with its own package.json is another app (a docs site, a demo) unless
+// the root declares workspaces; its files would only muddle this one's picture.
+const listed = listFiles()
+const nested = pkg.workspaces
+  ? []
+  : listed.filter((f) => f !== 'package.json' && f.endsWith('/package.json')).map((f) => f.slice(0, -'package.json'.length))
+const files = listed.filter((f) => !nested.some((dir) => f.startsWith(dir)))
 
 function detectFramework() {
   const vite = has('vite')
@@ -83,10 +89,12 @@ function detectFramework() {
 
 function detectStyling() {
   const out = []
+  // The package's own Tailwind version decides; the CSS only tells when it is not a dependency.
   const tw = major('tailwindcss')
   const cssText = styleFileStats.map((s) => s.text).join('\n')
-  if (tw >= 4 || /@import\s+["']tailwindcss["']/.test(cssText)) out.push('tailwind4')
-  else if (tw || /@tailwind\s+base/.test(cssText)) out.push('tailwind3')
+  if (tw) out.push(tw >= 4 ? 'tailwind4' : 'tailwind3')
+  else if (/@import\s+["']tailwindcss["']/.test(cssText)) out.push('tailwind4')
+  else if (/@tailwind\s+base/.test(cssText)) out.push('tailwind3')
   if (has('daisyui')) out.push('daisyui')
   if (existsSync(join(root, 'components.json'))) out.push('shadcn')
   if (files.some((f) => /\.module\.(css|scss)$/.test(f))) out.push('css-modules')
@@ -132,8 +140,9 @@ function componentDirs() {
   return [...counts.entries()].map(([dir, count]) => ({ dir, count })).sort((a, b) => b.count - a.count || compare(a.dir, b.dir))
 }
 
+// A story tool's own stylesheet (.ladle/, .storybook/) mirrors the app's; the app's is the source.
 const styleFileStats = files
-  .filter((f) => STYLE_EXT.test(f) && !/\.module\./.test(f))
+  .filter((f) => STYLE_EXT.test(f) && !/\.module\./.test(f) && !/^\.(?:ladle|storybook)\//.test(f))
   .map((f) => {
     let text = ''
     try {
@@ -172,7 +181,8 @@ function tokenSources(projectDir) {
         const p = join(root, f)
         if (statSync(p).size > 1024 * 1024) return false
         const text = readFileSync(p, 'utf8')
-        return /"\$value"|"\$themes"|"value"\s*:/.test(text)
+        // DTCG has $value; Tokens Studio has $themes, $metadata, or tokens with both value and type.
+        return /"\$value"|"\$themes"|"\$metadata"/.test(text) || /\{\s*"value"\s*:[^{}]*"type"\s*:|\{\s*"type"\s*:[^{}]*"value"\s*:/.test(text)
       } catch {
         return false
       }
@@ -281,6 +291,7 @@ const result = {
   scripts: { dev: pkg.scripts?.dev ?? null, build: pkg.scripts?.build ?? null },
   devPort: devPort(),
   componentDirs: dirs.slice(0, 10),
+  nestedPackages: nested,
   styleFiles: styles.slice(0, 10),
   aliases: suggestedConfig.aliases,
   suggestedConfig,

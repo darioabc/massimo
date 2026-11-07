@@ -33,6 +33,31 @@ test('detect: a repo with no src/ gets an audit that reads its own tree', () => 
   }
 })
 
+test('detect: nested apps, the Tailwind version, token files and a story tool stylesheet', () => {
+  const theme = ':root { --a: 1px; --b: 2px; --c: 3px; --d: 4px; --e: 5px; }\n'
+  const r = repo({
+    'package.json': '{"dependencies":{"react":"18","vite":"5","tailwindcss":"^3.4.0"}}',
+    // Tailwind 4 syntax in a nested app's CSS does not make this repo Tailwind 4.
+    'sae/package.json': '{"dependencies":{"nuxt":"3"}}',
+    'sae/assets/main.css': '@import "tailwindcss";\n' + theme,
+    'src/styles/app.css': '@tailwind base;\n' + theme,
+    '.ladle/ladle.css': '@import "tailwindcss";\n' + theme,
+    // A token file has DTCG or Tokens Studio markers; a plain value/type pair in config does not count.
+    'tokens/brand.json': '{ "color": { "brand": { "$value": "#0f766e", "$type": "color" } } }',
+    'src/data/settings.json': '{ "value": 3, "label": "x" }',
+  })
+  try {
+    const out = JSON.parse(script('detect', r.root).stdout)
+    assert.deepEqual(out.nestedPackages, ['sae/'])
+    assert.ok(out.styling.includes('tailwind3') && !out.styling.includes('tailwind4'), out.styling.join())
+    assert.deepEqual(out.suggestedConfig.tokens.styleFiles, ['src/styles/app.css'])
+    assert.deepEqual(out.suggestedConfig.tokens.importFiles, ['tokens/brand.json'])
+    assert.deepEqual(out.storyTools.tools, ['ladle'])
+  } finally {
+    r.cleanup()
+  }
+})
+
 test('init: no package.json gives a warning with the node command, and STATUS.md names no phase yet', () => {
   const r = repo({ 'components/Button.tsx': 'export default 1' })
   try {

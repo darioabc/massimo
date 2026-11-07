@@ -289,7 +289,11 @@ const d50ToD65 = (x, y, z) => [
 // The colour spaces the DTCG 2025.10 colour module allows.
 export const DTCG_COLOR_SPACES = ['srgb', 'srgb-linear', 'hsl', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'display-p3', 'a98-rgb', 'prophoto-rgb', 'rec2020', 'xyz-d65', 'xyz-d50']
 
+// Components written in CSS keep six places, as colorCss writes them back
+// (97.807% is 0.97807, not 0.9781). An sRGB colour's hex is its exact form,
+// so its components keep four.
 const r4 = (n) => (n === 'none' ? n : Number(n.toFixed(4)))
+const r6 = (n) => (n === 'none' ? n : Number(n.toFixed(6)))
 
 // A DTCG colour object as CSS: hex for an sRGB colour, the space's own
 // function (`oklch()`, `hsl()`…) or `color()` for the rest.
@@ -318,7 +322,7 @@ export function colorFromCss(input) {
   const srgb = parseColor(str)
   if (!srgb) return null
   const hex = toHex({ ...srgb, a: 1 })
-  const withAlpha = (obj, a) => (a < 1 ? { ...obj, alpha: r4(a) } : obj)
+  const withAlpha = (obj, a) => (a < 1 ? { ...obj, alpha: r6(a) } : obj)
   const m = /^(rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(\s*([\s\S]*?)\s*\)$/.exec(str)
   if (!m || /^rgba?$/.test(m[1])) {
     return withAlpha({ colorSpace: 'srgb', components: [srgb.r, srgb.g, srgb.b].map(r4), hex }, srgb.a)
@@ -326,8 +330,8 @@ export function colorFromCss(input) {
   const slash = m[2].indexOf('/')
   let parts = (slash === -1 ? m[2] : m[2].slice(0, slash)).split(/[\s,]+/).filter(Boolean)
   if (slash === -1 && parts.length === 4) parts = parts.slice(0, 3)
-  const value = (p, pctScale) => (p === 'none' ? 'none' : p.endsWith('%') ? r4((parseFloat(p) / 100) * pctScale) : r4(parseFloat(p)))
-  const hue = (p) => (p === 'none' ? 'none' : r4(((hueToDeg(p) % 360) + 360) % 360))
+  const value = (p, pctScale) => (p === 'none' ? 'none' : p.endsWith('%') ? r6((parseFloat(p) / 100) * pctScale) : r6(parseFloat(p)))
+  const hue = (p) => (p === 'none' ? 'none' : r6(((hueToDeg(p) % 360) + 360) % 360))
   let space = m[1].replace(/a$/, '')
   let components
   if (space === 'hsl' || space === 'hwb') components = [hue(parts[0]), value(parts[1], 100), value(parts[2], 100)]

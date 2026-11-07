@@ -659,8 +659,12 @@ export function fromCss(type, v) {
   }
   if (type === 'fontFamily') {
     if (Array.isArray(v)) return exact(v.map((x) => unquote(String(x).trim())))
-    const names = splitCss(String(v)).map(unquote)
-    return names.length === 0 ? { error: 'is empty' } : exact(names.length === 1 ? names[0] : names)
+    const all = splitCss(String(v)).map(unquote)
+    // var(--font-body) in a stack is a reference only CSS can follow.
+    const names = all.filter((n) => !/^var\(/.test(n))
+    if (names.length === 0) return { error: all.length === 0 ? 'is empty' : `${JSON.stringify(v)} names no font, only var()` }
+    const value = names.length === 1 ? names[0] : names
+    return names.length === all.length ? exact(value) : { value, css: String(v).trim(), note: `${String(v).trim()} follows a var(), which only CSS keeps; outside CSS it is ${names.join(', ')}` }
   }
   if (type === 'fontWeight') {
     if (isNum(v)) return exact(v)
@@ -908,6 +912,13 @@ const jsonText = tokenJson
 // under its modifier's folder. Values with no DTCG type go to the base file's
 // `$extensions.massimo.cssOnly`.
 export function writeTokenSet({ tokens, defaultMode = 'light', modifier = 'theme', name = 'Design tokens', description } = {}) {
+  // A name that is both a token and a group (color.neutral and
+  // color.neutral.950) cannot be written as both; one would be lost.
+  const names = new Set(tokens.map((t) => t.path.join('.')))
+  for (const t of tokens) {
+    const parent = t.path.slice(0, -1).map((_, i) => t.path.slice(0, i + 1).join('.')).find((p) => names.has(p))
+    if (parent) throw new Error(`${parent} is a token and also the group of ${t.path.join('.')}; rename one, or move ${parent} to ${parent}.$root`)
+  }
   const typed = tokens.filter((t) => !t.cssOnly)
   const cssOnly = tokens.filter((t) => t.cssOnly)
   const modes = [...new Set(tokens.flatMap((t) => Object.keys(t.modes)))].sort((a, b) => (a === 'dark' ? -1 : b === 'dark' ? 1 : a < b ? -1 : a > b ? 1 : 0))
