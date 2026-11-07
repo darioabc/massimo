@@ -108,6 +108,36 @@ test('without graph.json or its story lane the story kinds are skipped, and a ne
   assert.equal(run('audit', plain).status, 0)
 })
 
+test('while the graph could not read the manifest, or check no-story, those kinds are skipped and --lower keeps them', () => {
+  const ctx = fresh()
+  withStories(ctx)
+  graph(ctx, { version: 1, nodes: [], storyLane })
+  assert.equal(run('audit', ctx, ['--baseline']).status, 0)
+  const recorded = readJson(ctx.project, 'audits', 'baseline.json').kinds
+  // The manifest stops reading: one whole problem, and nothing to measure.
+  const whole = { rule: 'story-files', file: 'src/stories/manifest.ts', detail: 'stories is built from more than its array literal, so it is not statically readable', whole: true }
+  graph(ctx, { version: 1, nodes: [], storyLane: { problems: [whole] } })
+  let r = run('audit', ctx, ['--lower'])
+  assert.equal(r.status, 0, r.stderr)
+  let latest = readJson(ctx.project, 'audits', 'latest.json')
+  for (const kind of ['story-title', 'story-files', 'story-states', 'no-story']) {
+    assert.equal(latest.skipped[kind], 'the graph could not read the story manifest: stories is built from more than its array literal, so it is not statically readable', kind)
+  }
+  let kinds = readJson(ctx.project, 'audits', 'baseline.json').kinds
+  for (const kind of ['story-title', 'story-files', 'story-states', 'no-story']) assert.deepEqual(kinds[kind], recorded[kind], kind)
+  assert.equal(run('audit', ctx, ['--check']).status, 0)
+  // An entry's component it cannot read: no-story is not checked, so it is not measured either.
+  const notChecked = { 'no-story': 'the component of home is not statically readable, so any node could be the one a story covers' }
+  graph(ctx, { version: 1, nodes: [], storyLane: { problems: storyLane.problems.filter((p) => p.rule !== 'no-story'), notChecked } })
+  r = run('audit', ctx, ['--lower'])
+  assert.equal(r.status, 0, r.stderr)
+  latest = readJson(ctx.project, 'audits', 'latest.json')
+  assert.equal(latest.skipped['no-story'], `the graph did not check it: ${notChecked['no-story']}`)
+  assert.equal(latest.skipped['story-title'], undefined)
+  kinds = readJson(ctx.project, 'audits', 'baseline.json').kinds
+  assert.deepEqual(kinds['no-story'], recorded['no-story'])
+})
+
 test('--map pairs a rule with one kind or several, and a kind takes one rule', () => {
   assert.deepEqual(parseMap('raw-colour=color+tailwind-palette, breakpoint=breakpoint'), [
     { rule: 'raw-colour', kinds: ['color', 'tailwind-palette'] },

@@ -425,8 +425,9 @@ test('a manifest built from more than its literal is one story-files problem, wi
   try {
     const r = run('graph', wrapped)
     assert.equal(r.status, 1)
+    // Marked whole, so the audit leaves every story kind unmeasured.
     assert.deepEqual(readJson(wrapped.project, 'graph.json').storyLane.problems, [
-      { rule: 'story-files', file: 'src/stories/manifest.ts', detail: 'src/stories/manifest.ts exports no array of entries with a slug' },
+      { rule: 'story-files', file: 'src/stories/manifest.ts', detail: 'src/stories/manifest.ts exports no array of entries with a slug', whole: true },
     ])
     assert.match(r.stderr, /src\/stories\/manifest\.ts: story-files: src\/stories\/manifest\.ts exports no array of entries with a slug/)
     assert.match(r.stderr, /graph\.strictFaults is on, so this fault fails the run/)
@@ -462,17 +463,27 @@ test('no-story: a live node with no direct story and no ds:no-story, whatever co
 })
 
 test('a manifest entry it cannot read is listed and not checked, and its slug keeps its page', () => {
-  const { colours, button, card } = ENTRIES
-  const { lines, graph } = laneOf({
+  const { colours, button, card, home } = ENTRIES
+  const { lines, graph, md } = laneOf({
     'src/stories/manifest.ts': manifest([colours, button, card], "  { slug: 'home', title: titleOf('home'), component: HOME },\n"),
   })
-  // No title check, and no "page with no entry" for home; without the
-  // component it names, the home route has no direct story.
-  assert.deepEqual(lines, ['no-story · src/pages/index.astro · no direct story'])
+  // No title check, and no "page with no entry" for home. The component it
+  // names could be any node, so no-story is not checked at all, and says why.
+  assert.deepEqual(lines, [])
   assert.deepEqual(graph.storyLane.unreadable, [
     { file: 'src/stories/manifest.ts', detail: 'home: component is not statically readable' },
     { file: 'src/stories/manifest.ts', detail: 'home: title is not statically readable' },
   ])
+  assert.deepEqual(graph.storyLane.notChecked, { 'no-story': 'the component of home is not statically readable, so any node could be the one a story covers' })
+  assert.match(md, /^`no-story` is not checked: the component of home is not statically readable, so any node could be the one a story covers\.$/m)
+  // A title it cannot read leaves no-story checked, as before.
+  const titled = laneOf({ 'src/stories/manifest.ts': manifest([colours, button, card], `  { slug: 'home', title: titleOf('home'), root: 'Pages', group: 'Home', component: '${home.component}' },\n`) })
+  assert.equal(titled.graph.storyLane.notChecked, undefined)
+  assert.deepEqual(titled.lines, [])
+  // A whole entry it cannot read, or one that spreads another in, may hide a component too.
+  const called = laneOf({ 'src/stories/manifest.ts': manifest([colours, button, card], '  entryFor("home"),\n') })
+  assert.deepEqual(called.lines, [])
+  assert.match(called.graph.storyLane.notChecked['no-story'], /^the component of entry 4 is not statically readable/)
 })
 
 test('strictFaults: story-title, story-files and story-states fail the run; no-story never does', () => {

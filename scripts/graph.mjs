@@ -557,20 +557,22 @@ export function buildGraph(root, config, command = "graph.mjs") {
   // `file` is the manifest, the page with no entry, or the node with no story.
   // A field the manifest does not hold as a literal is not checked. A
   // manifest that cannot be read at all is one story-files problem, like a
-  // missing one, and nothing is checked against it.
+  // missing one, marked `whole`, and nothing is checked against it. While an
+  // entry's component cannot be read, any node could be the one it covers,
+  // so no-story is not checked, and `lane.notChecked` says why.
   function laneProblems(lane, nodes, live) {
     const { manifest, pageOf, frameOf, fileSet } = lane
     const out = []
     const add = (rule, file, detail) => out.push({ rule, file, detail })
     if (!fileSet.has(manifest)) {
-      add('story-files', manifest, `stories.manifest names ${manifest}, which does not exist`)
+      out.push({ rule: 'story-files', file: manifest, detail: `stories.manifest names ${manifest}, which does not exist`, whole: true })
       return out
     }
     // With no entries read, every page would look like an orphan and every
     // live node like one with no story.
     const whole = lane.skipped.find((u) => u.entry === null)
     if (whole) {
-      add('story-files', manifest, whole.detail)
+      out.push({ rule: 'story-files', file: manifest, detail: whole.detail, whole: true })
       return out
     }
     const byFile = new Map(nodes.map((n) => [n.file, n]))
@@ -634,7 +636,13 @@ export function buildGraph(root, config, command = "graph.mjs") {
       }
       for (const [slug, { file, what }] of orphans) add('story-files', file, `${slug}: a ${what} with no manifest entry`)
     }
-    for (const n of nodes) if (live(n) && n.direct.length === 0 && n.noStory === null) add('no-story', n.file, 'no direct story')
+    const unreadComponent = lane.skipped.filter((u) => u.entry !== null && (u.field === null || u.field === 'component' || u.field === '...'))
+    if (unreadComponent.length > 0) {
+      const where = [...new Set(unreadComponent.map((u) => u.slug ?? `entry ${u.entry + 1}`))].sort(compare)
+      lane.notChecked = { 'no-story': `the component of ${where.join(', ')} is not statically readable, so any node could be the one a story covers` }
+    } else {
+      for (const n of nodes) if (live(n) && n.direct.length === 0 && n.noStory === null) add('no-story', n.file, 'no direct story')
+    }
     const seen = new Set()
     return out
       .sort((a, b) => compare(a.rule, b.rule) || compare(a.file, b.file) || compare(a.detail, b.detail))
@@ -871,8 +879,10 @@ function kindCounts(nodes, kinds) {
 }
 
 // The story lane in graph.json: where its manifest is, how many entries and
-// states it holds, the coverage split (direct, incidental only, none) and
-// the problems its checks find, each { rule, file, detail }.
+// states it holds, the coverage split (direct, incidental only, none), the
+// problems its checks find, each { rule, file, detail } (and `whole` for a
+// manifest that cannot be read at all), and the checks it could not make,
+// as { rule: why } under `notChecked`.
 function laneSummary(lane, nodes, problems) {
   const direct = nodes.filter((n) => n.direct.length > 0).length
   const incidental = nodes.filter((n) => n.direct.length === 0 && n.incidental.length > 0).length
@@ -886,6 +896,7 @@ function laneSummary(lane, nodes, problems) {
     none: nodes.length - direct - incidental,
     problems,
     ...(unreadable.length > 0 ? { unreadable } : {}),
+    ...(lane.notChecked ? { notChecked: lane.notChecked } : {}),
   }
 }
 
@@ -1053,6 +1064,7 @@ function renderLane(lane) {
     for (const u of lane.unreadable) out.push(`- ${code(u.file)}: ${u.detail}`)
     out.push('')
   }
+  for (const [rule, why] of Object.entries(lane.notChecked ?? {})) out.push(`${code(rule)} is not checked: ${why}.`, '')
   return out
 }
 

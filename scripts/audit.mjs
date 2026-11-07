@@ -685,18 +685,24 @@ function isColorPrimitive(t) {
 
 // The story lane's policy problems the graph wrote to graph.json
 // (`storyLane.problems`, each { rule, file, detail }), as findings, or why
-// there are none to read.
+// there are none to read. A manifest the graph could not read at all (its
+// problem marked `whole`) leaves every story kind unmeasured, and a check the
+// graph could not make (`storyLane.notChecked`) leaves its kind unmeasured,
+// so --lower never takes either for a drop.
 function storyFindings(projectDir) {
   const graph = readJson(join(projectDir, 'graph.json'), null)
   if (!graph) return { reason: 'no graph.json yet: run graph.mjs' }
   refuseNewer('graph', graph.version, 'graph.json')
   if (!graph.storyLane) return { reason: 'graph.json has no story lane yet: run graph.mjs' }
+  const whole = (graph.storyLane.problems ?? []).find((p) => p?.rule === 'story-files' && p.whole === true)
+  if (whole) return { reason: `the graph could not read the story manifest: ${String(whole.detail ?? '')}` }
   const findings = []
   for (const p of graph.storyLane.problems ?? []) {
     if (!STORY_KINDS.includes(p?.rule) || typeof p.file !== 'string') continue
     findings.push({ file: p.file, line: Number.isInteger(p.line) ? p.line : 0, kind: p.rule, value: String(p.detail ?? '') })
   }
-  return { findings }
+  const notChecked = Object.entries(graph.storyLane.notChecked ?? {}).filter(([kind, why]) => STORY_KINDS.includes(kind) && typeof why === 'string')
+  return { findings, notChecked }
 }
 
 function collectDefinitions(code, defs) {
@@ -1013,6 +1019,7 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // Story kinds come from the graph, which reads the lane's manifest.
   const stories = kinds.includes('story-title') ? storyFindings(projectDir) : null
   if (stories?.reason) for (const k of STORY_KINDS) skipped.set(k, stories.reason)
+  for (const [k, why] of stories?.notChecked ?? []) skipped.set(k, `the graph did not check it: ${why}`)
   for (const k of off) skipped.set(k, 'turned off in audit.kinds')
 
   // Generated token outputs are skipped whole. Style files are audited too:

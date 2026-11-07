@@ -275,6 +275,8 @@ With `stories.lane` set to `manifest`, `graph.mjs` reads the manifest and every 
 
 A node is covered directly when its story's page or frame imports it, or a lane helper the page imports does, or the entry names it; a node it only composes is covered incidentally, which does not count. With `graph.strictFaults`, the first three fail the graph run; the audit ratchets `no-story`.
 
+While an entry's `component` is not a literal, any node could be the one it covers, so `no-story` is not checked and `storyLane.notChecked` says why; the audit leaves that kind unmeasured. A manifest the graph cannot read at all leaves all four kinds unmeasured in the audit, so `audit.mjs --lower` never takes it for a drop.
+
 ### Leak check
 
 The pages, the marker, and the stylesheet:
