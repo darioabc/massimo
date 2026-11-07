@@ -87,6 +87,7 @@ test('figma-variables.json: collections, modes, aliases, value types', () => {
   assert.deepEqual(byName(primitives, 'color/neutral/0'), {
     name: 'color/neutral/0',
     type: 'COLOR',
+    scopes: [], // a colour ramp hides once semantic colours exist
     values: { Light: { r: 1, g: 1, b: 1, a: 1 } },
     description: '',
     codeSyntax: { WEB: 'var(--color-neutral-0)' },
@@ -96,6 +97,13 @@ test('figma-variables.json: collections, modes, aliases, value types', () => {
     Dark: { alias: 'color/neutral/950', collection: 'Primitives' },
   })
   assert.equal(byName(semantic, 'color/bg/default').description, 'Page background')
+  assert.deepEqual(byName(semantic, 'color/bg/default').scopes, ['FRAME_FILL', 'SHAPE_FILL'])
+  assert.deepEqual(byName(semantic, 'color/fg/muted').scopes, ['TEXT_FILL'])
+  assert.deepEqual(byName(primitives, 'spacing/1').scopes, ['GAP'])
+  assert.deepEqual(byName(primitives, 'radius/md').scopes, ['CORNER_RADIUS'])
+  assert.deepEqual(byName(primitives, 'text/lg').scopes, ['FONT_SIZE'])
+  assert.deepEqual(byName(primitives, 'font/sans').scopes, ['FONT_FAMILY'])
+  assert.equal(byName(primitives, 'font/sans').values.Light, 'Geist Sans') // Figma takes one family
   assert.deepEqual(byName(primitives, 'spacing/1').values, { Light: 4 }) // 0.25rem -> 4
   assert.equal(byName(primitives, 'spacing/1').type, 'FLOAT')
   assert.equal(byName(primitives, 'font/sans').type, 'STRING')
@@ -279,15 +287,15 @@ test('DTCG value types: objects, arrays, numbers and composite dimensions', () =
     const figma = readJson(t.project, 'tokens', 'figma-variables.json')
     const types = Object.fromEntries(figma.collections.flatMap((c) => c.variables).map((v) => [v.name, v.type]))
     assert.deepEqual(types, {
-      'shadow/card': 'STRING',
-      'motion/ease': 'STRING',
-      'motion/fast': 'STRING',
+      'motion/fast': 'FLOAT', // 150, in ms
       'font/body': 'STRING',
       'font/weight/bold': 'FLOAT',
       'color/ink': 'COLOR',
       'size/gap': 'FLOAT',
       'size/ratio': 'FLOAT',
     })
+    assert.deepEqual(figma.effectStyles.map((s) => s.name), ['shadow/card']) // a shadow is an effect style, not a string
+    assert.deepEqual(figma.notMirrored, [{ token: 'motion.ease', type: 'cubicBezier', reason: 'Figma has no cubicBezier variable' }])
   } finally {
     t.cleanup()
   }
