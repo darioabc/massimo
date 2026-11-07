@@ -42,8 +42,8 @@ function ledgerProblems(ledger) {
       if (!LOSSES.includes(a.loss)) out.push(`${a.id} has loss "${a.loss}", not one of ${LOSSES.join(', ')}`)
       if (!STATES.includes(a.state)) out.push(`${a.id} has state "${a.state}", not one of ${STATES.join(', ')}`)
     }
-    if (c.accepted !== undefined && !(Array.isArray(c.accepted) && c.accepted.every((d) => isText(d?.key) && isText(d?.why)))) {
-      out.push(`${name}.accepted must be a list of { key, why }, as adopt.mjs accept writes it`)
+    if (c.accepted !== undefined && !(Array.isArray(c.accepted) && c.accepted.every((d) => isText(d?.key) && isText(d?.why) && (d.detail === undefined || typeof d.detail === 'string')))) {
+      out.push(`${name}.accepted must be a list of { key, why, detail }, as adopt.mjs accept writes it`)
     }
     if (c.verify !== undefined && !(isText(c.verify?.ratchet) && typeof c.verify?.map === 'string')) out.push(`${name}.verify must be { ratchet, map, kept }, as adopt.mjs plan writes it`)
   }
@@ -190,12 +190,20 @@ function assess(asset, inv) {
   return { decision, loss, lines }
 }
 
+// The repo's own keys in use (beyond massimo's built-in ones) and the repo's
+// scripts that read the headers: what makes the headers the repo's own
+// setup. Headers with only the built-in keys and no reader of their own are
+// massimo's already, with nothing to adopt.
+const ownKeys = (inv) => inv.headers.keys.filter((k) => !k.builtin && k.files > 0)
+const headerReaders = (inv) => inv.headers.readers ?? []
+const hasOwnHeaders = (inv) => ownKeys(inv).length > 0 || headerReaders(inv).length > 0
+
 // The header census as an asset of the graph class: the headers stay in the
 // source, read through config roles.
 function headersAsset(inv) {
   const lines = []
   let loss = 'clean'
-  for (const k of inv.headers.keys.filter((x) => !x.builtin)) {
+  for (const k of ownKeys(inv)) {
     if (k.role) lines.push(`ds:${k.key} on ${plural(k.files, 'file')} has the role ${roleText(k.role)}.`)
     else if (k.proposed) lines.push(`ds:${k.key} on ${plural(k.files, 'file')}: read as ${roleText(k.proposed)}.`)
     else {
@@ -203,11 +211,12 @@ function headersAsset(inv) {
       lines.push(`ds:${k.key} on ${plural(k.files, 'file')}: no role fits, so it is read as an extra key and its values are not checked.`)
     }
   }
+  const readers = headerReaders(inv)
+  if (readers.length > 0) lines.push(`${list(readers)} ${readers.length === 1 ? 'reads' : 'read'} the ds: headers as well. The headers stay in the source unchanged, so ${readers.length === 1 ? 'it keeps' : 'they keep'} working.`)
   if (inv.headers.taxonomy) {
     lines.push(`${plural(inv.headers.taxonomy.groups.length, 'group')} in ${plural(inv.headers.taxonomy.tiers.length, 'tier')}, proposed as graph.taxonomy.`)
     lines.push('Scan proposes no path rules: add rules to graph.taxonomy.rules for the files without a ds:group line, or the graph reports each as having no group.')
   }
-  if (lines.length === 0) lines.push('Only the built-in keys.')
   return { id: 'headers', class: 'graph', kind: 'headers', paths: [], consumers: [], decision: 'keep', loss, lines }
 }
 
@@ -226,7 +235,7 @@ const standing = (a) => (STATES.indexOf(a.state) >= lastState(a) ? STATES.length
 // is agreed too, so nothing counts as mapped or cut over that was not.
 export function planLedger(inv, previous = null, { date = today() } = {}) {
   const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv) }))
-  if (inv.headers.files > 0) assets.push(headersAsset(inv))
+  if (hasOwnHeaders(inv)) assets.push(headersAsset(inv))
   const classes = {}
   for (const cls of CLASSES) {
     const mine = assets.filter((a) => a.class === cls).sort((a, b) => compare(a.id, b.id))
@@ -270,16 +279,19 @@ function auditVerify(inv, was) {
 
 // ── Accepting a difference, and historical docs ─────────────────────────────
 
-// Accept a difference verify reports, by its key, with the reason; a key
-// accepted before takes the new reason. Returns a line on what changed.
-export function acceptDifference(ledger, cls, key, why, { date = today() } = {}) {
+// Accept a difference verify reports, by its key, with the reason and the
+// detail verify gave it, so a later difference under the same key with
+// another detail is open again; a key accepted before takes the new reason
+// and detail. Returns a line on what changed.
+export function acceptDifference(ledger, cls, key, why, { detail, date = today() } = {}) {
   const c = ledger.classes[cls]
   if (!c) throw new Error(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
   if (!isText(key)) throw new Error('accept needs the key verify printed for the difference')
   if (!isText(why)) throw new Error('accept needs --why <text>: the reason the difference is fine, for whoever reads the ledger next')
+  if (typeof detail !== 'string') throw new Error(`accept needs the detail verify gives ${key}`)
   const list = (c.accepted ?? []).filter((d) => d.key !== key)
   const again = list.length !== (c.accepted ?? []).length
-  c.accepted = [...list, { key, why: why.trim(), date }].sort((a, b) => compare(a.key, b.key))
+  c.accepted = [...list, { key, why: why.trim(), detail, date }].sort((a, b) => compare(a.key, b.key))
   return `${cls}: ${again ? 'accepted again, with the new reason' : 'accepted'}: ${key}`
 }
 
@@ -300,7 +312,9 @@ export function markHistorical(ledger, path, { date = today() } = {}) {
 // that run those, which go with them, and every other consumer, which must
 // be repointed first unless it is a doc the ledger marks historical. Files
 // a retiring generator also writes for another class are listed, as they
-// lose their writer. `jobAt(file, line)` names a workflow's job at a line.
+// lose their writer. A file that goes but that a generator which stays
+// still writes is a blocker: its writer would bring it back, and its check
+// would fail without it. `jobAt(file, line)` names a workflow's job at a line.
 export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
   const c = ledger.classes[cls]
   const historical = new Set((ledger.historical ?? []).map((h) => h.path))
@@ -330,11 +344,22 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
   }
   const all = [...consumers.values()].sort((x, y) => compare(x.file, y.file) || compare(x.script ?? '', y.script ?? ''))
   const kept = (k) => k.class === 'docs' && historical.has(k.file)
-  const writers = going.filter((a) => a.kind === 'generator').flatMap((a) => inv.own.generators.filter((g) => a.paths.includes(g.path)))
-  const elsewhere = [...new Set(writers.flatMap((g) => g.writes))].filter((p) => !goes(p)).sort(compare).map((path) => {
+  // The class (and its state) of the ledger asset that holds a path.
+  const classOf = (path) => {
     const [name, other] = Object.entries(ledger.classes).find(([, x]) => x.assets.some((a) => a.paths.includes(path))) ?? []
-    return { path, class: name ?? null, state: other?.state ?? null }
-  })
+    return { class: name ?? null, state: other?.state ?? null }
+  }
+  const writers = going.filter((a) => a.kind === 'generator').flatMap((a) => inv.own.generators.filter((g) => a.paths.includes(g.path)))
+  const elsewhere = [...new Set(writers.flatMap((g) => g.writes))].filter((p) => !goes(p)).sort(compare).map((path) => ({ path, ...classOf(path) }))
+  // A generator of the fresh scan that stays and writes what goes.
+  const holds = (p, file) => (p.endsWith('/') ? file.startsWith(p) : file === p)
+  const written = []
+  for (const g of inv.own.generators.filter((x) => !goes(x.path))) {
+    for (const path of g.writes) {
+      const a = going.find((x) => (fresh.get(x.id)?.paths ?? x.paths).some((p) => holds(p, path)))
+      if (a) written.push({ path, asset: a.id, writer: g.path, ...classOf(g.path) })
+    }
+  }
   return {
     state: c.state,
     going: going.map((a) => ({ id: a.id, decision: a.decision, paths: fresh.get(a.id)?.paths ?? a.paths, found: fresh.has(a.id) })),
@@ -343,6 +368,7 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
     consumers: all.filter((k) => !kept(k)),
     historical: all.filter(kept),
     elsewhere,
+    writers: written.sort((x, y) => compare(x.path, y.path) || compare(x.writer, y.writer)),
   }
 }
 

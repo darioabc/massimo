@@ -41,8 +41,15 @@ function names(text) {
 }
 
 // The file on a group line: the part after `·` that is a path, written
-// `file \`src/x.astro\``, in backticks, or bare.
-const PATH_PART = /^(?:file:?\s+)?`?([\w@~.[\]/-]*[/.][\w@~.[\]/-]*)`?$/
+// `file \`src/x.astro\``, in backticks, or bare. In backticks a path is any
+// text without a backtick, so route files such as `src/routes/+page.svelte`,
+// `src/app/(shop)/cart/page.tsx` or `app/routes/posts.$slug.tsx` read; bare,
+// it is one word. Either way it has a slash or a dot.
+const PATH_PART = /^(?:file:?\s+)?(?:`([^`]*[/.][^`]*)`|([^\s`]*[/.][^\s`]*))$/
+const pathIn = (text) => {
+  const m = PATH_PART.exec(clean(text))
+  return m ? (m[1] ?? m[2]).trim() : null
+}
 
 // The repo's own graph, from its Markdown: each `### <id>` heading, its file
 // and group (`- group <Tier> / <Group> · file \`<path>\``, a trailing note
@@ -83,10 +90,10 @@ export function readGraphDoc(text) {
       const parts = rest.split(/\s+·\s+/)
       const group = clean(parts[0].replace(/\s*\([^()]*\)$/, ''))
       node.group = NONE.test(group) ? '' : group
-      const file = parts.slice(1).map((p) => PATH_PART.exec(clean(p))?.[1]).find(Boolean)
+      const file = parts.slice(1).map(pathIn).find(Boolean)
       if (file) node.file = file
     } else if (name === 'file') {
-      const file = PATH_PART.exec(clean(rest))?.[1]
+      const file = pathIn(rest)
       if (file) node.file = file
       else unreadable.push({ where: node.id, line, detail: `its file line, "${clean(rest)}", names no path` })
     } else if (name === 'composes') {
@@ -495,15 +502,23 @@ export function storyPairs(entries, { a, b, routes, domTier = 'Pages' }) {
 // ── Settling against the ledger ─────────────────────────────────────────────
 
 // The differences split by what the ledger accepts: open (to fix or accept),
-// accepted (with the reason), and stale (accepted keys no longer found).
+// accepted (with the reason), and stale (accepted keys no longer found). A
+// key holds only while its detail is the one accepted: a key whose detail
+// changed since (another group, a higher count, more values) is open again,
+// and so is one accepted without its detail, since what changed cannot be told.
 export function settle(differences, accepted = []) {
-  const why = new Map(accepted.map((a) => [a.key, a.why]))
+  const byKey = new Map(accepted.map((a) => [a.key, a]))
   const found = new Set(differences.map((d) => d.key))
-  return {
-    open: differences.filter((d) => !why.has(d.key)),
-    accepted: differences.filter((d) => why.has(d.key)).map((d) => ({ ...d, why: why.get(d.key) })),
-    stale: accepted.filter((a) => !found.has(a.key)).map((a) => a.key),
+  const open = []
+  const held = []
+  for (const d of differences) {
+    const a = byKey.get(d.key)
+    if (!a) open.push(d)
+    else if (typeof a.detail !== 'string') open.push({ ...d, detail: `${d.detail}; accepted on ${a.date ?? 'an earlier day'} without the detail it had then, so a change cannot be told: accept it again if it still holds`, changed: true })
+    else if (a.detail !== d.detail) open.push({ ...d, detail: `${d.detail}; changed since accepted on ${a.date ?? 'an earlier day'}: was ${a.detail}`, changed: true })
+    else held.push({ ...d, why: a.why })
   }
+  return { open, accepted: held, stale: accepted.filter((a) => !found.has(a.key)).map((a) => a.key) }
 }
 
 // Rows as aligned text: numbers to the right, the rest to the left, and the

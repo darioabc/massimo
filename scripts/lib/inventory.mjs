@@ -218,6 +218,17 @@ export function headerCensus(root, files, config = {}, text = (f) => readText(ro
   }
 }
 
+// The repo's own scripts that read ds: headers: JavaScript or TypeScript
+// outside the components and tests whose code, not only a comment, names
+// `ds:`, such as a generator that parses the headers or a check that
+// enforces them. They depend on the headers staying as they are.
+const SCRIPT_CODE = /\.(?:[cm]?[jt]s)$/
+const NAMES_HEADERS = /(?<![\w$-])ds:/
+export function headerReaders(files, text, config = {}) {
+  const component = compileGlobs(config.components?.include ?? [])
+  return files.filter((f) => SCRIPT_CODE.test(f) && !isTestFile(f) && !component(f) && NAMES_HEADERS.test(text(f) ?? '') && NAMES_HEADERS.test(stripComments(text(f), f))).sort(compare)
+}
+
 // ── Story tools and lanes ───────────────────────────────────────────────────
 
 const CSF_FILE = /\.stories\.[cm]?[jt]sx?$/
@@ -297,7 +308,8 @@ function storyTools(tools, files, pkg, records) {
 // The lane detect found, read further: its gate's integration file, its page
 // and frame patterns, its manifest's entries, the state blocks on its pages,
 // the package scripts that run it and the folder its build writes to.
-function laneRecord(root, files, pkg, lane, text) {
+// adopt.mjs verify stories reads the lane live with this too.
+export function laneRecord(root, files, pkg, lane, text = (f) => readText(root, f)) {
   if (!lane?.dir) return null
   const dir = lane.dir
   const pageIndex = files.filter((f) => new RegExp(`^${escapeRe(dir)}/pages/[^/]+/index\\.[a-z]+$`).test(f))
@@ -591,15 +603,44 @@ function needlesOf(asset) {
   return out
 }
 
+// The workspace root as a workflow names it: `$GITHUB_WORKSPACE`, with or
+// without braces, or `${{ github.workspace }}`.
+const WORKSPACE = /^(?:\$\{\{\s*github\.workspace\s*\}\}|\$\{?GITHUB_WORKSPACE\}?)(?=\/|$)/
+const ROOT_DIR = /^(?:\.\/?|\$\{\{\s*github\.workspace\s*\}\}\/?|\$\{?GITHUB_WORKSPACE\}?\/?)$/
+// A `cd` in a run script, with its folder (quoted or not, the workspace
+// expression's spaces kept), or none for a bare `cd`.
+const CD = /(?:^|[\s;&|(])cd(?=[\s;&|)]|$)[ \t]*(?:(['"]?)((?:\$\{\{\s*github\.workspace\s*\}\}|[^\s'";&|)])+)\1)?/g
+
+// Where a `cd` leaves a script, from `dir` (the folders below the root, or
+// null when outside it) and `prev` (where it was before, for `cd -`).
+// Returns [dir, prev].
+function cdTo(dir, prev, arg) {
+  if (arg === '-') return [prev, dir]
+  if (arg === undefined) return [null, dir]
+  if (ROOT_DIR.test(arg)) return [[], dir]
+  const ws = WORKSPACE.exec(arg)
+  if (!ws && /^[/~$]/.test(arg)) return [null, dir]
+  if (!ws && dir === null) return [null, dir]
+  const parts = ws ? [] : [...dir]
+  for (const p of arg.slice(ws ? ws[0].length : 0).split('/')) {
+    if (!p || p === '.') continue
+    if (p !== '..') parts.push(p)
+    else if (parts.length === 0) return [null, dir]
+    else parts.pop()
+  }
+  return [parts, dir]
+}
+
 // A workflow as the repo root sees it: comments blanked, and so is every job
 // or step whose working-directory is another folder (its own, its job's, or
 // the workflow's `defaults`), since its `npm run` names a nested app's
-// scripts. In a step that changes folder with `cd <dir>`, what follows the
-// cd is blanked too. Lines keep their numbers.
+// scripts. A step's run script is followed folder by folder through its
+// `cd`s: what runs in another folder is blanked, and what runs after a `cd`
+// back to the root (`cd ..`, `cd -`, `cd $GITHUB_WORKSPACE`) is not. Lines
+// keep their numbers.
 export function workflowText(text) {
   const lines = text.split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '$1'))
   const indentOf = (l) => l.length - l.trimStart().length
-  const ROOT_DIR = /^(?:\.\/?|\$\{\{\s*github\.workspace\s*\}\}\/?|\$\{?GITHUB_WORKSPACE\}?\/?)$/
   const elsewhere = (chunk) => {
     const m = /working-directory:\s*['"]?([^'"\s]+)/.exec(chunk)
     return m ? !ROOT_DIR.test(m[1]) : null
@@ -607,23 +648,34 @@ export function workflowText(text) {
   const blank = (from, to) => {
     for (let i = from; i < to; i++) lines[i] = ''
   }
-  // In a step's run script, from a `cd` into another folder to the end of
-  // the step. A block script's lines sit deeper than its `run:` key.
+  // In a step's run script, what runs outside the root. A block script's
+  // lines sit deeper than its `run:` key; the folder carries from line to line.
   const blankAfterCd = (from, to) => {
     let runCol = null
+    let dir = []
+    let prev = []
+    const judged = (s) => (dir !== null && dir.length === 0 ? s : s.replace(/[^\n]/g, ' '))
     for (let i = from; i < to; i++) {
       const key = /^(\s*(?:-\s+)?)run:/.exec(lines[i])
-      if (key) runCol = key[1].length
-      else if (runCol === null || (lines[i].trim() && indentOf(lines[i]) <= runCol)) {
+      if (key) {
+        runCol = key[1].length
+        dir = []
+        prev = []
+      } else if (runCol === null || (lines[i].trim() && indentOf(lines[i]) <= runCol)) {
         runCol = null
         continue
       }
       const offset = key ? key[0].length : 0
-      const m = /(?:^|[\s;&|(])cd\s+(['"]?)([^\s'";&|)]+)\1/.exec(lines[i].slice(offset))
-      if (!m || ROOT_DIR.test(m[2])) continue
-      lines[i] = lines[i].slice(0, offset + m.index)
-      blank(i + 1, to)
-      return
+      const line = lines[i]
+      let out = line.slice(0, offset)
+      let at = offset
+      for (const m of line.slice(offset).matchAll(CD)) {
+        const start = offset + m.index
+        out += judged(line.slice(at, start))
+        ;[dir, prev] = cdTo(dir, prev, m[2])
+        at = start
+      }
+      lines[i] = out + judged(line.slice(at))
     }
   }
   const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l))
@@ -972,7 +1024,7 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   // The repo's own index may list its tiers as headings: that is their order.
   const index = own.docs.find((d) => d.kind === 'index' && d.generated)
   const tierOrder = index ? [...text(index.path).matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm)].map((m) => m[1]) : []
-  const headers = headerCensus(root, files, config, text, { tierOrder, tierSource: index?.path ?? null })
+  const headers = { ...headerCensus(root, files, config, text, { tierOrder, tierSource: index?.path ?? null }), readers: headerReaders(files, text, config) }
   for (const r of own.ratchets) Object.assign(r, proposedMap(r.rules, auditKinds))
   // The style files the config names, or detect's suggestion before there is one.
   const styleFiles = (config.tokens?.styleFiles?.length ? config.tokens.styleFiles : detected?.suggestedConfig?.tokens?.styleFiles ?? []).filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)
@@ -1046,6 +1098,7 @@ export function inventoryMarkdown(inv, { command }) {
   out.push('## Header keys', '')
   if (inv.headers.keys.length) {
     out.push(...table(['Key', 'Files', 'Lines', 'Known', 'Role', 'Proposed role', 'Examples'], inv.headers.keys.map((k) => [`ds:${k.key}`, k.files, k.lines, k.builtin ? 'built in' : k.role ? 'has a role' : k.extra ? 'extra key' : 'no', roleText(k.role), roleText(k.proposed) || (k.builtin || k.role ? '' : 'none fits'), k.examples.join(', ')])), '')
+    if (inv.headers.readers?.length) out.push(`The repo's own scripts that read the headers: ${inv.headers.readers.join(', ')}.`, '')
     if (inv.headers.groups.length) {
       out.push('### Groups', '', `Proposed tiers, in order${inv.headers.tiersFrom ? ` (as the headings of ${inv.headers.tiersFrom} list them)` : ''}: ${inv.headers.taxonomy.tiers.join(', ')}.`, '')
       out.push('Scan proposes no path rules: a file without a ds:group line has no group until you add a rule for it to graph.taxonomy.rules.', '')

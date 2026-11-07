@@ -22,18 +22,25 @@
 //                                 compare massimo's graph, stories, audit or tokens
 //                                 (all four without a class) with the repo's own, as a
 //                                 table; exit 1 on a difference the ledger has not
-//                                 accepted. Records nothing: mark moves the class.
+//                                 accepted, or accepted with another detail. A class
+//                                 that cannot run is one difference, error, and the
+//                                 others still run. Records nothing: mark moves the class.
 //     stories also: --pairs <file> --a <base url> --b <base url> [--dom-tier Pages]
 //                                 write a shoot.mjs pairs file from the manifest;
 //                                 --shoot [--out <dir>] [--playwright <path>] runs it
+//                                 (--pairs and --out from --root when relative)
 //   adopt.mjs accept <class> <key> --why <text>
-//                                 accept a difference verify reports, with the reason
-//   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list them
+//                                 accept a difference verify reports now, with the
+//                                 reason and its detail; a key verify does not report
+//                                 is refused
+//   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
+//                                 them; a file code depends on is refused
 //   adopt.mjs retire <class> --dry-run [--json]
 //                                 what retiring a class takes out and who still depends
 //                                 on it; exit 1 while a consumer remains outside the
-//                                 historical docs. It never deletes: the skill does, on
-//                                 your OK
+//                                 historical docs, or a generator that stays still
+//                                 writes what goes. It never deletes: the skill does,
+//                                 on your OK
 //
 // Read-only towards the repo: only massimo.config.json (config --write), the
 // files under <project>/adopt/, a pairs file (verify --pairs) and shots
@@ -63,8 +70,8 @@ import {
   retirePlan,
   statusTable,
 } from './lib/adopt.mjs'
-import { buildInventory, inventoryMarkdown, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
-import { DEFAULTS, deepMerge, fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, writeFileAtomic } from './lib/project.mjs'
+import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
+import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, writeFileAtomic } from './lib/project.mjs'
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
@@ -86,18 +93,26 @@ function detect() {
     const out = execFileSync(process.execPath, [join(here, 'detect.mjs'), '--root', root], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
     return JSON.parse(out.toString())
   } catch (e) {
-    fail(`detect.mjs failed: ${e.message.split('\n')[0]}`)
+    throw new Error(`detect.mjs failed: ${e.message.split('\n')[0]}`)
   }
+}
+
+// The repo's files as scan reads them.
+function scanFiles(effective, pkg) {
+  return repoFiles(root, { ignore: effective.ignore, projectRel: exists ? projectRel : effective.projectDir, workspaces: Boolean(pkg.workspaces) })
 }
 
 // The inventory of the repo as it is now. Before init, the config detect
 // suggests stands in for the one init would write.
 function scan() {
-  const detected = detect()
-  const pkg = readJson(join(root, 'package.json'), {}) ?? {}
-  const effective = exists ? config : deepMerge(structuredClone(DEFAULTS), detected.suggestedConfig ?? {})
-  const files = repoFiles(root, { ignore: effective.ignore, projectRel: exists ? projectRel : effective.projectDir, workspaces: Boolean(pkg.workspaces) })
-  return buildInventory(root, { detected, config: effective, pkg, files, auditKinds: ALL_KINDS })
+  try {
+    const detected = detect()
+    const pkg = readJson(join(root, 'package.json'), {}) ?? {}
+    const effective = exists ? config : deepMerge(structuredClone(DEFAULTS), detected.suggestedConfig ?? {})
+    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective, pkg), auditKinds: ALL_KINDS })
+  } catch (e) {
+    fail(e.message)
+  }
 }
 
 function needInit(what) {
@@ -167,6 +182,13 @@ const shownPath = (abs) => inRepo(abs) ?? abs
 // A path given on the command line, from the repo root or absolute.
 const repoFile = (path) => inRepo(resolve(root, path))
 
+// Inside a verify class, a problem is that class's difference, never an
+// exit: these throw where the commands would fail.
+const newer = (kind, version, where) => {
+  const message = newerMessage(kind, version, where)
+  if (message) throw new Error(message)
+}
+
 // A vendored script run on the same repo, config and project as this run.
 function runScript(name, argv) {
   const shared = ['--root', root, ...(flags.config ? ['--config', configPath] : []), ...(flags['project-dir'] ? ['--project-dir', projectDir] : [])]
@@ -178,7 +200,11 @@ const lastLine = (text) => text.trim().split('\n').pop() ?? ''
 // The repo's own file a class is compared with: --against, else the first
 // asset of the ledger's class of one of `kinds`.
 function againstFile(c, kinds) {
-  if (typeof flags.against === 'string') return repoFile(flags.against) ?? fail(`--against ${flags.against} is not in the repo`)
+  if (typeof flags.against === 'string') {
+    const file = repoFile(flags.against)
+    if (!file) throw new Error(`--against ${flags.against} is not in the repo`)
+    return file
+  }
   for (const kind of kinds) {
     const a = c?.assets.find((x) => x.kind === kind && !x.missing)
     if (a) return a.paths[0]
@@ -193,11 +219,28 @@ function graphJson() {
     try {
       built = buildGraph(root, config, scriptCommand(root, projectDir, 'graph')).json
     } catch (e) {
-      fail(`graph.mjs cannot build the graph: ${e.message}`)
+      throw new Error(`graph.mjs cannot build the graph: ${e.message}`)
     }
   }
   return built
 }
+
+// graph.json as graph.mjs last wrote it, and whether it is behind the code
+// (not the graph built now); null when there is none.
+function graphWritten() {
+  const path = join(projectDir, 'graph.json')
+  if (!existsSync(path)) return null
+  const text = readFileSync(path, 'utf8')
+  let doc = null
+  try {
+    doc = JSON.parse(text)
+  } catch {
+    return { doc: null, behind: true }
+  }
+  newer('graph', doc?.version, 'graph.json')
+  return { doc, behind: text !== `${JSON.stringify(graphJson(), null, 2)}\n` }
+}
+const graphBehind = (what) => `graph.json is behind the code, so ${what}: run ${scriptCommand(root, projectDir, 'graph')}`
 
 function verifyGraph(ledger) {
   const file = againstFile(ledger.classes.graph, ['graph', 'index'])
@@ -208,24 +251,50 @@ function verifyGraph(ledger) {
   return { title: `massimo's graph, built in memory, against ${file} (read as ${repo.kind === 'index' ? 'an index' : 'a graph'})`, ...compareGraph(repo, graphJson(), { route: storyRoutes(config).story }) }
 }
 
-// The lane as massimo reads it: its entries and states (against what scan
-// read when the plan was made), the problems its checks find and the checks
-// it could not make; with --pairs, a shoot pairs file from the manifest, and
-// with --shoot, its verdict.
+// The lane as the scan's reader reads it now, from the lane detect finds,
+// or null when detect finds none.
+function liveLane() {
+  const lane = detect()?.storyTools?.lane
+  if (!lane?.dir) return null
+  const pkg = readJson(join(root, 'package.json'), {}) ?? {}
+  return laneRecord(root, scanFiles(config, pkg), pkg, lane)
+}
+
+// The lane: its entries and states as the scan's reader reads them now
+// against graph.json (the graph built in memory when there is none yet),
+// the problems massimo's checks find and the checks it could not make; with
+// --pairs, a shoot pairs file from the manifest, and with --shoot, its verdict.
 function verifyStories() {
   if (config.stories.lane !== 'manifest' || !config.stories.manifest) return { skip: 'stories.lane is not "manifest" with a stories.manifest, so there is no list of stories to verify' }
   const lane = graphJson().storyLane
   if (!lane) return { skip: 'the graph did not read a story lane' }
-  const inv = existsSync(inventoryPath(projectDir)) ? readInventory() : null
-  const scanned = inv?.stories?.lane?.manifest?.path === config.stories.manifest ? inv.stories.lane : null
   const differences = []
   const notes = []
   const counted = (rule) => lane.problems.filter((p) => p.rule === rule).length
-  const rows = [['What', 'At scan', 'massimo', 'Differ', 'Note']]
-  for (const [what, then, now] of [['manifest entries', scanned?.manifest.entries, lane.entries], ['states', scanned?.states, lane.states]]) {
-    const differs = then !== undefined && then !== now
-    rows.push([what, then === undefined ? '-' : String(then), String(now), differs ? '1' : '0', then === undefined ? 'no scan of this manifest to compare with' : ''])
-    if (differs) differences.push({ key: what.replace(/^manifest /, ''), detail: `scan read ${then}, massimo reads ${now}: check that the config names the lane scan found` })
+  const written = graphWritten()
+  const theirs = written ? (written.doc?.storyLane ?? {}) : lane
+  const live = liveLane()
+  const scanned = live?.manifest?.path === config.stories.manifest ? live : null
+  if (!live) notes.push('Scan finds no gated story lane here, so its reading is not compared.')
+  else if (!scanned) differences.push({ key: 'lane', detail: `scan finds the lane's manifest at ${live.manifest?.path ?? 'none'}, and the config names ${config.stories.manifest}: point stories.manifest at the lane scan finds` })
+  if (!written) notes.push('There is no graph.json yet, so the scan is compared with the graph built in memory.')
+  const rows = [['What', 'Scan', 'massimo', 'Differ', 'Note']]
+  const counts = { entries: [scanned?.manifest.entries, theirs.entries, lane.entries], states: [scanned?.states, theirs.states, lane.states] }
+  let behind = false
+  for (const [what, field] of [['manifest entries', 'entries'], ['states', 'states']]) {
+    const [now, held, built] = counts[field]
+    const differs = now !== undefined && now !== held
+    // graph.json lags the code when the graph built now reads what scan reads.
+    const lags = differs && Boolean(written) && built === now
+    behind ||= lags
+    rows.push([what, now === undefined ? '-' : String(now), held === undefined ? '-' : String(held), differs ? '1' : '0', lags ? 'graph.json is behind the code' : ''])
+    if (differs && !lags) {
+      differences.push({ key: field, detail: field === 'entries' ? `the scan's reader reads ${now} entries in ${config.stories.manifest}, and massimo's graph ${built}` : `the scan's reader counts ${now} states on the lane's pages, and massimo's graph ${built} on the pages of the manifest's entries` })
+    }
+  }
+  if (behind) {
+    const [[now, held], [statesNow, statesHeld]] = [counts.entries, counts.states]
+    differences.push({ key: 'check:graph', detail: graphBehind(`it holds ${plural(held ?? 0, 'entry', 'entries')} and ${plural(statesHeld ?? 0, 'state')} where the lane has ${now} and ${statesNow}`) })
   }
   for (const rule of ['story-title', 'story-files', 'story-states']) rows.push([`problems: ${rule}`, '', String(counted(rule)), String(counted(rule)), ''])
   rows.push(['problems: no-story', '', String(counted('no-story')), '', "verify audit compares it with the repo's ratchet"])
@@ -235,26 +304,38 @@ function verifyStories() {
   for (const p of lane.problems) if (p.rule !== 'no-story') differences.push({ key: `${p.rule}:${p.file}: ${p.detail}`, detail: `a ${p.rule} problem in the lane` })
   for (const [rule, why] of notChecked) differences.push({ key: `not-checked:${rule}`, detail: why })
   if (flags.pairs !== undefined) rows.push(...storyShots(differences, notes))
-  else if (truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
-  return { title: `the story lane at ${config.stories.manifest}, as massimo's graph reads it`, rows, differences, notes }
+  return { title: `the story lane at ${config.stories.manifest}: the scan's reading against ${written ? 'graph.json' : 'the graph built in memory'}, and the problems massimo's graph finds`, rows, differences, notes }
+}
+
+// A file in another massimo format than these scripts read, refused before
+// it is replaced.
+function refuseNewerOutput(path, kind, where) {
+  if (!existsSync(path)) return
+  let doc = null
+  try {
+    doc = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return
+  }
+  newer(kind, doc?.format, where)
 }
 
 // Write the pairs file for the lane and, with --shoot, run shoot.mjs on it
 // and fold each pair's verdict into the differences. Returns the table rows.
+// --pairs and --out are read from the repo root, as --against is.
 function storyShots(differences, notes) {
-  if (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string') fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
   const domTier = typeof flags['dom-tier'] === 'string' ? flags['dom-tier'] : 'Pages'
   const manifest = readManifest(readText(root, config.stories.manifest), config.stories.manifest)
   const { document, entries, skipped } = storyPairs(manifest.entries, { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier })
   const { problems } = parsePairs(document.pairs)
-  if (problems.length > 0) fail(`the pairs cannot be written: ${problems.join('; ')}`)
-  const path = resolve(flags.pairs)
-  refuseNewerFile(path, 'pairs', 'format', flags.pairs)
+  if (problems.length > 0) throw new Error(`the pairs cannot be written: ${problems.join('; ')}`)
+  const path = resolve(root, flags.pairs)
+  refuseNewerOutput(path, 'pairs', shownPath(path))
   writeJson(path, document)
   const pairs = document.pairs
   const dom = pairs.filter((p) => p.mode === 'dom').length
   notes.push(`Wrote ${plural(pairs.length, 'pair')} to ${shownPath(path)}: ${plural(entries, 'entry', 'entries')} at light and dark, 390 and 1440 wide, each on its frame route where it has one; ${dom} compared by page text (root ${domTier})${skipped ? `; ${plural(skipped, 'entry')} with no literal slug left out` : ''}.`)
-  const out = resolve(typeof flags.out === 'string' ? flags.out : join(projectDir, 'shots', 'adopt', 'stories'))
+  const out = typeof flags.out === 'string' ? resolve(root, flags.out) : join(projectDir, 'shots', 'adopt', 'stories')
   // Passed through to shoot.mjs, which runs from the repo root: a Playwright
   // path given from here is made absolute first.
   const pass = ['max-diff', 'threshold', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, f === 'playwright' ? resolve(flags[f]) : flags[f]] : []))
@@ -288,24 +369,24 @@ function verifyAudit(ledger) {
   const v = ledger.classes.audit?.verify
   if (!v) return { skip: "the ledger names no ratchet of the repo's own to compare the audit with" }
   const title = `the audit against ${v.ratchet}, by the map in ${shown('ledger.json')}`
+  const legacy = readJson(join(root, v.ratchet), null)
+  if (!legacy || typeof legacy.rules !== 'object' || legacy.rules === null) return { title, differences: [{ key: 'ratchet', detail: `${v.ratchet} is not there, or not a ratchet of the shape { rules: { <rule>: { count, offenders } } }` }] }
+  // A map with no rule in it: plan found no rule whose name is a kind.
+  const rules = Object.keys(legacy.rules)
+  const fix = `name the massimo kind each rule counts in audit.verify.map in ${shown('ledger.json')}, as <rule>=<kind> pairs${rules.length ? ` such as ${rules[0]}=color` : ''}, or keep the ratchet as the repo's own check`
+  if (!v.map.split(',').some((p) => p.trim())) return { title, differences: [{ key: 'map', detail: `no rule of ${v.ratchet} (${rules.join(', ') || 'none'}) maps to a massimo kind, so there is nothing to compare: ${fix}` }] }
   let pairs
   try {
     pairs = parseMap(v.map)
   } catch (e) {
-    fail(`${shown('ledger.json')}: audit.verify.map: ${e.message}`)
+    return { title, differences: [{ key: 'map', detail: `audit.verify.map does not read: ${e.message.replace(/^--map /, 'it ')}; ${fix}` }] }
   }
-  const legacy = readJson(join(root, v.ratchet), null)
-  if (!legacy || typeof legacy.rules !== 'object' || legacy.rules === null) return { title, differences: [{ key: 'ratchet', detail: `${v.ratchet} is not there, or not a ratchet of the shape { rules: { <rule>: { count, offenders } } }` }] }
   const result = runAudit(root, config, { projectDir })
   const compared = compareLegacy(legacy, pairs, offendersOf(result.findings), notMeasured(result))
   const differences = []
   // The story kinds count the problems graph.json holds: one behind the code
   // counts an old lane.
-  const graphPath = join(projectDir, 'graph.json')
-  if (result.kinds.includes('no-story') && existsSync(graphPath)) {
-    refuseNewer('graph', readJson(graphPath, null)?.version, 'graph.json')
-    if (readFileSync(graphPath, 'utf8') !== `${JSON.stringify(graphJson(), null, 2)}\n`) differences.push({ key: 'check:graph', detail: `graph.json is behind the code, so the story kinds count an old lane: run ${scriptCommand(root, projectDir, 'graph')}` })
-  }
+  if (result.kinds.includes('no-story') && graphWritten()?.behind) differences.push({ key: 'check:graph', detail: graphBehind('the story kinds count an old lane') })
   const rows = [['Rule', 'Kinds', 'Repo', 'massimo', 'Result']]
   for (const r of compared) {
     rows.push([r.rule, r.kinds.join(' + '), String(r.legacy), String(r.massimo), r.problem ?? (r.differs.length === 0 ? 'match' : `${plural(r.differs.length, 'file differs', 'files differ')}`)])
@@ -342,7 +423,7 @@ function verifyTokens(ledger) {
   if (!file) return { title, before, differences, notes: ["The ledger names no token inventory of the repo's own, so resolved.json is not compared: pass --against <file>."] }
   if (!existsSync(resolvedPath)) return { title, before, differences, notes: [`There is no resolved.json to compare: run ${scriptCommand(root, projectDir, 'tokens', 'resolved')}.`] }
   const ours = readJson(resolvedPath, null)
-  refuseNewer('resolved', ours?.format, shownPath(resolvedPath))
+  newer('resolved', ours?.format, shownPath(resolvedPath))
   let doc = null
   try {
     doc = JSON.parse(readFileSync(join(root, file), 'utf8'))
@@ -355,6 +436,17 @@ function verifyTokens(ledger) {
 }
 
 const VERIFY = { graph: verifyGraph, stories: verifyStories, audit: verifyAudit, tokens: verifyTokens }
+
+// One class verified inside its own guard: whatever stops it is that
+// class's one difference, error, and the other classes still run.
+function runVerify(name, ledger) {
+  if (!ledger.classes[name]) return { skip: `the ledger has no ${name} class: scan found nothing of it to adopt` }
+  try {
+    return VERIFY[name](ledger)
+  } catch (e) {
+    return { title: 'it could not run', differences: [{ key: 'error', detail: `${e instanceof Error ? e.message : String(e)}. An error is fixed, never accepted` }] }
+  }
+}
 
 // One class's report: its table, its notes and each difference, open or
 // accepted with its reason, then what to do next. Returns the open count.
@@ -371,7 +463,8 @@ function verifyReport(cls, result, c) {
   for (const d of open) lines.push(`  open      ${d.key}  ${d.detail}`)
   for (const d of accepted) lines.push(`  accepted  ${d.key}  ${d.detail}. Why: ${d.why}`)
   if (stale.length) lines.push(`Accepted in the ledger but no longer found: ${stale.join('; ')}. Remove ${stale.length === 1 ? 'it' : 'them'} from ${shown('ledger.json')}.`)
-  lines.push('', open.length > 0 ? `${cls}: ${plural(open.length, 'open difference')}. Fix each, or accept one with its reason: ${scriptCommand(root, projectDir, 'adopt', `accept ${cls} '<key>' --why '<reason>'`)}` : passLine(cls, c))
+  const changed = open.filter((d) => d.changed).length
+  lines.push('', open.length > 0 ? `${cls}: ${plural(open.length, 'open difference')}${changed ? `, ${changed} of them changed since accepted` : ''}. Fix each, or accept one with its reason: ${scriptCommand(root, projectDir, 'adopt', `accept ${cls} '<key>' --why '<reason>'`)}` : passLine(cls, c))
   return { lines, open: open.length, result: { ...result, open, accepted, stale } }
 }
 
@@ -397,16 +490,25 @@ function retireReport(cls, plan) {
   if (plan.elsewhere.length) lines.push(`Files a generator that goes also writes, for other classes, which lose their writer: ${plan.elsewhere.map((e) => `${e.path} (${e.class ?? 'no class'}${e.state ? `, ${e.state}` : ''})`).join(', ')}.`)
   const where = (k) => `${k.file}${k.script ? ` (${k.script})` : ''}${k.line ? `:${k.line}` : ''}`
   const line = (k) => `  ${k.class.padEnd(8)}  ${where(k)}  ${k.how}${k.via ? ` through ${k.via}` : ''}${k.writtenBy ? `, written by ${k.writtenBy}` : ''}  (${k.assets.join(', ')})`
+  if (plan.writers.length) {
+    lines.push('', `Written by a generator that stays (${plan.writers.length}), which would write ${plan.writers.length === 1 ? 'it' : 'them'} again, and whose check fails without ${plan.writers.length === 1 ? 'it' : 'them'}:`)
+    for (const w of plan.writers) lines.push(`  ${w.path}  written by ${w.writer} (${w.class ?? 'no class'}${w.state ? `, ${w.state}` : ''}): retire it with its writer${w.class && w.class !== cls ? `, or retire ${w.class} first` : ''}`)
+  }
   lines.push('', `Consumers to repoint first (${plan.consumers.length}):`, ...(plan.consumers.length ? plan.consumers.map(line) : ['  none']))
   if (plan.historical.length) lines.push('', `Historical docs, left as they are (${plan.historical.length}):`, ...plan.historical.map(line))
+  const holds = [
+    plan.writers.length ? `${plural(plan.writers.length, 'file has', 'files have')} a writer that stays` : '',
+    plan.consumers.length ? `${plural(plan.consumers.length, 'consumer remains', 'consumers remain')} outside the docs the ledger marks historical` : '',
+  ].filter(Boolean)
   lines.push(
     '',
-    plan.consumers.length > 0
-      ? `Not clean: ${plural(plan.consumers.length, 'consumer remains', 'consumers remain')} outside the docs the ledger marks historical. Repoint each first, or mark a doc that only records how things were with ${scriptCommand(root, projectDir, 'adopt', 'historical <path>')}, then run this again.`
+    holds.length > 0
+      ? `Not clean: ${holds.join(', and ')}. ${plan.writers.length ? 'Retire each writer with what it writes, or its class first. ' : ''}${plan.consumers.length ? `Repoint each consumer first, or mark a doc that only records how things were with ${scriptCommand(root, projectDir, 'adopt', 'historical <path>')}. ` : ''}Then run this again.`
       : 'Clean: nothing outside the historical docs depends on what goes. The adopt skill removes it, its package scripts and its workflow jobs in one commit carrying an Adopt-Batch trailer, on your OK.',
   )
   return lines
 }
+const notClean = (plan) => plan.consumers.length > 0 || plan.writers.length > 0
 
 switch (command) {
   case 'scan': {
@@ -489,13 +591,11 @@ switch (command) {
     if (cls !== undefined && !VERIFY_CLASSES.includes(cls)) fail(`usage: adopt.mjs verify [<${VERIFY_CLASSES.join('|')}>] [--against <file>]; docs has nothing generated to verify`)
     if (cls === undefined && flags.against !== undefined) fail('--against names the file one class is compared with: pass the class too')
     if (flags.pairs !== undefined && cls !== undefined && cls !== 'stories') fail('--pairs goes with verify stories')
+    if (flags.pairs !== undefined && (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string')) fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
+    if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
-    const reports = (cls ? [cls] : VERIFY_CLASSES).map((name) => {
-      const c = ledger.classes[name]
-      const result = c ? VERIFY[name](ledger) : { skip: `the ledger has no ${name} class: scan found nothing of it to adopt` }
-      return [name, verifyReport(name, result, c)]
-    })
+    const reports = (cls ? [cls] : VERIFY_CLASSES).map((name) => [name, verifyReport(name, runVerify(name, ledger), ledger.classes[name])])
     if (truthy(flags.json)) {
       const out = Object.fromEntries(reports.map(([name, r]) => [name, r.result ?? { skip: r.lines[0] }]))
       process.stdout.write(`${JSON.stringify(out, null, 2)}\n`)
@@ -509,12 +609,25 @@ switch (command) {
   case 'accept': {
     needInit('accept')
     const [cls, key] = rest
-    if (!VERIFY_CLASSES.includes(cls) || !key || rest.length > 2) fail(`usage: adopt.mjs accept <${VERIFY_CLASSES.join('|')}> '<key>' --why '<reason>', with the key verify printed, in quotes`)
+    if (!VERIFY_CLASSES.includes(cls) || !key || rest.length > 2) fail(`usage: adopt.mjs accept <${VERIFY_CLASSES.join('|')}> '<key>' --why '<reason>' [--against <file>], with the key verify printed, in quotes`)
+    const why = typeof flags.why === 'string' ? flags.why : ''
+    if (!why.trim()) fail('accept needs --why <text>: the reason the difference is fine, for whoever reads the ledger next')
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
+    if (!ledger.classes[cls]) fail(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
+    if (key === 'error') fail(`error means verify ${cls} could not run, and an error is fixed, never accepted: run verify ${cls} and fix what it says`)
+    // What verify reports now: the key must be one of its differences, and
+    // its detail is kept, so a later change under the key is open again.
+    const result = runVerify(cls, ledger)
+    if (result.skip) fail(`verify ${cls} is skipped, so it has nothing to accept: ${result.skip}`)
+    const found = result.differences.find((d) => d.key === key)
+    if (!found) {
+      const { open } = settle(result.differences, ledger.classes[cls].accepted)
+      fail(`verify ${cls} reports no difference with the key '${key}'. Its open keys: ${open.length ? open.map((d) => `'${d.key}'`).join(', ') : 'none'}. Copy the key as verify prints it.`)
+    }
     let line
     try {
-      line = acceptDifference(ledger, cls, key, typeof flags.why === 'string' ? flags.why : '')
+      line = acceptDifference(ledger, cls, key, why, { detail: found.detail })
     } catch (e) {
       fail(e.message)
     }
@@ -534,6 +647,10 @@ switch (command) {
     }
     const file = repoFile(path)
     if (!file || !existsSync(join(root, file)) || !statSync(join(root, file)).isFile()) fail(`${path} is not a file in the repo`)
+    // retire leaves only a docs use alone: a use in code still counts, so a
+    // file with one is not a record of how things were.
+    const uses = scan().assets.flatMap((a) => a.consumers.filter((k) => k.file === file && k.class !== 'docs').map((k) => `${k.script ? `its ${k.script} script ` : ''}${k.how} ${a.id}${k.via ? ` through ${k.via}` : ''}${k.line ? ` at line ${k.line}` : ''} (${k.class})`))
+    if (uses.length > 0) fail(`${file} is not only a doc, so it cannot be historical: ${uses.join('; ')}. A use in code holds a retirement up whatever the ledger says: repoint it instead`)
     const line = markHistorical(ledger, file)
     writeJson(ledgerPath(projectDir), ledger)
     process.stdout.write(`${line}\n`)
@@ -549,7 +666,7 @@ switch (command) {
     if (!ledger.classes[cls]) fail(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
     const plan = retirePlan(ledger, cls, scan(), { jobAt: (file, line) => workflowJob(readText(root, file), line) })
     process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan).join('\n')}\n`)
-    if (plan.consumers.length > 0) process.exit(1)
+    if (notClean(plan)) process.exit(1)
     break
   }
   default:

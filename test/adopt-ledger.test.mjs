@@ -27,8 +27,15 @@ test('init on a repo with something to adopt sets the adopt phase to do', () => 
   assert.deepEqual(JSON.parse(r.stdout).adoptable.map((a) => a.kind), ['lane', 'headers', 'graph', 'ratchet', 'tokens', 'design-md'])
   const phase = readJson(project, 'state.json').phases.find((p) => p.id === 'adopt')
   assert.equal(phase.status, 'todo')
-  assert.equal(phase.note, 'found lane, headers, graph, ratchet, tokens, design-md; start with adopt.mjs scan')
-  assert.match(read(project, 'STATUS.md'), /\| Adopt the repo's own setup \| ○ to do \| found lane/)
+  assert.equal(phase.note, 'found lane, headers, graph, ratchet, tokens, design-md; start with /massimo:adopt')
+  // STATUS.md and the session hook route the phase to its skill, not to a script.
+  const status = read(project, 'STATUS.md')
+  assert.match(status, /\| Adopt the repo's own setup \| ○ to do \| found lane, headers, graph, ratchet, tokens, design-md; start with \/massimo:adopt \| `\/massimo:adopt` \|/)
+  assert.match(status, /\*\*Next phase:\*\* Set up the project, with `\/massimo:start`\./)
+  const hook = spawnSync(process.execPath, [join(SCRIPTS, 'session-start.mjs')], { encoding: 'utf8', env: { ...env, CLAUDE_PROJECT_DIR: ctx.root } })
+  const context = JSON.parse(hook.stdout).hookSpecificOutput.additionalContext
+  assert.match(context, /adopt ○ \(found lane, headers, graph, ratchet, tokens, design-md; start with \/massimo:adopt\)/)
+  for (const text of [status, context]) assert.doesNotMatch(text, /adopt\.mjs/)
 })
 
 test('plan needs the inventory, then writes the ledger and the proposed config', () => {
@@ -55,6 +62,7 @@ test('plan needs the inventory, then writes the ledger and the proposed config',
   assert.ok(asset('audit', 'ratchet:docs/system/ratchet.json').lines.includes('logo-colour (count 0) has no massimo kind: keep it as a project check under guard.extraChecks, or accept losing it.'))
   assert.ok(asset('tokens', 'tokens:docs/system/tokens.json').lines.includes('Read at build or run time by src/stories/foundations.ts: repoint it before cut-over.'))
   assert.ok(asset('graph', 'headers').lines.includes('ds:owner on 1 file: no role fits, so it is read as an extra key and its values are not checked.'))
+  assert.ok(asset('graph', 'headers').lines.includes('scripts/build-system.mjs reads the ds: headers as well. The headers stay in the source unchanged, so it keeps working.'))
   assert.deepEqual(asset('stories', 'gate:lab-integration.mjs').consumers, [{ file: 'astro.config.mjs', line: 1, class: 'deploy', how: 'imports' }])
   assert.ok(asset('graph', 'doc:docs/system/graph.md').lines.includes('Named in docs/map.md, which scripts/make-map.mjs writes: change scripts/make-map.mjs and regenerate with it, rather than editing by hand.'))
   assert.ok(asset('graph', 'headers').lines.some((line) => /^Scan proposes no path rules: add rules to graph\.taxonomy\.rules/.test(line)))

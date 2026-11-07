@@ -99,7 +99,7 @@ if (!existsSync(join(projectDir, 'state.json'))) {
   // The adopt phase is to do only when the repo has a setup of its own.
   const adoptable = detect()?.adoptable ?? []
   if (adoptable.length > 0) {
-    setPhase(state, 'adopt', 'todo', `found ${[...new Set(adoptable.map((a) => a.kind))].join(', ')}; start with adopt.mjs scan`)
+    setPhase(state, 'adopt', 'todo', `found ${[...new Set(adoptable.map((a) => a.kind))].join(', ')}; start with /massimo:adopt`)
     report.adoptable = adoptable
   }
   report.created.push(`${projectRel}/state.json`)

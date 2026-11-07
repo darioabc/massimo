@@ -11,8 +11,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
+import { planLedger } from '../scripts/lib/adopt.mjs'
 import { walk } from '../scripts/lib/glob.mjs'
-import { headerCensus, headerEntries, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
+import { headerCensus, headerEntries, inventoryMarkdown, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
 import { SCRIPTS, read, readJson, scratch } from './helpers.mjs'
 
 const ctx = scratch('legacy')
@@ -65,6 +66,8 @@ test('the header census counts files per key, knows the built-in ones and propos
   assert.equal(key('owner').proposed, null)
   // The generator documents the grammar in a comment and a string; neither is a header.
   assert.ok(!key('group').examples.includes('scripts/build-system.mjs'))
+  // It names ds: in its code, so it reads the headers.
+  assert.deepEqual(inv.headers.readers, ['scripts/build-system.mjs'])
 })
 
 test('groups give the proposed taxonomy, tiers in the order the repo index lists them; pages and layouts give node kinds', () => {
@@ -212,6 +215,70 @@ test("a workflow's own defaults and a cd into another folder count as that folde
     '      - run: cd $GITHUB_WORKSPACE; npm run seven',
   ]
   assert.deepEqual(runs(cd), ['one', 'three', 'four', 'six', 'seven'])
+})
+
+test('a run script is followed through its cds: back at the root, what runs is the root again', () => {
+  const runs = (lines) => [...workflowText(lines.join('\n')).matchAll(/npm run ([\w:]+)/g)].map((m) => m[1])
+  const lines = [
+    'jobs:', '  a:', '    steps:',
+    '      - run: cd site && npm ci && npm run one && cd .. && npm run graph:check',
+    '      - run: |', '          cd site', '          npm run two', '          cd -', '          npm run three',
+    '      - run: cd app/sub && npm run four && cd ../.. && npm run five',
+    '      - run: cd app; npm run six; cd "$GITHUB_WORKSPACE"; npm run seven',
+    '      - run: cd app && npm run eight && cd ${{ github.workspace }} && npm run nine',
+    '      - run: cd app && cd "${{ github.workspace }}/site" && npm run ten && cd .. && npm run eleven',
+    '      - run: cd .. && npm run twelve',
+    '      - run: cd /tmp/x && npm run thirteen && cd .. && npm run fourteen',
+    '      - run: cd && npm run fifteen',
+    '      - run: npm run sixteen',
+  ]
+  const out = workflowText(lines.join('\n'))
+  assert.equal(out.split('\n').length, lines.length)
+  assert.deepEqual(runs(lines), ['graph:check', 'three', 'five', 'seven', 'nine', 'eleven', 'sixteen'])
+  // The root-level script keeps its column, so its line and place are where they were.
+  assert.equal(out.split('\n')[3].indexOf('npm run graph:check'), lines[3].indexOf('npm run graph:check'))
+})
+
+test("the repo's own scripts that read ds: headers are found, and a key or a reader of its own makes the headers an asset", () => {
+  const root = mkdtempSync(join(tmpdir(), 'massimo-adopt-headers-'))
+  try {
+    const files = {
+      'package.json': JSON.stringify({ dependencies: { astro: '5' }, scripts: { 'check:headers': 'node tools/check-headers.mjs' } }),
+      'src/components/Button.astro': '---\n// ds:group Primitives / Actions\n---\n<button />\n',
+      'src/components/Card.astro': '---\n// ds:group Components / Cards\n// ds:use-when a reader scans a list\n---\n<div />\n',
+      'src/lib/ids.ts': 'export const ids = { a: 1 }\n',
+      'src/lib/note.ts': '// The ds: headers are read by the graph, not here.\nexport const x = 1\n',
+    }
+    const write = () => {
+      for (const [f, body] of Object.entries(files)) {
+        mkdirSync(join(root, f, '..'), { recursive: true })
+        writeFileSync(join(root, f), body)
+      }
+    }
+    write()
+    const builtIn = JSON.parse(adopt(root, ['--json']).stdout)
+    assert.deepEqual(builtIn.headers.readers, [])
+    assert.equal(planLedger(builtIn).classes.graph, undefined)
+    // A script that reads the headers is the repo's own setup.
+    files['tools/check-headers.mjs'] = "import { readFileSync } from 'node:fs'\nconst KEY = /\\/\\/\\s*ds:([a-z-]+)\\s+(.*)/\nexport const read = (f) => KEY.exec(readFileSync(f, 'utf8'))\n"
+    write()
+    const withReader = JSON.parse(adopt(root, ['--json']).stdout)
+    assert.deepEqual(withReader.headers.readers, ['tools/check-headers.mjs'])
+    const headers = planLedger(withReader).classes.graph.assets.find((a) => a.id === 'headers')
+    assert.deepEqual([headers.decision, headers.loss], ['keep', 'clean'])
+    assert.equal(headers.lines[0], 'tools/check-headers.mjs reads the ds: headers as well. The headers stay in the source unchanged, so it keeps working.')
+    assert.match(inventoryMarkdown(withReader, { command: 'x' }), /\nThe repo's own scripts that read the headers: tools\/check-headers\.mjs\.\n/)
+    // A key of the repo's own, with no reader, is one too.
+    delete files['tools/check-headers.mjs']
+    rmSync(join(root, 'tools'), { recursive: true })
+    files['src/components/Card.astro'] = '---\n// ds:group Components / Cards\n// ds:owner the cards team\n---\n<div />\n'
+    write()
+    const ownKey = JSON.parse(adopt(root, ['--json']).stdout)
+    assert.deepEqual(ownKey.headers.readers, [])
+    assert.ok(planLedger(ownKey).classes.graph.assets.some((a) => a.id === 'headers'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('story tools: CSF files read statically, and what is not readable is listed', () => {

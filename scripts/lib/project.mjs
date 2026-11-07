@@ -273,7 +273,8 @@ const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts f
 // was written by a newer massimo, and reading it as an older one would guess.
 // baseline 2: it tracks a kind added in 0.3.0 (audit.mjs NEWER_KINDS).
 export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1 }
-const newerMessage = (kind, version, where) =>
+// Why a file of `kind` at `version` is too new to read, or null.
+export const newerMessage = (kind, version, where) =>
   typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null
 export function refuseNewer(kind, version, where, code = 1) {
   const message = newerMessage(kind, version, where)

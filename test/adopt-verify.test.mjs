@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { workflowJob } from '../scripts/lib/inventory.mjs'
@@ -96,6 +96,20 @@ test('verify needs a ledger and a class it can verify', () => {
   assert.match(adopt('verify', 'docs').stderr, /usage: adopt\.mjs verify \[<graph\|stories\|audit\|tokens>\]/)
   assert.match(adopt('verify', '--against', 'x.md').stderr, /--against names the file one class is compared with: pass the class too/)
   assert.match(adopt('verify', 'graph', '--pairs', 'p.json').stderr, /--pairs goes with verify stories/)
+  // A project with no ledger yet: plan writes it.
+  const path = join(project, 'adopt', 'ledger.json')
+  const saved = readFileSync(path, 'utf8')
+  rmSync(path)
+  try {
+    for (const args of [['verify'], ['verify', 'graph'], ['accept', 'graph', 'x', '--why', 'y']]) {
+      const r = adopt(...args)
+      assert.equal(r.status, 1, args.join(' '))
+      assert.equal(r.stdout, '')
+      assert.match(r.stderr, /^massimo: no design-system\/adopt\/ledger\.json yet: run node design-system\/scripts\/adopt\.mjs plan first\n$/)
+    }
+  } finally {
+    writeFileSync(path, saved)
+  }
 })
 
 test('verify graph reads the repo graph, compares what it states and names each node only one side has', () => {
@@ -128,14 +142,27 @@ test('a difference is keyed; accept records it with its reason, and a fixed one 
   assert.match(r.stdout, /  open {6}group:src\/components\/Card\.astro  the repo files it in Components \/ Lists, massimo in Components \/ Cards\n/)
   assert.match(adopt('accept', 'graph', 'group:src/components/Card.astro').stderr, /accept needs --why <text>/)
   assert.match(adopt('accept', 'docs', 'x', '--why', 'y').stderr, /usage: adopt\.mjs accept <graph\|stories\|audit\|tokens>/)
+  // A key verify does not report is refused, with the keys it does.
+  const typo = adopt('accept', 'graph', 'group:src/components/Crd.astro', '--why', 'a typo')
+  assert.equal(typo.status, 1)
+  assert.match(typo.stderr, /verify graph reports no difference with the key 'group:src\/components\/Crd\.astro'\. Its open keys: 'coverage:src\/components\/Button\.astro', 'group:src\/components\/Card\.astro'\. Copy the key as verify prints it\./)
+  assert.match(adopt('accept', 'graph', 'error', '--why', 'y').stderr, /error means verify graph could not run, and an error is fixed, never accepted/)
+  assert.equal(ledger().classes.graph.accepted, undefined)
   const a = adopt('accept', 'graph', 'group:src/components/Card.astro', '--why', 'the repo renamed the group after the scan')
   assert.equal(a.status, 0, a.stderr)
   assert.equal(a.stdout, 'graph: accepted: group:src/components/Card.astro\n')
-  assert.deepEqual(ledger().classes.graph.accepted, [{ key: 'group:src/components/Card.astro', why: 'the repo renamed the group after the scan', date: '2026-11-07' }])
+  const lists = 'the repo files it in Components / Lists, massimo in Components / Cards'
+  assert.deepEqual(ledger().classes.graph.accepted, [{ key: 'group:src/components/Card.astro', why: 'the repo renamed the group after the scan', detail: lists, date: '2026-11-07' }])
   adopt('accept', 'graph', 'coverage:src/components/Button.astro', '--why', 'a stale mark')
   const ok = adopt('verify', 'graph')
   assert.equal(ok.status, 0, ok.stdout)
   assert.match(ok.stdout, /Differences: 2 \(0 open, 2 accepted\)\.\n  accepted  coverage:src\/components\/Button\.astro  direct: only massimo's: button; incidental: only the repo's: button\. Why: a stale mark\n/)
+  // The same key with another detail is open again: what was accepted was the old one.
+  write('docs/system/graph.md', GRAPH.replace('`/stories/button` (direct)', '`/stories/button` (incidental)').replace('group Components / Cards · file `src/components/Card.astro`', 'group Explorations / Parked · file `src/components/Card.astro`'))
+  const moved = adopt('verify', 'graph')
+  assert.equal(moved.status, 1, moved.stdout)
+  assert.match(moved.stdout, /Differences: 2 \(1 open, 1 accepted\)\.\n  open {6}group:src\/components\/Card\.astro  the repo files it in Explorations \/ Parked, massimo in Components \/ Cards; changed since accepted on 2026-11-07: was the repo files it in Components \/ Lists, massimo in Components \/ Cards\n/)
+  assert.match(moved.stdout, /graph: 1 open difference, 1 of them changed since accepted\./)
   write('docs/system/graph.md', GRAPH)
   const stale = adopt('verify', 'graph')
   assert.equal(stale.status, 0)
@@ -154,6 +181,26 @@ test('the graph page is read tolerantly: a part that does not read is listed, ne
     ['Real', 7, 'the heading Real appears twice'],
     ['src/Two.astro', 11, 'its heading, "Two words", is not one id, so the node is not compared'],
   ])
+})
+
+test('a path in backticks is any text without a backtick, so route files read', () => {
+  const doc = readGraphDoc([
+    '### routes/+page', '- group Pages / Home · file `src/routes/+page.svelte`',
+    '### cart/page', '- group Pages / Shop · `src/app/(shop)/cart/page.tsx`',
+    '### posts.$slug', '- file `app/routes/posts.$slug.tsx`',
+    '### spaced', '- group A / B · `src/app/my folder/page.tsx`',
+    '### bare', '- group A / B · src/routes/+layout.svelte',
+    '### nowhere', '- group A / B · `client` script',
+  ].join('\n'))
+  assert.deepEqual(doc.nodes.map((n) => [n.id, n.file]), [
+    ['routes/+page', 'src/routes/+page.svelte'],
+    ['cart/page', 'src/app/(shop)/cart/page.tsx'],
+    ['posts.$slug', 'app/routes/posts.$slug.tsx'],
+    ['spaced', 'src/app/my folder/page.tsx'],
+    ['bare', 'src/routes/+layout.svelte'],
+    ['nowhere', null],
+  ])
+  assert.deepEqual(doc.unreadable.map((u) => u.where), ['nowhere'])
 })
 
 test('an index is read for groups and coverage, its ids matched to nodes by path', () => {
@@ -208,10 +255,29 @@ test('--pairs writes a pairs file from the manifest: each entry at light and dar
   assert.deepEqual(doc.pairs[7], { name: 'colours/dark-1440', a: 'http://a.test/stories/colours', b: 'http://b.test/stories/colours', width: 1440, height: 900, scheme: 'dark', mode: 'dom' })
   assert.match(r.stdout, /Wrote 8 pairs to pairs\.json: 2 entries at light and dark, 390 and 1440 wide, each on its frame route where it has one; 4 compared by page text \(root Foundations\)\./)
   assert.match(r.stdout, /Shoot them, with both servers up: node design-system\/scripts\/shoot\.mjs --pairs pairs\.json --out design-system\/shots\/adopt\/stories, or run verify stories again with --shoot\./)
+  // A newer pairs file is kept, and the refusal is the class's difference, not an exit.
   write('pairs.json', JSON.stringify({ format: 2, pairs: [] }))
   const newer = adopt('verify', 'stories', '--pairs', 'pairs.json', '--a', 'http://a.test', '--b', 'http://b.test')
   assert.equal(newer.status, 1)
-  assert.match(newer.stderr, /pairs\.json is format 2, and these scripts .* read up to 1/)
+  assert.equal(newer.stderr, '')
+  assert.match(newer.stdout, /^massimo adopt verify stories: it could not run\n/)
+  assert.match(newer.stdout, /\n  open {6}error  pairs\.json is format 2, and these scripts \([\d.]+\) read up to 1: update massimo.*\. An error is fixed, never accepted\n/)
+  assert.equal(readJson(ctx.root, 'pairs.json').format, 2)
+})
+
+test('--pairs and --out are read from --root, wherever verify runs from', () => {
+  const elsewhere = join(ctx.root, '..')
+  const r = spawnSync(process.execPath, [join(SCRIPTS, 'adopt.mjs'), 'verify', 'stories', '--pairs', 'from-root.json', '--out', 'shots-here', '--a', 'http://a.test', '--b', 'http://b.test', '--root', ctx.root], { encoding: 'utf8', env, cwd: elsewhere })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  assert.ok(existsSync(join(ctx.root, 'from-root.json')))
+  assert.ok(!existsSync(join(elsewhere, 'from-root.json')))
+  assert.match(r.stdout, /Wrote 8 pairs to from-root\.json: /)
+  assert.match(r.stdout, / --pairs from-root\.json --out shots-here, or run verify stories again with --shoot\./)
+  // An absolute path stays as given.
+  const outside = join(elsewhere, 'abs-pairs.json')
+  const abs = spawnSync(process.execPath, [join(SCRIPTS, 'adopt.mjs'), 'verify', 'stories', '--pairs', outside, '--a', 'http://a.test', '--b', 'http://b.test', '--root', ctx.root], { encoding: 'utf8', env, cwd: ctx.root })
+  assert.equal(abs.status, 0, abs.stdout + abs.stderr)
+  assert.ok(existsSync(outside))
 })
 
 test('--shoot runs shoot.mjs on the pairs and folds each verdict in', () => {
@@ -260,11 +326,82 @@ test('plan proposes the audit map from the rule names and keeps the one you edit
   assert.match(behind.stdout, /  open {6}check:graph  graph\.json is behind the code, so the story kinds count an old lane: run node design-system\/scripts\/graph\.mjs\n/)
   writeFileSync(poster, was)
   assert.equal(script('graph').status, 0)
+  // A map that does not read is the audit's difference, with the fix.
   l.classes.audit.verify.map = 'raw-colour=colour'
   writeFileSync(path, JSON.stringify(l, null, 2))
-  assert.match(adopt('verify', 'audit').stderr, /design-system\/adopt\/ledger\.json: audit\.verify\.map: --map names "colour", which is not a kind/)
+  const bad = adopt('verify', 'audit')
+  assert.equal(bad.status, 1)
+  assert.equal(bad.stderr, '')
+  assert.match(bad.stdout, /\n  open {6}map  audit\.verify\.map does not read: it names "colour", which is not a kind: [^;]+; name the massimo kind each rule counts in audit\.verify\.map in design-system\/adopt\/ledger\.json, as <rule>=<kind> pairs such as raw-colour=color, or keep the ratchet as the repo's own check\n/)
   l.classes.audit.verify.map = 'raw-colour=color'
   writeFileSync(path, JSON.stringify(l, null, 2))
+})
+
+test('verify stories reads the lane live: a valid story added fails only until graph.json is current', () => {
+  assert.equal(adopt('verify', 'stories').status, 0)
+  const manifest = join(ctx.root, 'src', 'stories', 'manifest.ts')
+  const was = readFileSync(manifest, 'utf8')
+  const page = join(ctx.root, 'src', 'stories', 'pages', 'badge')
+  try {
+    writeFileSync(manifest, was.replace("  { slug: 'colours'", "  { slug: 'badge', title: 'Primitives / Status / Badge', root: 'Primitives', group: 'Status', component: 'src/components/Badge.astro', states: ['Plain'] },\n  { slug: 'colours'"))
+    mkdirSync(page, { recursive: true })
+    writeFileSync(join(page, 'index.astro'), "---\nimport Badge from '../../../components/Badge.astro'\nimport StoryFrame from '../../StoryFrame.astro'\nimport StoryState from '../../StoryState.astro'\n---\n<StoryFrame title=\"Badge\">\n  <StoryState label=\"Plain\"><Badge /></StoryState>\n</StoryFrame>\n")
+    const behind = adopt('verify', 'stories')
+    assert.equal(behind.status, 1, behind.stdout)
+    assert.deepEqual([cells(behind.stdout, 'manifest entries'), cells(behind.stdout, 'states')], [['manifest entries', '3', '2', '1', 'graph.json is behind the code'], ['states', '4', '3', '1', 'graph.json is behind the code']])
+    assert.match(behind.stdout, /Differences: 1 \(1 open, 0 accepted\)\.\n  open {6}check:graph  graph\.json is behind the code, so it holds 2 entries and 3 states where the lane has 3 and 4: run node design-system\/scripts\/graph\.mjs\n/)
+    assert.equal(script('graph').status, 0)
+    const current = adopt('verify', 'stories')
+    assert.equal(current.status, 0, current.stdout)
+    assert.deepEqual(cells(current.stdout, 'manifest entries'), ['manifest entries', '3', '3', '0'])
+  } finally {
+    writeFileSync(manifest, was)
+    rmSync(page, { recursive: true, force: true })
+    assert.equal(script('graph').status, 0)
+  }
+})
+
+test('one class that cannot run is its own difference; the others still print, and an unmappable ratchet names the fix', () => {
+  const path = join(project, 'adopt', 'ledger.json')
+  const ratchet = join(ctx.root, 'docs', 'system', 'ratchet.json')
+  const savedLedger = readFileSync(path, 'utf8')
+  const savedRatchet = readFileSync(ratchet, 'utf8')
+  try {
+    // A ratchet whose rule names are no massimo kind, planned afresh.
+    writeFileSync(ratchet, JSON.stringify({ rules: { 'hex-literals': { count: 0, offenders: {} }, 'no-raw-px': { count: 0, offenders: {} } } }))
+    const l = JSON.parse(savedLedger)
+    delete l.classes.audit.verify
+    writeFileSync(path, JSON.stringify(l, null, 2))
+    assert.equal(adopt('scan').status, 0)
+    assert.equal(adopt('plan').status, 0)
+    assert.deepEqual(ledger().classes.audit.verify, { ratchet: 'docs/system/ratchet.json', map: '', kept: ['hex-literals', 'no-raw-px'] })
+    const r = adopt('verify')
+    assert.equal(r.status, 1)
+    assert.equal(r.stderr, '')
+    for (const cls of ['graph', 'stories', 'audit', 'tokens']) assert.match(r.stdout, new RegExp(`(^|\\n)massimo adopt verify ${cls}: `), cls)
+    assert.match(r.stdout, /\n  open {6}map  no rule of docs\/system\/ratchet\.json \(hex-literals, no-raw-px\) maps to a massimo kind, so there is nothing to compare: name the massimo kind each rule counts in audit\.verify\.map in design-system\/adopt\/ledger\.json, as <rule>=<kind> pairs such as hex-literals=color, or keep the ratchet as the repo's own check\n/)
+    assert.match(r.stdout, /\nmassimo adopt verify: graph passes, stories passes, audit 1 open difference, tokens \d+ open differences?\n$/)
+    // Whatever stops a class is its difference, key error: here a graph.json
+    // a newer massimo wrote, which stories reads.
+    const graphPath = join(project, 'graph.json')
+    const savedGraph = readFileSync(graphPath, 'utf8')
+    writeFileSync(graphPath, JSON.stringify({ version: 2 }))
+    try {
+      const broken = adopt('verify')
+      assert.equal(broken.status, 1)
+      assert.equal(broken.stderr, '')
+      assert.match(broken.stdout, /\nmassimo adopt verify stories: it could not run\n\nDifferences: 1 \(1 open, 0 accepted\)\.\n  open {6}error  graph\.json is format 2, and these scripts \([\d.]+\) read up to 1: update massimo/)
+      assert.match(broken.stdout, /^massimo adopt verify graph: /)
+      assert.match(broken.stdout, /\nmassimo adopt verify tokens: /)
+      assert.match(broken.stdout, /\nmassimo adopt verify: graph passes, stories 1 open difference, /)
+    } finally {
+      writeFileSync(graphPath, savedGraph)
+    }
+  } finally {
+    writeFileSync(path, savedLedger)
+    writeFileSync(ratchet, savedRatchet)
+    assert.equal(adopt('scan').status, 0)
+  }
 })
 
 test('verify tokens runs the token checks, then compares resolved.json with the repo inventory', () => {
@@ -313,9 +450,17 @@ test('the token inventory is read tolerantly, and a selector list is the same as
   assert.deepEqual(cells(textTable(out.rows), 'type classes'), ['type classes', 'yes'])
 })
 
-test('settle splits differences by what the ledger accepts', () => {
+test('settle splits differences by what the ledger accepts, and a key holds only with the detail it was accepted with', () => {
   const diffs = [{ key: 'a', detail: '1' }, { key: 'b', detail: '2' }]
-  assert.deepEqual(settle(diffs, [{ key: 'b', why: 'fine' }, { key: 'c', why: 'old' }]), { open: [{ key: 'a', detail: '1' }], accepted: [{ key: 'b', detail: '2', why: 'fine' }], stale: ['c'] })
+  assert.deepEqual(settle(diffs, [{ key: 'b', why: 'fine', detail: '2', date: 'd1' }, { key: 'c', why: 'old', detail: '3' }]), { open: [{ key: 'a', detail: '1' }], accepted: [{ key: 'b', detail: '2', why: 'fine' }], stale: ['c'] })
+  // A higher count under the same key is open again.
+  assert.deepEqual(settle([{ key: 'offenders:raw-colour x.css', detail: 'the repo counts 10, massimo 0' }], [{ key: 'offenders:raw-colour x.css', why: 'fine', detail: 'the repo counts 1, massimo 0', date: '2026-11-07' }]).open, [
+    { key: 'offenders:raw-colour x.css', detail: 'the repo counts 10, massimo 0; changed since accepted on 2026-11-07: was the repo counts 1, massimo 0', changed: true },
+  ])
+  // One accepted without its detail cannot be told unchanged.
+  const bare = settle(diffs, [{ key: 'b', why: 'fine', date: 'd1' }])
+  assert.deepEqual(bare.accepted, [])
+  assert.equal(bare.open[1].detail, '2; accepted on d1 without the detail it had then, so a change cannot be told: accept it again if it still holds')
 })
 
 test('story routes come from the story URL and the page and frame patterns', () => {
@@ -356,6 +501,21 @@ test('retire refuses without --dry-run; the dry run lists what goes, its scripts
   assert.match(r.stdout, /\n  deploy {4}src\/stories\/index\.astro:\d+ .*\(doc:docs\/system\/index\.md/)
   assert.match(r.stdout, /\n  docs {6}docs\/map\.md:\d+  mentions, written by scripts\/make-map\.mjs/)
   assert.match(r.stdout, /Not clean: \d+ consumers remain outside the docs the ledger marks historical\./)
+  // graph's generator goes with it, so nothing it writes has a writer that stays.
+  assert.doesNotMatch(r.stdout, /Written by a generator that stays/)
+  assert.deepEqual(JSON.parse(adopt('retire', 'graph', '--dry-run', '--json').stdout).writers, [])
+})
+
+test('a file that goes while a generator that stays still writes it holds the retirement up', () => {
+  const audit = adopt('retire', 'audit', '--dry-run')
+  assert.equal(audit.status, 1)
+  assert.match(audit.stdout, /\nWritten by a generator that stays \(1\), which would write it again, and whose check fails without it:\n  docs\/system\/ratchet\.json  written by scripts\/build-system\.mjs \(graph, found\): retire it with its writer, or retire graph first\n/)
+  assert.match(audit.stdout, /\nNot clean: 1 file has a writer that stays(, and \d+ consumers? remains?)?[^.]*\. Retire each writer with what it writes, or its class first\. /)
+  const plan = JSON.parse(adopt('retire', 'tokens', '--dry-run', '--json').stdout)
+  assert.deepEqual(plan.writers, [
+    { path: 'docs/system/tokens.json', asset: 'tokens:docs/system/tokens.json', writer: 'scripts/build-system.mjs', class: 'graph', state: 'found' },
+    { path: 'docs/system/tokens.md', asset: 'doc:docs/system/tokens.md', writer: 'scripts/build-system.mjs', class: 'graph', state: 'found' },
+  ])
 })
 
 test('a historical doc does not hold a retirement up, and a clean dry run exits 0', () => {
@@ -366,13 +526,32 @@ test('a historical doc does not hold a retirement up, and a clean dry run exits 
   assert.match(held.stdout, /\n  docs {6}docs\/history\.md:3  mentions  \(tokens:docs\/system\/tokens\.json\)\n/)
   assert.match(adopt('historical', 'docs/nowhere.md').stderr, /docs\/nowhere\.md is not a file in the repo/)
   assert.equal(adopt('historical').stdout, 'No doc is marked historical.\n')
+  // Code that depends on what adopt tracks is not a record of how things were.
+  const code = adopt('historical', 'src/stories/index.astro')
+  assert.equal(code.status, 1)
+  assert.equal(code.stderr, 'massimo: src/stories/index.astro is not only a doc, so it cannot be historical: names doc:docs/system/index.md at line 7 (deploy). A use in code holds a retirement up whatever the ledger says: repoint it instead\n')
+  assert.match(adopt('historical', 'scripts/build-system.mjs').stderr, /scripts\/build-system\.mjs is not only a doc, so it cannot be historical: .*names manifest:src\/stories\/manifest\.ts at line \d+ \(ci\)/)
+  assert.equal(adopt('historical').stdout, 'No doc is marked historical.\n')
   assert.equal(adopt('historical', 'docs/history.md').stdout, 'docs/history.md is historical: retire leaves it as it is\n')
   assert.equal(adopt('historical', 'docs/history.md').stdout, 'docs/history.md is already historical\n')
   assert.deepEqual(ledger().historical, [{ path: 'docs/history.md', date: '2026-11-07' }])
-  const clean = adopt('retire', 'tokens', '--dry-run')
-  assert.equal(clean.status, 0, clean.stdout)
-  assert.match(clean.stdout, /Consumers to repoint first \(0\):\n  none\n\nHistorical docs, left as they are \(1\):\n  docs {6}docs\/history\.md:3/)
-  assert.match(clean.stdout, /Clean: nothing outside the historical docs depends on what goes\./)
+  // The doc no longer holds it up, but the graph's generator still writes what goes.
+  const written = adopt('retire', 'tokens', '--dry-run')
+  assert.equal(written.status, 1, written.stdout)
+  assert.match(written.stdout, /Consumers to repoint first \(0\):\n  none\n/)
+  assert.match(written.stdout, /Not clean: 2 files have a writer that stays\. Retire each writer with what it writes, or its class first\. Then run this again\.\n$/)
+  // With graph retired first, its generator is gone: nothing writes what goes.
+  const generator = join(ctx.root, 'scripts', 'build-system.mjs')
+  rmSync(generator)
+  try {
+    const clean = adopt('retire', 'tokens', '--dry-run')
+    assert.equal(clean.status, 0, clean.stdout)
+    assert.doesNotMatch(clean.stdout, /Written by a generator that stays/)
+    assert.match(clean.stdout, /Consumers to repoint first \(0\):\n  none\n\nHistorical docs, left as they are \(1\):\n  docs {6}docs\/history\.md:3/)
+    assert.match(clean.stdout, /Clean: nothing outside the historical docs depends on what goes\./)
+  } finally {
+    copyFileSync(join(FIXTURES, 'legacy', 'scripts', 'build-system.mjs'), generator)
+  }
   assert.equal(adopt('plan').status, 0)
   assert.deepEqual(ledger().historical, [{ path: 'docs/history.md', date: '2026-11-07' }])
 })
@@ -386,6 +565,10 @@ test('a hand edit that breaks an acceptance or the historical list is caught', (
   writeFileSync(path, JSON.stringify(l))
   const r = adopt('status')
   assert.equal(r.status, 1)
-  assert.match(r.stderr, /graph\.accepted must be a list of \{ key, why \}, as adopt\.mjs accept writes it; historical must be a list of \{ path \}, as adopt\.mjs historical writes it/)
+  assert.match(r.stderr, /graph\.accepted must be a list of \{ key, why, detail \}, as adopt\.mjs accept writes it; historical must be a list of \{ path \}, as adopt\.mjs historical writes it/)
+  l.classes.graph.accepted = [{ key: 'x', why: 'y', detail: 3 }]
+  l.historical = []
+  writeFileSync(path, JSON.stringify(l))
+  assert.match(adopt('status').stderr, /graph\.accepted must be a list of \{ key, why, detail \}/)
   writeFileSync(path, good)
 })
