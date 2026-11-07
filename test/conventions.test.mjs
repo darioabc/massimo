@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { SCRIPTS_VERSION } from '../scripts/lib/project.mjs'
 import { CLASS_LIBRARIES, classLibraries } from '../scripts/lib/source.mjs'
 import { isOpen, hookContext, progressMarkdown } from '../scripts/lib/state.mjs'
 
@@ -82,4 +83,11 @@ test('STATUS.md and the session hook agree on which explorations are open', () =
   assert.match(progressMarkdown(state), /continue with `\/massimo:ux t0`/)
   const hook = hookContext(state, 'design-system')
   assert.match(hook, /Open explorations: t0 \(round 1, framing\); t1 \(round 1, reviewing\); t2 \(round 1, fidelity\)\./)
+})
+
+test('one version everywhere: the CHANGELOG, the scripts and both manifests', () => {
+  const changelog = readFileSync(join(repo, 'CHANGELOG.md'), 'utf8').match(/^## (\d+\.\d+\.\d+)/m)[1]
+  const plugin = JSON.parse(readFileSync(join(repo, '.claude-plugin', 'plugin.json'), 'utf8')).version
+  const market = JSON.parse(readFileSync(join(repo, '.claude-plugin', 'marketplace.json'), 'utf8')).plugins.map((p) => p.version)
+  assert.deepEqual([changelog, plugin, ...market], [SCRIPTS_VERSION, SCRIPTS_VERSION, ...market.map(() => SCRIPTS_VERSION)])
 })

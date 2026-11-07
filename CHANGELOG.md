@@ -2,6 +2,8 @@
 
 ## 0.2.1
 
+Fixes to 0.2.0, a Figma library made by hand adopted rather than duplicated, and the format gates that let 0.3.0 change formats safely. After updating, run `init.mjs --update-scripts` so the project's copy, which CI runs, refuses files from newer versions.
+
 ### Fixed
 
 - `tokens.mjs figma --record` decides the file allows one mode per collection (Figma's Starter plan) only when every collection in it has one mode. Before, a single one-mode collection was enough, so a missing Dark mode in a file that has two-mode collections went unreported.
