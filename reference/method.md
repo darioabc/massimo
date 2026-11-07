@@ -43,7 +43,7 @@ One scale everywhere:
 Reviewers return records, not essays.
 
 ```markdown
-### Finding N — severity <0-4>
+### Finding N: severity <0-4>
 - lens: market | content | interaction | accessibility | visual-craft
 - problem: <specific issue, for whom>
 - evidence: <the pattern missed, the concrete failure, or the named product it falls short of>
@@ -61,7 +61,7 @@ Recommended direction: <name, or "keep ideating">
 Round: <N>
 
 Findings:
-1. [sev N] <problem> — <evidence>; <user angle>
+1. [sev N] <problem>: <evidence>; <user angle>
 
 Fit for users: <one honest line>
 ```

@@ -61,7 +61,7 @@ export default function StoriesIndex() {
         {stories.map((s) => (
           <li key={s.slug}>
             <Link href={`/stories/${s.slug}`}>{s.meta.title}</Link>
-            {s.meta.description && <span style={{ opacity: 0.6 }}> — {s.meta.description}</span>}
+            {s.meta.description && <span style={{ opacity: 0.6 }}> · {s.meta.description}</span>}
           </li>
         ))}
       </ul>

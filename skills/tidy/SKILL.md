@@ -1,6 +1,6 @@
 ---
 name: tidy
-description: Tidy the codebase onto the design system in small, user-approved batches — replace raw colours, sizes and Tailwind arbitrary values with tokens, merge duplicate components, remove dead ones — each batch checked with before/after story screenshots and committed on its own. Use for the tidy phase of a massimo project, or when the user wants to clean up hard-coded styles, consolidate components, or migrate to tokens.
+description: Tidy the codebase onto the design system in small, user-approved batches (replace raw colours, sizes and Tailwind arbitrary values with tokens, merge duplicate components, remove dead ones), each batch checked with before/after story screenshots and committed on its own. Use for the tidy phase of a massimo project, or when the user wants to clean up hard-coded styles, consolidate components, or migrate to tokens.
 ---
 
 # massimo: tidy

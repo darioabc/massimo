@@ -1,6 +1,6 @@
 ---
 name: stories
-description: Set up a native story lane in this repo — component stories rendered through the repo's own build and styling pipeline, with no Storybook, Ladle or other third-party tool, gated so stories never ship to production — then write baseline stories for the most-used components first. Use for the stories phase of a massimo project, or when the user wants to see components in isolation, add a story, or screenshot a component's states.
+description: Set up a native story lane in this repo: component stories rendered through the repo's own build and styling pipeline, with no Storybook, Ladle or other third-party tool, gated so stories never ship to production. Then write baseline stories for the most-used components first. Use for the stories phase of a massimo project, or when the user wants to see components in isolation, add a story, or screenshot a component's states.
 ---
 
 # massimo: stories

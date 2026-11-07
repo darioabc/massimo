@@ -49,15 +49,15 @@ Picked: <direction title> (<file path>) · scope: <tag>
 Story: <story file> · URL: <story url> · Screenshots: <paths>
 
 ## Element map
-1. <element> → MAP `<component/token>` — <props, variant>
-2. <element> → EDIT `<primitive>` — <change, token used>; blast radius: <consumers from the graph>
-3. <element> → NEW `<Name>` (<path>) / token `<name>` — <intent, states>
+1. <element> → MAP `<component/token>`: <props, variant>
+2. <element> → EDIT `<primitive>`: <change, token used>; blast radius: <consumers from the graph>
+3. <element> → NEW `<Name>` (<path>) / token `<name>`: <intent, states>
 
 ## New components and tokens
 - <name>: <intent, states, why it is not a map>
 
 ## Decisions for the user
-1. <a primitive change not yet approved, a ds-rule break, a token that differs from the mockup> — recommendation: <…>
+1. <a primitive change not yet approved, a ds-rule break, a token that differs from the mockup>. Recommendation: <…>
 
 ## Build route
 <files to touch, the route or data work the integration needs, and whether it is one surface (small) or several / shared primitives (larger)>

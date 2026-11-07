@@ -1,6 +1,6 @@
 ---
 name: status
-description: Show where this repo's massimo design-system project stands — phases, progress, open explorations, open questions and the next step — without changing anything. Use when the user asks "where are we", "what's left", or "show the design-system status".
+description: Show where this repo's massimo design-system project stands (phases, progress, open explorations, open questions and the next step) without changing anything. Use when the user asks "where are we", "what's left", or "show the design-system status".
 ---
 
 # massimo: status

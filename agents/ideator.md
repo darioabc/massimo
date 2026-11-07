@@ -42,17 +42,17 @@ From the plugin root given in your prompt: `reference/mockups.md` (file format, 
 
 Mode: review | ideate
 Framing: <one line>
-Market pattern: <products> — <the shared pattern>
+Market pattern: <products>: <the shared pattern>
 Iteration input: <none | seed + feedback + rejected>
 Folder: <absolute path to round-N>
 
-### <Title> — Main.html
+### <Title>: Main.html
 - rationale: <one line>
 - scope: <copy-only | component | breakpoint | new route | larger build>
 - changed from prior round: <one line, or "new direction">
 - new tokens proposed: <--new-… names, or none>
 
-### <Title> — <Name>.html
+### <Title>: <Name>.html
 …
 
 Strongest candidate: <name> · Trade-off that could change the pick: <one line> · Next axis worth exploring: <one line or none>

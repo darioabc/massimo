@@ -145,7 +145,7 @@ export function Gallery() {
       <ul>
         {stories.map((s) => (
           <li key={s.slug}>
-            <a href={href(s.slug)}>{s.title}</a> {s.description && <span style={{ opacity: 0.6 }}>— {s.description}</span>}
+            <a href={href(s.slug)}>{s.title}</a> {s.description && <span style={{ opacity: 0.6 }}>· {s.description}</span>}
           </li>
         ))}
       </ul>

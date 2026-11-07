@@ -2,7 +2,7 @@
 
 Design-system automation for any front-end repo, run from [Claude Code](https://claude.com/claude-code).
 
-Massimo maps your components, sets up stories that render through your own build (no Storybook, no Ladle), turns the colours and sizes scattered through your code into design tokens, tidies the codebase onto them in small batches you approve, and runs an iterative design loop: real rendered mockups in your product's tokens, rounds until you pick, then a story built from your real components. It can mirror the result into Figma.
+Massimo maps your components, sets up stories that render through your own build (no Storybook, no Ladle), turns the colours and sizes scattered through your code into W3C design tokens, tidies the codebase onto them in small batches you approve, and runs an iterative design loop: real rendered mockups in your product's tokens, rounds until you pick, then a story built from your real components. For a repo that already has components and styling but no formal system, it extracts the whole system in one guided flow. It can mirror the result into Figma.
 
 It keeps a project inside your repo, so a designer or developer can stop at any point and pick up in a new session, on another machine, or hand over to a teammate.
 
@@ -52,12 +52,16 @@ Requires Node 18 or newer. Optional: Playwright in the repo (for screenshots and
 | Set up | `/massimo:start` | `massimo.config.json`, the `design-system/` project folder, product grounding |
 | Graph | `/massimo:graph` | `design-system/graph.md`: every component, what it composes, what uses it, its story, its tokens, its usage rules |
 | Stories | `/massimo:stories` | a native story lane at `/stories`, gated so it never ships, and baseline stories for your most-used components |
-| Tokens | `/massimo:tokens` | an audit of raw values, then W3C DTCG tokens approved group by group, built into CSS, Tailwind 4 or 3, SCSS or TS |
+| Tokens | `/massimo:tokens` | an audit of raw values, then tokens in the W3C Design Tokens format 2025.10, approved group by group, built into CSS, Tailwind 4 or 3, SCSS, TS, JSON or DESIGN.md |
 | Tidy | `/massimo:tidy` | raw values and duplicate components moved onto the system in batches, each with before/after screenshots and its own commit |
-| Guard | `/massimo:guard` | usage rules on primitives, `npm run ds:check` in CI, a one-page design-system README |
-| Figma | `/massimo:figma` | tokens as Figma variables (light and dark), primitives as components bound to them, and a drift report |
+| Guard | `/massimo:guard` | usage rules on primitives, `npm run ds:check` in CI, a design-system README that stays current |
+| Figma | `/massimo:figma` | tokens as Figma variables with their themes as modes, text and effect styles, primitives as components bound to them, and a drift report that says whether code or Figma moved |
 
 Skip any phase you do not need. `/massimo:status` shows where things stand.
+
+### Extracting a system from an existing repo
+
+`/massimo:extract` is for a repo with components and styling but no formal system. In one guided flow it reads the values the repo already keeps (CSS custom properties, a Tailwind config, a CSS-in-JS theme, Tokens Studio or DTCG files, Figma variables exported as JSON), counts the ones the code uses without a token, and proposes a complete set: colour ramps and semantic colours with contrast pairs, typography composites and their scale, spacing, radius, shadow, border, motion, layers and opacity. Every value says where it came from; nothing is invented from taste. Then it gives each primitive its props, variants, states and a usage rule, and writes the design-system README. You approve family by family, and nothing in your codebase changes without your OK.
 
 ### The design loop
 
@@ -78,7 +82,7 @@ design-system/
   decisions.md           what was decided, why, and by whom
   graph.md               the component graph (generated)
   audits/                raw-value audits and the CI baseline
-  tokens/                tokens.json (the source of truth), a visual preview, Figma variables
+  tokens/                the token set (W3C Design Tokens 2025.10, the source of truth), a visual preview, Figma variables
   explorations/<topic>/  design rounds: brief, mockups, canvas
   handoffs/              build-ready specs from the design loop
   scripts/               zero-dependency Node scripts, vendored so CI and teammates without the plugin can run them
@@ -88,7 +92,21 @@ Everything is plain Markdown, JSON and HTML, committed with your code. `npm run 
 
 ## Supported stacks
 
-Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript, JSON and [DESIGN.md](https://github.com/google-labs-code/design.md) for coding agents. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
+Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. Extraction reads CSS (including `@theme`, DaisyUI themes, `light-dark()` and channel triplets), Tailwind 3 configs, CSS-in-JS and JS theme objects, Tokens Studio and DTCG files, and Figma variable exports. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript, JSON and [DESIGN.md](https://github.com/google-labs-code/design.md) for coding agents. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
+
+## Updating from 0.1
+
+Update the plugin, then in your repo bring the vendored scripts forward and rebuild once, since every generated file has a new header:
+
+```bash
+node <plugin-root>/scripts/init.mjs --update-scripts
+```
+
+```bash
+npm run ds:tokens
+```
+
+Your `tokens.json` keeps building exactly as before. To move it to the W3C Design Tokens format 2025.10, run `node design-system/scripts/tokens.mjs migrate`: it writes the new files beside the old one, lists anything that did not carry over exactly in `migration-report.md`, checks every output still builds the same, and points `massimo.config.json` at the new files. `/massimo:start` offers both.
 
 ## Principles
 

@@ -25,7 +25,7 @@ One whole surface per file. Self-contained apart from the kit:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Main — checkout summary</title>
+  <title>Main: checkout summary</title>
   <link rel="stylesheet" href="../../../kit/kit.css">
   <style>
     /* direction styles: use var(--token) for every colour, space, radius, font */
