@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { colorModes, parseColor } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
 import { isAlias, parseCustomProperties } from './source.mjs'
+import { cssVarOf } from './figma.mjs'
 import { findObject, leaves } from './jsobject.mjs'
 import { natural } from './text.mjs'
 
@@ -458,6 +459,7 @@ export function readFigmaExport(root, file) {
           type: v.resolvedType,
           scopes: v.scopes ?? [],
           description: v.description ?? '',
+          codeSyntax: v.codeSyntax ?? {},
           values: Object.fromEntries(ordered.map((m) => {
             const raw = v.valuesByMode?.[m.modeId]
             return [m.name, raw?.type === 'VARIABLE_ALIAS' ? { alias: byId[raw.id]?.name ?? raw.id } : raw]
@@ -469,6 +471,23 @@ export function readFigmaExport(root, file) {
     collections.push(...doc.collections)
   } else {
     return { tokens: [], notes: [`${file}: not a Figma variables export massimo knows`] }
+  }
+  // The CSS variable a variable's code syntax names goes to one variable only:
+  // the one named like it, else the first (a scoped override such as
+  // tone-block/c-ground keeps its own name).
+  const claims = new Map()
+  for (const c of collections) {
+    for (const v of c.variables ?? []) {
+      const web = cssVarOf(v.codeSyntax?.WEB)
+      if (web) claims.set(web, [...(claims.get(web) ?? []), v])
+    }
+  }
+  const cssVarFor_ = new Map()
+  for (const [web, list] of claims) {
+    const bare = web.slice(2)
+    const owner = list.find((v) => v.name === bare) ?? list.find((v) => v.name.split('/').pop() === bare) ?? list[0]
+    cssVarFor_.set(owner, web)
+    for (const v of list) if (v !== owner) notes.push(`${file}: ${v.name} also names ${web} in its code syntax; only ${owner.name} takes it`)
   }
   const tokens = []
   for (const c of collections) {
@@ -495,7 +514,7 @@ export function readFigmaExport(root, file) {
         const t = text(raw)
         return type === 'dimension' && typeof t === 'number' ? `${t}px` : t
       }
-      const t = token(path, { type, value: value(v.values?.[first]), description: v.description ?? '', source: file })
+      const t = token(path, { type, value: value(v.values?.[first]), cssVar: cssVarFor_.get(v) ?? null, description: v.description ?? '', source: file })
       for (const m of others) if (JSON.stringify(v.values?.[m]) !== JSON.stringify(v.values?.[first])) t.modes[m.toLowerCase()] = value(v.values?.[m])
       tokens.push(t)
     }

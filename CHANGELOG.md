@@ -5,6 +5,7 @@
 ### Fixed
 
 - `tokens.mjs figma --record` decides the file allows one mode per collection (Figma's Starter plan) only when every collection in it has one mode. Before, a single one-mode collection was enough, so a missing Dark mode in a file that has two-mode collections went unreported.
+- A Figma library made by hand is adopted, not duplicated. `tokens.mjs figma --record` and `--drift` pair code and Figma variables by the id recorded last time, then by name, then by the CSS variable a variable's code syntax names (`var(--c-ground)`). A pair made by code syntax keeps its own name and collection, its values are compared with references followed to the end, and the record's notes list each pair. Where several variables name one CSS variable, the one named like it is paired and the rest are noted. A variable renamed in Figma stays paired by its id. The figma skill updates a paired variable instead of creating a second one, and `tokens.extract` reads each Figma variable's CSS variable from its code syntax. Mirrors recorded before 0.2.1 still read.
 
 ## 0.2.0
 

@@ -1351,8 +1351,9 @@ function figmaCommand({ root, config, projectDir, flags, shown, tokens }) {
   if (record) {
     const previous = readJson(mirrorPath, {}) ?? {}
     const fileKey = typeof flags['file-key'] === 'string' ? flags['file-key'] : undefined
-    const { mirror, mismatches } = recordMirror(wanted, exported, { fileKey, tokensHash: tokensHash(root, tokens.files), date: today(), previous })
+    const { mirror, mismatches, notes } = recordMirror(wanted, exported, { fileKey, tokensHash: tokensHash(root, tokens.files), date: today(), previous })
     writeText(mirrorPath, jsonText(mirror))
+    for (const n of notes) process.stderr.write(`  note: ${n}\n`)
     for (const m of mismatches) process.stderr.write(`  mismatch: ${m}\n`)
     const count = Object.keys(mirror.variables).length
     process.stdout.write(`massimo tokens figma: recorded ${count} variables, ${Object.keys(mirror.textStyles).length} text styles and ${Object.keys(mirror.effectStyles).length} effect styles in ${shown(mirrorPath)}${mirror.modes === 'default only' ? '; the file allows one mode per collection, so only the default mode is mirrored' : ''}; ${mismatches.length} ${mismatches.length === 1 ? 'mismatch' : 'mismatches'} with code\n`)

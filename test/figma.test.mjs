@@ -93,6 +93,72 @@ test('a one-mode collection in a file that has a two-mode one is missing a mode,
   assert.deepEqual(mismatches, ['variable color/accent (Dark) is missing in Figma, rgba(255, 255, 255, 1) in code'])
 })
 
+// A library made by hand before massimo: its own names and collection, raw
+// values where code has references, and the CSS variable in its code syntax.
+const coded = {
+  defaultMode: 'Light',
+  collections: [
+    { name: 'Primitives', modes: ['Light'], variables: [{ name: 'color/paper', type: 'COLOR', values: { Light: { r: 0.9, g: 0.9, b: 0.8, a: 1 } }, codeSyntax: { WEB: 'var(--paper)' } }, { name: 'color/ink', type: 'COLOR', values: { Light: { r: 0.1, g: 0.1, b: 0.1, a: 1 } }, codeSyntax: { WEB: 'var(--ink)' } }] },
+    { name: 'Semantic', modes: ['Light', 'Dark'], variables: [{ name: 'color/ground', type: 'COLOR', values: { Light: { alias: 'color/paper', collection: 'Primitives' }, Dark: { alias: 'color/ink', collection: 'Primitives' } }, codeSyntax: { WEB: 'var(--c-ground)' } }] },
+  ],
+  textStyles: [],
+  effectStyles: [],
+}
+const handmade = () => ({
+  collections: [
+    {
+      name: 'Paper',
+      modes: ['Light', 'Dark'],
+      variables: [
+        { id: 'V:1', name: 'c-ground', type: 'COLOR', codeSyntax: { WEB: 'var(--c-ground)' }, values: { Light: { r: 0.9, g: 0.9, b: 0.8, a: 1 }, Dark: { r: 0.1, g: 0.1, b: 0.1, a: 1 } } },
+        { id: 'V:2', name: 'tone-block/c-ground', type: 'COLOR', codeSyntax: { WEB: 'var(--c-ground)' }, values: { Light: { r: 0.8, g: 0.3, b: 0.1, a: 1 }, Dark: { r: 0.9, g: 0.5, b: 0.4, a: 1 } } },
+      ],
+    },
+  ],
+  textStyles: [],
+  effectStyles: [],
+})
+
+test('a library made by hand is paired by code syntax, compared resolved, and never duplicated', () => {
+  const { mirror, mismatches, notes } = recordMirror(coded, handmade(), { date: '2026-11-07' })
+  // color/ground is c-ground: references resolved, its own name and collection kept.
+  assert.ok(!mismatches.some((m) => /color\/ground/.test(m)), mismatches.join('\n'))
+  assert.deepEqual(mismatches, ['variable color/paper is not in Figma', 'variable color/ink is not in Figma'])
+  assert.ok(notes.includes('variable color/ground is c-ground in Figma (Paper), paired by its code syntax --c-ground'))
+  assert.ok(notes.includes('tone-block/c-ground also names --c-ground in its code syntax; c-ground was paired with color/ground'))
+  assert.deepEqual({ figmaName: mirror.variables['color/ground'].figmaName, match: mirror.variables['color/ground'].match }, { figmaName: 'c-ground', match: 'code' })
+  assert.equal(mirror.modes, 'all')
+  // Recorded again, the pair is still one made by code syntax, compared resolved.
+  const again = recordMirror(coded, handmade(), { date: 'd', previous: mirror })
+  assert.ok(again.notes.includes('variable color/ground is c-ground in Figma (Paper), paired by its code syntax --c-ground'))
+  assert.equal(again.mirror.variables['color/ground'].match, 'code')
+  assert.ok(!again.mismatches.some((m) => /color\/ground/.test(m)))
+  // A value that really differs is still a mismatch, shown resolved.
+  const off = handmade()
+  off.collections[0].variables[0].values.Dark = { r: 1, g: 0, b: 0, a: 1 }
+  assert.ok(recordMirror(coded, off, { date: 'd' }).mismatches.includes('variable color/ground (Dark) is rgba(255, 0, 0, 1) in Figma, rgba(26, 26, 26, 1) in code'))
+  // Drift follows the pair: a designer's edit is a Figma change under both names; the override is only in Figma.
+  const edited = handmade()
+  edited.collections[0].variables[0].values.Light = { r: 1, g: 1, b: 1, a: 1 }
+  const { sections } = driftReport(coded, mirror, edited)
+  assert.deepEqual(sections.figma, ['`color/ground` (`c-ground` in Figma) (Light): mirrored rgba(230, 230, 204, 1), now rgba(255, 255, 255, 1) in Figma'])
+  assert.deepEqual(sections.onlyFigma, ['`tone-block/c-ground`: made in Figma, not in code'])
+})
+
+test('a variable renamed in Figma stays paired by the id recorded last time', () => {
+  const { mirror } = recordMirror(wanted, exportOf(wanted), { date: '2026-11-01' })
+  const renamed = exportOf(wanted, (e) => {
+    e.collections[0].variables[0].name = 'color/brand'
+    return e
+  })
+  const again = recordMirror(wanted, renamed, { date: 'd', previous: mirror })
+  assert.ok(!again.mismatches.some((m) => /color\/blue/.test(m)), again.mismatches.join('\n'))
+  assert.ok(again.notes.includes('variable color/blue is color/brand in Figma, paired by the id recorded last time'))
+  const { sections } = driftReport(wanted, mirror, renamed)
+  assert.deepEqual(sections.onlyFigma, [])
+  assert.deepEqual(sections.figma, [])
+})
+
 test('drift: each change is put down to code, to Figma, or to both', () => {
   const { mirror } = recordMirror(wanted, exportOf(wanted), { date: '2026-11-01' })
   const code = JSON.parse(JSON.stringify(wanted))

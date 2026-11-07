@@ -140,6 +140,8 @@ test('Figma variables from the REST API: paths, themes, aliases, types from scop
           v3: { id: 'v3', name: 'space/md', resolvedType: 'FLOAT', scopes: ['GAP'], variableCollectionId: 'c1', valuesByMode: { m1: 16, m2: 16 } },
           v4: { id: 'v4', name: 'weight/bold', resolvedType: 'FLOAT', scopes: ['FONT_WEIGHT'], variableCollectionId: 'c1', valuesByMode: { m1: 700, m2: 700 } },
           v5: { id: 'v5', name: 'flag/beta', resolvedType: 'BOOLEAN', variableCollectionId: 'c1', valuesByMode: { m1: true, m2: false } },
+          v6: { id: 'v6', name: 'surface', resolvedType: 'COLOR', variableCollectionId: 'c1', codeSyntax: { WEB: 'var(--surface)' }, valuesByMode: { m1: { r: 1, g: 1, b: 1, a: 1 }, m2: { r: 0, g: 0, b: 0, a: 1 } } },
+          v7: { id: 'v7', name: 'band/surface', resolvedType: 'COLOR', variableCollectionId: 'c1', codeSyntax: { WEB: 'var(--surface)' }, valuesByMode: { m1: { r: 1, g: 0, b: 0, a: 1 }, m2: { r: 1, g: 0, b: 0, a: 1 } } },
         },
       },
     }))
@@ -150,7 +152,11 @@ test('Figma variables from the REST API: paths, themes, aliases, types from scop
     assert.equal(t['color.accent'].value, '{color.blue}')
     assert.deepEqual([t['space.md'].type, t['space.md'].value], ['dimension', '16px'])
     assert.equal(t['weight.bold'].type, 'fontWeight')
-    assert.match(notes[0], /flag\/beta is a boolean variable, which has no design token/)
+    assert.ok(notes.some((n) => /flag\/beta is a boolean variable, which has no design token/.test(n)))
+    // A code syntax names the CSS variable; one variable takes it, the one named like it.
+    assert.equal(t.surface.cssVar, '--surface')
+    assert.equal(t['band.surface'].cssVar, null)
+    assert.ok(notes.some((n) => /band\/surface also names --surface in its code syntax; only surface takes it/.test(n)))
   } finally {
     rmSync(base, { recursive: true, force: true })
   }
