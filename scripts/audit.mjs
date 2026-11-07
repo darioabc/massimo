@@ -208,6 +208,90 @@ function classTokens(code, file) {
   return out
 }
 
+// ── What a colour is used for ───────────────────────────────────────────────
+
+// The job a raw colour does where it sits: a background, text, a border, an
+// SVG fill, a shadow, or something else. Read from the CSS property or JS key
+// before it on the same line, or from the Tailwind utility around it.
+const ROLE_OF = [
+  [/^(?:background(?:-color|-image)?|bg|backgroundColor|background)$/i, 'bg'],
+  [/^(?:color|text|caret-color|caretColor|placeholder)$/i, 'text'],
+  [/^(?:border(?:-\w+)*|outline(?:-color)?|ring|stroke|divide|borderColor|outlineColor|border\w*Color)$/i, 'border'],
+  [/^(?:fill|stop-color|stopColor)$/i, 'fill'],
+  [/^(?:box-shadow|boxShadow|shadow|text-shadow|textShadow|drop-shadow)$/i, 'shadow'],
+]
+// The role a Tailwind utility gives its colour (`bg`, `text`, `border-t`…).
+function utilityRole(utility) {
+  const prop = utility.replace(/-[trblxyse]$/, '')
+  if (/^(?:from|via|to)$/.test(prop)) return 'bg'
+  return ROLE_OF.find(([re]) => re.test(prop))?.[1] ?? 'other'
+}
+
+function colorRole(code, offset) {
+  const lineStart = code.lastIndexOf('\n', offset) + 1
+  const before = code.slice(lineStart, offset)
+  const utility = /(?:^|[\s"'`])-?(bg|text|border(?:-[trblxyse])?|ring|outline|fill|stroke|divide|shadow|from|via|to|decoration|accent|caret|placeholder)-\[$/.exec(before)
+  const prop = utility?.[1].replace(/-[trblxyse]$/, '') ?? /([A-Za-z-]+)['"]?\s*:\s*[^:;{}]*$/.exec(before)?.[1]
+  if (!prop) return 'other'
+  if (/^(?:from|via|to)$/.test(prop)) return 'bg'
+  return ROLE_OF.find(([re]) => re.test(prop))?.[1] ?? 'other'
+}
+
+// ── The inventory: values the audit counts but does not ratchet ────────────
+
+// Families a token set needs that the finding kinds do not cover. They are
+// counted for the token proposals, never baselined, so an older project's
+// ratchet does not move when they are added.
+const INVENTORY_CSS = /(?<![\w$.(-])(line-height|letter-spacing|font-weight|box-shadow|border|border-(?:top|right|bottom|left)|transition|transition-duration|transition-timing-function|animation|animation-duration|animation-timing-function|z-index|opacity)\s*:\s*/g
+const INVENTORY_JS = /(?<![\w$.-])(lineHeight|letterSpacing|fontWeight|boxShadow|border|borderTop|borderRight|borderBottom|borderLeft|transition|transitionDuration|transitionTimingFunction|animationDuration|animationTimingFunction|zIndex|opacity)\s*:\s*/g
+const FAMILY_OF = {
+  'line-height': 'lineHeight', lineHeight: 'lineHeight', 'letter-spacing': 'letterSpacing', letterSpacing: 'letterSpacing',
+  'font-weight': 'fontWeight', fontWeight: 'fontWeight', 'box-shadow': 'shadow', boxShadow: 'shadow', 'z-index': 'zIndex', zIndex: 'zIndex', opacity: 'opacity',
+}
+const TAILWIND_INVENTORY = [
+  [/^leading-(.+)$/, 'lineHeight'],
+  [/^tracking-(.+)$/, 'letterSpacing'],
+  [/^font-(thin|extralight|light|normal|medium|semibold|bold|extrabold|black)$/, 'fontWeight'],
+  [/^shadow(?:-(?!\[)[\w-]+)?$/, 'shadow'],
+  [/^-?z-(\d+|auto)$/, 'zIndex'],
+  [/^opacity-(\d+)$/, 'opacity'],
+  [/^duration-(\d+)$/, 'duration'],
+  [/^ease-(linear|in|out|in-out)$/, 'easing'],
+  [/^border(?:-[trblxy])?(?:-\d+)?$/, 'border'],
+]
+const DURATION = /(?<![\w.-])(\d*\.?\d+)(ms|s)\b/g
+const EASING = /cubic-bezier\([^)]*\)|steps\([^)]*\)|\b(?:ease-in-out|ease-in|ease-out|ease|linear)\b/g
+
+function inventoryOf(code, isCss, tokens, inv) {
+  const count = (family, value) => {
+    const v = collapse(String(value))
+    if (!v || /var\(|^(?:inherit|initial|unset|revert|none|normal)$/i.test(v)) return
+    const map = (inv[family] ??= new Map())
+    map.set(v, (map.get(v) ?? 0) + 1)
+  }
+  const take = (prop, value) => {
+    const family = FAMILY_OF[prop]
+    if (family) return count(family, value)
+    if (/^border/i.test(prop)) return /\d/.test(value) && count('border', value)
+    for (const d of value.matchAll(DURATION)) count('duration', d[0])
+    for (const e of value.matchAll(EASING)) count('easing', e[0])
+  }
+  for (const m of code.matchAll(INVENTORY_CSS)) {
+    const value = readCssValue(code, m.index + m[0].length)
+    // A quoted value is a JS style object's, which the JS pass reads.
+    if (!/^\s*['"`]/.test(value)) take(m[1], value)
+  }
+  if (!isCss) {
+    for (const m of code.matchAll(INVENTORY_JS)) {
+      const { text, quoted } = readJsValue(code, m.index + m[0].length)
+      if (quoted || /^-?\d*\.?\d+$/.test(text)) take(m[1], text)
+    }
+  }
+  for (const { token } of tokens) {
+    for (const [re, family] of TAILWIND_INVENTORY) if (re.test(token)) count(family, `class ${token}`)
+  }
+}
+
 // ── Per-file scan ───────────────────────────────────────────────────────────
 
 function scanFile(file, source, ctx) {
@@ -229,6 +313,7 @@ function scanFile(file, source, ctx) {
       value,
       snippet: snippetOf(source, li, offset),
       ...(extra.px !== undefined ? { px: extra.px } : {}),
+      ...(kind === 'color' || extra.sub === 'color' ? { role: extra.role ?? colorRole(code, offset) } : {}),
     })
   }
 
@@ -258,7 +343,7 @@ function scanFile(file, source, ctx) {
         else if (RADIUS_UTILITY.test(utility)) category = 'radius'
         else if (/^(?:border|outline|ring)/.test(utility)) category = 'border'
       }
-      add(m.index, 'arbitrary', `${name}-[${m[3]}]`, { sub, category, px: pixels })
+      add(m.index, 'arbitrary', `${name}-[${m[3]}]`, { sub, category, px: pixels, role: color ? utilityRole(utility) : undefined })
     }
   }
 
@@ -336,6 +421,7 @@ function scanFile(file, source, ctx) {
       if (raw) tokens.push({ token: raw.slice(raw.lastIndexOf(':') + 1).replace(/^!|!$/g, ''), offset: m.index })
     }
   }
+  inventoryOf(code, isCss, tokens, ctx.inventory)
   for (const { token, offset } of tokens) {
     const t = TEXT_UTILITY.exec(token)
     if (t) ctx.tailwindText.set(TEXT_SCALE[t[1]], (ctx.tailwindText.get(TEXT_SCALE[t[1]]) ?? 0) + 1)
@@ -514,7 +600,7 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
     (f) => !outputSet.has(f) && !isProjectFile(f),
   )
   const scannedSet = new Set(scanned)
-  const ctx = { primitives, palette, ownColors, tailwindText: new Map() }
+  const ctx = { primitives, palette, ownColors, tailwindText: new Map(), inventory: {} }
   const findings = []
   const allReads = []
   const defined = new Set()
@@ -572,8 +658,9 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
     const raw = f.kind === 'arbitrary' ? /\[(.*)\]/.exec(f.value)?.[1].replace(/_/g, ' ').replace(/^color:/, '') ?? f.value : f.value
     const parsed = parseColor(raw)
     const key = parsed ? toHex(parsed) : collapse(raw).toLowerCase()
-    const entry = colorMap.get(key) ?? { value: key, count: 0, forms: new Map(), parsed }
+    const entry = colorMap.get(key) ?? { value: key, count: 0, forms: new Map(), parsed, roles: {} }
     entry.count++
+    if (f.role) entry.roles[f.role] = (entry.roles[f.role] ?? 0) + 1
     entry.forms.set(collapse(raw), (entry.forms.get(collapse(raw)) ?? 0) + 1)
     colorMap.set(key, entry)
   }
@@ -602,9 +689,13 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
           if (!nearest || d < nearest.distance) nearest = { name: t.name, value: t.value, distance: d }
         }
       }
+      // What the cluster's colours are used for, most-used job first.
+      const roles = {}
+      for (const m of cl.members) for (const [role, n] of Object.entries(m.roles)) roles[role] = (roles[role] ?? 0) + n
       return {
         representative: cl.rep.value,
         count: cl.members.reduce((n, m) => n + m.count, 0),
+        roles: Object.fromEntries(Object.entries(roles).sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))),
         members: cl.members.map((m) => ({ value: m.value, count: m.count })),
         nearestToken: nearest ? { name: nearest.name, value: nearest.value, distance: Math.round(nearest.distance * 10000) / 10000 } : null,
       }
@@ -662,6 +753,12 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
     typeSizes,
     fontFamilies,
     canon,
+    // Counted, never ratcheted: the families a token set needs beyond the findings.
+    inventory: Object.fromEntries(
+      Object.entries(ctx.inventory)
+        .sort((a, b) => compare(a[0], b[0]))
+        .map(([family, map]) => [family, [...map.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).map(([value, count]) => ({ value, count }))]),
+    ),
     skipped: Object.fromEntries([...skipped.entries()].sort((a, b) => compare(a[0], b[0]))),
     cluster,
   }
@@ -719,9 +816,10 @@ function renderMarkdown(result, date, command) {
   out.push('## Colour clusters', '')
   if (colorClusters.length === 0) out.push('No raw colours.')
   for (const c of colorClusters.slice(0, MD_CLUSTERS)) {
+    const roles = Object.entries(c.roles ?? {}).map(([role, n]) => `${role} ${n}`).join(', ')
     const near = c.nearestToken ? ` · nearest token \`${c.nearestToken.name}\` ${c.nearestToken.value} (${c.nearestToken.distance})` : ''
     const members = c.members.length > 1 ? ` · merges ${c.members.map((m) => `${m.value}×${m.count}`).join(', ')}` : ''
-    out.push(`- ${c.representative} ×${c.count}${members}${near}`)
+    out.push(`- ${c.representative} ×${c.count}${members}${near}${roles ? ` · used as ${roles}` : ''}`)
   }
   if (colorClusters.length > MD_CLUSTERS) out.push(`- +${colorClusters.length - MD_CLUSTERS} more clusters in latest.json`)
   out.push('')
@@ -746,6 +844,17 @@ function renderMarkdown(result, date, command) {
   if (fontFamilies.length === 0) out.push('No raw font families.')
   for (const f of fontFamilies) out.push(`- ${f.family} ×${f.count}`)
   out.push('')
+
+  // Counted for the token proposals, never ratcheted.
+  const INVENTORY_TITLES = { lineHeight: 'Line heights', letterSpacing: 'Letter spacing', fontWeight: 'Font weights', shadow: 'Shadows', border: 'Borders', duration: 'Durations', easing: 'Easings', zIndex: 'Z-index', opacity: 'Opacity' }
+  const families = Object.entries(result.inventory ?? {}).filter(([, list]) => list.length > 0)
+  if (families.length > 0) {
+    out.push('## Inventory', '', 'Values the token set will need, counted where the code uses them. They are not findings and never join the baseline.', '')
+    for (const [family, list] of families) {
+      out.push(`- ${INVENTORY_TITLES[family] ?? family}: ${list.slice(0, 8).map((v) => `${v.value} ×${v.count}`).join(', ')}${list.length > 8 ? `, +${list.length - 8} more` : ''}`)
+    }
+    out.push('')
+  }
 
   out.push('## Findings', '')
   const startLength = out.length

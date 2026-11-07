@@ -1,0 +1,10 @@
+:root {
+  --rgb-base-100: 236 229 209;
+  --rgb-base-content: 34 30 26;
+  --background: 210 40% 98%;
+  --surface: light-dark(#ffffff, #111111);
+  --brand: #0f766e;
+}
+.dark {
+  --rgb-base-100: 20 18 16;
+}

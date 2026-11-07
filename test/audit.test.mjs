@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { readJson, run, scratch } from './helpers.mjs'
+import { read, readJson, run, scratch } from './helpers.mjs'
 
 const ctx = scratch()
 after(() => ctx.cleanup())
@@ -161,4 +161,41 @@ test('style files: token declarations are exempt, other rules are audited', asyn
   assert.ok(!masked.includes('12px'))
   assert.ok(masked.includes('#000'))
   assert.ok(masked.includes('var(--b)'))
+})
+
+test('inventory and colour roles: counted for the token proposals, never baselined', () => {
+  const t = scratch()
+  try {
+    writeFileSync(join(t.root, 'src', 'inventory.css'), [
+      '.a { line-height: 1.5; letter-spacing: -0.01em; font-weight: 600; box-shadow: 0 1px 2px #0003; }',
+      '.b { transition: opacity 150ms cubic-bezier(0.4, 0, 0.2, 1); z-index: 40; opacity: 0.6; border: 1px solid #e5e5e5; }',
+      '.c { background: #c8e6c9; color: #7b2d26; border-color: #26567b; }',
+    ].join('\n'))
+    writeFileSync(join(t.root, 'src', 'inventory.tsx'), "export const X = () => <div className=\"leading-6 font-semibold shadow-md z-50 duration-200 ease-in-out bg-[#c8e6c9]\" style={{ lineHeight: 1.5, zIndex: 40 }} />\n")
+    const r = run('audit', t)
+    assert.equal(r.status, 0, r.stderr)
+    const { inventory, colorClusters } = readJson(t.project, 'audits', 'latest.json')
+    const values = (family) => Object.fromEntries((inventory[family] ?? []).map((v) => [v.value, v.count]))
+    assert.equal(values('lineHeight')['1.5'], 2) // CSS and a JS style object
+    assert.equal(values('lineHeight')['class leading-6'], 1)
+    assert.equal(values('fontWeight')['600'], 1)
+    assert.equal(values('shadow')['0 1px 2px #0003'], 1)
+    assert.equal(values('duration')['150ms'], 1)
+    assert.equal(values('easing')['cubic-bezier(0.4, 0, 0.2, 1)'], 1)
+    assert.equal(values('easing')['class ease-in-out'], 1)
+    assert.equal(values('zIndex')['40'], 2)
+    assert.equal(values('opacity')['0.6'], 1)
+    assert.equal(values('border')['1px solid #e5e5e5'], 1)
+    const roles = (hex) => colorClusters.find((c) => c.representative === hex)?.roles
+    assert.deepEqual(roles('#c8e6c9'), { bg: 2 }) // a CSS background and a Tailwind bg-[…]
+    assert.deepEqual(roles('#7b2d26'), { text: 1 })
+    assert.deepEqual(roles('#26567b'), { border: 1 })
+    assert.match(read(t.project, 'audits', 'latest.md'), /## Inventory\n\n.*never join the baseline\.\n\n- Borders:/)
+    // The baseline keys only findings, so it is the same with or without the inventory.
+    assert.equal(run('audit', t, ['--baseline']).status, 0)
+    const baseline = readJson(t.project, 'audits', 'baseline.json')
+    assert.ok(!JSON.stringify(baseline).includes('class leading-6'))
+  } finally {
+    t.cleanup()
+  }
 })
