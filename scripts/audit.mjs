@@ -15,7 +15,8 @@
 // The audit settings: audit.kinds turns a kind off (false) or on (true);
 // audit.exempt skips a kind in files by a header role, a tier, a group or a
 // glob; audit.arbitrary 'color' counts only arbitrary colours; and
-// audit.primitives 'color' counts only colour primitives.
+// audit.primitives 'color' counts only colour primitives. tokens.mjs extract
+// runs the audit without them (runAudit's `raw`).
 //
 // Writes audits/latest.json and audits/latest.md. The ratchet is per offender:
 // baseline.json keys are "<file>: <value>" with counts, and --check fails when
@@ -34,7 +35,7 @@
 //                                                     --write record the baseline once every mapped rule matches
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deltaE, parseColor, toHex } from './lib/color.mjs'
@@ -51,7 +52,7 @@ import {
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { findObject, leaves } from './lib/jsobject.mjs'
-import { channelColor } from './lib/readers.mjs'
+import { TAILWIND_CONFIG_STARTS, channelColor } from './lib/readers.mjs'
 import { headerRoles, keyRoles, knownKeys, placeFile } from './lib/roles.mjs'
 import { truthy } from './lib/text.mjs'
 
@@ -238,9 +239,14 @@ function classTokens(code, file) {
 
 // ── Breakpoints ─────────────────────────────────────────────────────────────
 
-const MEDIA = /@media\b([^{};]*)\{/g
+// An @media rule's prelude, up to its `{`. Never a Tailwind arbitrary
+// variant (`[@media(...)]:`, which the variant scan reads), and never across
+// a quote, so it cannot run on into markup.
+const MEDIA = /(?<!\[)@media\b([^{};"'`]*)\{/g
+// An @media in a quoted string (an object style key, a matchMedia query),
+// read to the end of that string.
+const MEDIA_QUOTED = /(?<!\[)@media\b([^{};]*)/g
 const TAILWIND_SCREENS = { sm: '640px', md: '768px', lg: '1024px', xl: '1280px', '2xl': '1536px' }
-const TAILWIND_CONFIG = [/export\s+default\s*(?:defineConfig\(\s*|\{\s*\.\.\.)?/, /module\.exports\s*=\s*/, /defineConfig\(\s*/, /const\s+config(?:\s*:\s*[\w.]+)?\s*=\s*/]
 
 // A width in rem at the default 16px root, so 640px and 40rem compare equal.
 const remOf = (width) => Number.parseFloat(width) / (/px$/.test(width) ? 16 : 1)
@@ -257,7 +263,8 @@ export function mediaWidths(query) {
 }
 
 // A class token's variants (`md:`, `max-sm:`, `min-[400px]:`, `[@media(...)]:`),
-// split at the colons outside brackets; the utility itself is left out.
+// split at the colons outside brackets; the utility itself is left out. With
+// no utility after them, as in prose such as 'xl: extra large', there are none.
 function variantsOf(token) {
   const out = []
   let depth = 0
@@ -270,7 +277,7 @@ function variantsOf(token) {
       last = i + 1
     }
   }
-  return out
+  return /^[!-]?[a-z[@]/i.test(token.slice(last)) ? out : []
 }
 
 // The media widths a token's variants compile to. A screen comes back in
@@ -287,10 +294,27 @@ export function variantWidths(token, screens) {
   return out
 }
 
+// tokens.breakpoints as widths in rem: { scale, twins }, each a list of
+// widths in rem, px or em. Another shape skips the kind, and a width with no
+// unit is left out, each with a warning, so a typo never flags every width.
+function breakpointScale(value) {
+  const lists = ['scale', 'twins'].map((k) => value?.[k] ?? [])
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !lists.every(Array.isArray)) {
+    return { widths: null, warnings: ['tokens.breakpoints is not { "scale": [...], "twins": [...] }, so the breakpoint kind is skipped'] }
+  }
+  const widths = []
+  const warnings = []
+  for (const width of lists.flat()) {
+    if (typeof width === 'string' && /^\d*\.?\d+(?:rem|px|em)$/.test(width.trim())) widths.push(remOf(width.trim()))
+    else warnings.push(`tokens.breakpoints names ${JSON.stringify(width)}, which is not a width in rem, px or em, so it is left out`)
+  }
+  return { widths, warnings }
+}
+
 // The theme object of a Tailwind 3 config, read as text, or null.
 function tailwindTheme(root, file) {
   if (!file || !existsSync(join(root, file))) return null
-  const theme = findObject(readFileSync(join(root, file), 'utf8'), TAILWIND_CONFIG)?.theme
+  const theme = findObject(readFileSync(join(root, file), 'utf8'), TAILWIND_CONFIG_STARTS)?.theme
   return theme && typeof theme === 'object' && !('expr' in theme) ? theme : null
 }
 
@@ -561,9 +585,16 @@ function scanFile(file, source, ctx, info) {
   if (ctx.breakpoints) {
     const allowed = [...ctx.breakpoints, ...info.breakpoints.map(remOf)]
     const onScale = (width) => allowed.some((w) => Math.abs(w - remOf(width)) < 1e-9)
-    for (const m of code.matchAll(MEDIA)) {
-      for (const width of mediaWidths(m[1])) if (!onScale(width)) add(m.index, 'breakpoint', `@media ${width}`)
+    const media = (offset, prelude) => {
+      for (const width of mediaWidths(prelude)) if (!onScale(width)) add(offset, 'breakpoint', `@media ${width}`)
     }
+    // An @media in a quoted string is read from that string alone; one in
+    // code, a style block or a template literal, up to its `{`.
+    const strings = isCss ? [] : stringLiterals(code, file)
+    const quoted = strings.filter((s) => code[s.start - 1] === '"' || code[s.start - 1] === "'")
+    const inQuoted = (offset) => quoted.some((s) => offset >= s.start && offset < s.start + s.text.length)
+    for (const m of code.matchAll(MEDIA)) if (!inQuoted(m.index)) media(m.index, m[1])
+    for (const s of quoted) for (const m of s.text.matchAll(MEDIA_QUOTED)) media(s.start + m.index, m[1])
     const variants = (text, start) => {
       for (const t of text.matchAll(/\S+/g)) {
         for (const { variant, width } of variantWidths(t[0], ctx.screens)) {
@@ -571,7 +602,7 @@ function scanFile(file, source, ctx, info) {
         }
       }
     }
-    if (!isCss) for (const { text, start } of stringLiterals(code, file)) variants(text, start)
+    for (const { text, start } of strings) variants(text, start)
     for (const m of code.matchAll(/@apply\s+([^;}\n]+)/g)) variants(m[1], m.index + m[0].indexOf(m[1]))
   }
 
@@ -641,6 +672,15 @@ function stylePrimitives(customProps) {
   for (const p of customProps) values.set(p.name, [...(values.get(p.name) ?? []), p.value])
   const literal = (v) => !/var\(/.test(v) && (parseColor(v) !== null || channelColor(v) !== null)
   return new Set([...values].filter(([, list]) => list.every(literal)).map(([name]) => name))
+}
+
+// A DTCG colour primitive: a literal colour in the Primitives collection,
+// as tokens.mjs places it. A token another collection holds, or whose CSS
+// reads another property (an alpha role such as `rgb(var(--ink) / 0.12)`),
+// is a role whatever its value.
+function isColorPrimitive(t) {
+  if (isAlias(t.value) || (t.type ?? t.groupType) !== 'color' || (t.collection ?? 'Primitives') !== 'Primitives') return false
+  return ![t.css, ...Object.values(t.cssModes ?? {})].some((css) => typeof css === 'string' && /var\(/.test(css))
 }
 
 // The story lane's policy problems the graph wrote to graph.json
@@ -838,24 +878,31 @@ function perFile(offenders) {
 
 // Each mapped rule of a legacy ratchet ({ rules: { <rule>: { count,
 // offenders } } }) against this audit's offenders, file by file. A pair
-// matches when every file has the same count; a kind not measured this run
-// cannot match.
+// matches when every file has the same count. A rule the legacy file lacks,
+// or whose count its offenders do not add up to, cannot be compared
+// (`broken`), and a kind not measured this run cannot match.
 export function compareLegacy(legacy, pairs, offenders, skippedReasons) {
   return pairs.map(({ rule, kinds }) => {
-    const theirs = perFile(legacy.rules?.[rule]?.offenders)
+    const entry = legacy.rules?.[rule]
+    const theirs = perFile(entry?.offenders)
     const ours = new Map()
     for (const kind of kinds) for (const [file, n] of perFile(offenders[kind])) ours.set(file, (ours.get(file) ?? 0) + n)
     const files = [...new Set([...theirs.keys(), ...ours.keys()])].sort(compare)
     const differs = files.filter((f) => (theirs.get(f) ?? 0) !== (ours.get(f) ?? 0)).map((file) => ({ file, legacy: theirs.get(file) ?? 0, massimo: ours.get(file) ?? 0 }))
     const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0)
     const skipped = kinds.filter((k) => skippedReasons.has(k)).map((k) => `${k} (${skippedReasons.get(k)})`)
-    const missing = legacy.rules?.[rule] ? null : `the legacy file has no rule ${rule}`
-    return { rule, kinds, legacy: sum(theirs), massimo: sum(ours), differs, problem: missing ?? (skipped.length > 0 ? `not measured: ${skipped.join('; ')}` : null) }
+    const broken = !entry
+      ? `the legacy file has no rule ${rule}`
+      : typeof entry.count === 'number' && entry.count !== sum(theirs)
+        ? `the legacy count is ${entry.count}, but its offenders add up to ${sum(theirs)}`
+        : null
+    return { rule, kinds, legacy: sum(theirs), massimo: sum(ours), differs, broken, problem: broken ?? (skipped.length > 0 ? `not measured: ${skipped.join('; ')}` : null) }
   })
 }
 
-// The comparison as a table, then each file that differs.
-function importReport(rows, legacyRules, measured) {
+// The comparison as a table, then each file that differs. `tracked` lists
+// the kinds a baseline already there records, which an import keeps.
+function importReport(rows, legacyRules, measured, tracked) {
   const out = []
   const head = ['rule', 'kinds', 'legacy', 'massimo', 'result']
   const cells = rows.map((r) => [r.rule, r.kinds.join(' + '), String(r.legacy), String(r.massimo), r.problem ?? (r.differs.length === 0 ? 'match' : `${r.differs.length} ${r.differs.length === 1 ? 'file differs' : 'files differ'}`)])
@@ -868,7 +915,16 @@ function importReport(rows, legacyRules, measured) {
   const rulesLeft = legacyRules.filter((r) => !mappedRules.has(r))
   const kindsLeft = measured.filter((k) => !mappedKinds.has(k))
   if (rulesLeft.length > 0) out.push(`Not mapped, so not imported: ${rulesLeft.join(', ')}.`)
-  if (kindsLeft.length > 0) out.push(`This audit also measures ${kindsLeft.join(', ')}, which no rule maps to; the baseline leaves ${kindsLeft.length === 1 ? 'it' : 'them'} out.`)
+  if (kindsLeft.length > 0) {
+    // A kind the baseline already tracks stays as it was; the rest are not recorded.
+    const kept = kindsLeft.filter((k) => tracked.includes(k))
+    const left = kindsLeft.filter((k) => !tracked.includes(k))
+    const them = (list) => (list.length === 1 ? 'it' : 'them')
+    const parts = []
+    if (kept.length > 0) parts.push(`keeps ${left.length > 0 ? kept.join(', ') : them(kept)} as ${kept.length === 1 ? 'it was' : 'they were'}`)
+    if (left.length > 0) parts.push(`leaves ${kept.length > 0 ? left.join(', ') : them(left)} out`)
+    out.push(`This audit also measures ${kindsLeft.join(', ')}, which no rule maps to; the baseline ${parts.join(' and ')}.`)
+  }
   return out.join('\n')
 }
 
@@ -897,7 +953,11 @@ function kindsFor(config) {
   return { kinds, off, warnings }
 }
 
-export function runAudit(root, config, { cluster = 0.03, projectDir = join(root, config.projectDir) } = {}) {
+// `raw` audits without the settings that limit what counts (audit.kinds,
+// audit.exempt, audit.arbitrary and audit.primitives at their defaults), so
+// tokens.mjs extract proposes from every raw value the code holds.
+export function runAudit(root, config, { cluster = 0.03, projectDir = join(root, config.projectDir), raw = false } = {}) {
+  if (raw) config = { ...config, audit: { ...config.audit, kinds: {}, exempt: {}, arbitrary: 'all', primitives: 'all' } }
   const all = walk(root, { ignore: config.ignore })
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
   const outputPaths = (config.tokens.outputs ?? []).map((o) => o.path).filter(Boolean)
@@ -921,12 +981,12 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     // an invalid token file is tokens.mjs's problem to report
   }
   // Every literal DTCG token is a primitive, unless audit.primitives is
-  // 'color': then only colours count, and with no DTCG set yet, the literal
-  // colours the token files define, read anywhere but those files.
+  // 'color': then only colour primitives count, and with no DTCG set yet,
+  // the literal colours the token files define, read anywhere but those files.
   const colorPrimitives = config.audit?.primitives === 'color'
   let primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value)).map((t) => t.cssVar))
   if (colorPrimitives) {
-    primitives = dtcgTokens.length > 0 ? new Set(dtcgTokens.filter((t) => !isAlias(t.value) && (t.type ?? t.groupType) === 'color').map((t) => t.cssVar)) : stylePrimitives(customProps)
+    primitives = dtcgTokens.length > 0 ? new Set(dtcgTokens.filter(isColorPrimitive).map((t) => t.cssVar)) : stylePrimitives(customProps)
   }
   if (dtcgTokens.length === 0 && primitives.size === 0) skipped.set('primitive-read', 'no token set yet')
 
@@ -945,8 +1005,10 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   if (!palette) skipped.set('tailwind-palette', hasTailwind ? 'no colour tokens of its own' : 'no Tailwind in styling')
 
   // The breakpoint scale, in rem, and the Tailwind screens its variants name.
-  const scale = config.tokens?.breakpoints
-  const breakpoints = scale ? [...(scale.scale ?? []), ...(scale.twins ?? [])].map(String).map(remOf).filter(Number.isFinite) : null
+  const scale = kinds.includes('breakpoint') ? breakpointScale(config.tokens.breakpoints) : { widths: null, warnings: [] }
+  warnings.push(...scale.warnings)
+  if (kinds.includes('breakpoint') && !scale.widths) skipped.set('breakpoint', 'tokens.breakpoints is not { scale, twins }')
+  const breakpoints = scale.widths
 
   // Story kinds come from the graph, which reads the lane's manifest.
   const stories = kinds.includes('story-title') ? storyFindings(projectDir) : null
@@ -1021,9 +1083,11 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   findings.push(...(stories?.findings ?? []))
 
   // Kinds turned off, and files exempt from a kind, leave no finding behind.
-  // A story finding's file was not scanned, so its header is read here.
+  // A story finding's file was not scanned, so its header is read here; it
+  // may name a page directory, which has none.
   const infoOf = (file) => {
-    if (!infos.has(file)) infos.set(file, fileInfo(file, existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : '', ctx))
+    const path = join(root, file)
+    if (!infos.has(file)) infos.set(file, fileInfo(file, existsSync(path) && statSync(path).isFile() ? readFileSync(path, 'utf8') : '', ctx))
     return infos.get(file)
   }
   const exempt = exemptions(config)
@@ -1308,11 +1372,15 @@ function importLegacy(flags, { root, projectDir, result, offenders, baselinePath
   for (const k of ALL_KINDS) if (!result.kinds.includes(k)) reasons.set(k, `${k === 'breakpoint' ? 'tokens.breakpoints' : 'stories.manifest'} is not set`)
   const rows = compareLegacy(legacy, pairs, offenders, reasons)
   const measured = result.kinds.filter((k) => !reasons.has(k))
-  process.stdout.write(`massimo audit: ${flags.import} against this audit, file by file (${stats})\n\n${importReport(rows, Object.keys(legacy.rules), measured)}\n\n`)
-  const unmeasured = rows.filter((r) => r.problem).map((r) => r.rule)
+  const before = readJson(baselinePath, null)
+  refuseNewer('baseline', before?.version, 'audits/baseline.json')
+  process.stdout.write(`massimo audit: ${flags.import} against this audit, file by file (${stats})\n\n${importReport(rows, Object.keys(legacy.rules), measured, Object.keys(before?.kinds ?? {}))}\n\n`)
+  const broken = rows.filter((r) => r.broken).map((r) => r.rule)
+  const unmeasured = rows.filter((r) => r.problem && !r.broken).map((r) => r.rule)
   const differing = rows.filter((r) => !r.problem && r.differs.length > 0).map((r) => r.rule)
-  if (unmeasured.length + differing.length > 0) {
+  if (broken.length + unmeasured.length + differing.length > 0) {
     const why = []
+    if (broken.length > 0) why.push(`${broken.join(', ')} cannot be compared, as the table says: fix ${flags.import} first.`)
     if (unmeasured.length > 0) why.push(`${unmeasured.join(', ')} ${unmeasured.length === 1 ? 'is' : 'are'} not measured, as the table says.`)
     if (differing.length > 0) why.push(`${differing.join(', ')} ${differing.length === 1 ? 'differs' : 'differ'} file by file: change audit.include, audit.exclude, audit.exempt or audit.kinds, or the code, until every file matches.`)
     process.stdout.write(`${truthy(flags.write) ? 'No baseline written. ' : ''}${why.join(' ')}\n`)
@@ -1322,8 +1390,6 @@ function importLegacy(flags, { root, projectDir, result, offenders, baselinePath
     process.stdout.write('Every mapped rule matches, file by file. Run again with --write to record the baseline.\n')
     return
   }
-  const before = readJson(baselinePath, null)
-  refuseNewer('baseline', before?.version, 'audits/baseline.json')
   const mapped = rows.flatMap((r) => r.kinds)
   mkdirSync(join(projectDir, 'audits'), { recursive: true })
   writeFileSync(baselinePath, `${JSON.stringify(importedBaseline(offenders, mapped, before), null, 2)}\n`)

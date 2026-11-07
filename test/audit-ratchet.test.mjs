@@ -72,6 +72,24 @@ test('the story kinds come from graph.json, each problem a finding keyed "<file>
   assert.match(check.stderr, /story-states {2}src\/stories\/manifest\.ts: cards: states \[a\] but the page labels \[b\] {2}new/)
 })
 
+test('a story problem may name a page directory, and an exemption for its kind still reads', () => {
+  const ctx = fresh()
+  withStories(ctx)
+  patch(ctx, (c) => (c.audit.exempt['story-files'] = { tiers: ['Explorations'] }))
+  mkdirSync(join(ctx.root, 'src', 'stories', 'pages', 'poster'), { recursive: true })
+  graph(ctx, { version: 1, nodes: [], storyLane })
+  for (const args of [[], ['--baseline'], ['--check']]) {
+    const r = run('audit', ctx, args)
+    assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`)
+  }
+  const latest = readJson(ctx.project, 'audits', 'latest.json')
+  assert.equal(latest.totals['story-files'], 1)
+  // Exempt by a glob, the directory's finding goes like a file's.
+  patch(ctx, (c) => (c.audit.exempt['story-files'] = { files: ['src/stories/pages/*'] }))
+  assert.equal(run('audit', ctx).status, 0)
+  assert.equal(readJson(ctx.project, 'audits', 'latest.json').exempted['story-files'], 1)
+})
+
 test('without graph.json or its story lane the story kinds are skipped, and a newer graph.json is refused', () => {
   const ctx = fresh()
   withStories(ctx)
@@ -106,6 +124,19 @@ test('--map pairs a rule with one kind or several, and a kind takes one rule', (
   )
   assert.deepEqual(rows[0].differs, [])
   assert.equal(rows[0].legacy, 3)
+})
+
+test('a legacy rule whose count its offenders do not add up to cannot be compared, so nothing is written', () => {
+  const [row] = compareLegacy({ rules: { 'raw-colour': { count: 3, offenders: {} } } }, parseMap('raw-colour=color'), { color: {} }, new Map())
+  assert.equal(row.broken, 'the legacy count is 3, but its offenders add up to 0')
+  assert.equal(row.problem, row.broken)
+  const ctx = fresh()
+  const file = legacy(ctx, { 'primitive-read': { count: 2, offenders: { 'src/components/Card.astro: --sand-200': 1 } } })
+  const r = run('audit', ctx, ['--import', file, '--map', 'primitive-read=primitive-read', '--write'])
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /^primitive-read +primitive-read +1 +1 +the legacy count is 2, but its offenders add up to 1$/m)
+  assert.match(r.stdout, /No baseline written\. primitive-read cannot be compared, as the table says: fix \S+ratchet\.json first\./)
+  assert.ok(!existsSync(join(ctx.project, 'audits', 'baseline.json')))
 })
 
 test('an import records no baseline until every mapped rule matches file by file', () => {
@@ -175,9 +206,17 @@ test('an import keeps the kinds a baseline already tracks that the map does not 
   const file = legacy(ctx, { 'primitive-read': rule({ 'src/components/Card.astro: --sand-200': 1 }) })
   const r = run('audit', ctx, ['--import', file, '--map', 'primitive-read=primitive-read', '--write'])
   assert.equal(r.status, 0, r.stdout)
+  assert.match(r.stdout, /This audit also measures color, arbitrary, undefined-var, tailwind-palette, breakpoint, which no rule maps to; the baseline keeps them as they were\./)
   const after_ = readJson(path)
   assert.deepEqual(after_.kinds.breakpoint, before.kinds.breakpoint)
   assert.deepEqual(after_.kinds['future-kind'], before.kinds['future-kind'])
+
+  // A kind the baseline does not track is named as left out.
+  delete after_.kinds['tailwind-palette']
+  writeFileSync(path, JSON.stringify(after_))
+  const mixed = run('audit', ctx, ['--import', file, '--map', 'primitive-read=primitive-read'])
+  assert.equal(mixed.status, 0, mixed.stdout)
+  assert.match(mixed.stdout, /; the baseline keeps color, arbitrary, undefined-var, breakpoint as they were and leaves tailwind-palette out\./)
 })
 
 test('audit.failWhenBehind fails --check while an offender that fell is still in the baseline', () => {

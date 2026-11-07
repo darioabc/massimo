@@ -1725,7 +1725,7 @@ function main() {
   if (mode === 'extract') {
     // What the sources define, then the code's own values for the gaps.
     const { sources } = readSources(root, config)
-    const audit = runAudit(root, config)
+    const audit = runAudit(root, config, { raw: true })
     const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling })
     if (proposal.tokens.length === 0) fail('found nothing to propose: no style files, config, theme or token files, and no raw values in the code')
     const { tokens, losses, defaultMode } = draftFrom(proposal.tokens, config)

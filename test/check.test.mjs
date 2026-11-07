@@ -35,13 +35,28 @@ test('a project with every phase done runs all four checks, and each one can fai
   assert.match(ok.stdout, /^pass {2}graph {3}node \.\.\/project\/scripts\/graph\.mjs --check$/m)
   assert.match(ok.stdout, /massimo check: 4 checks passed/)
 
+  // Each check fails the run on its own: an edit only it sees fails its
+  // line alone, and the edit is undone before the next.
+  const failsAlone = (name, file, edit) => {
+    const before = readFileSync(file, 'utf8')
+    writeFileSync(file, edit(before))
+    const r = run('check', ctx)
+    writeFileSync(file, before)
+    assert.equal(r.status, 1, `${name}: ${r.stdout}`)
+    assert.deepEqual(lines(r).filter((l) => /^(pass|fail) /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['graph', 'audit', 'tokens', 'docs'].map((c) => `${c === name ? 'fail' : 'pass'} ${c}`))
+    assert.match(r.stdout, /massimo check: 1 of 4 checks failed/)
+    return r
+  }
   // A new raw colour fails the audit line, and its output shows under it.
-  const raw = join(ctx.root, 'src', 'raw.tsx')
-  writeFileSync(raw, readFileSync(raw, 'utf8').replace("color: '#FF0000'", "color: '#abcdef'"))
-  const bad = run('check', ctx)
-  assert.equal(bad.status, 1)
+  const bad = failsAlone('audit', join(ctx.root, 'src', 'raw.tsx'), (s) => s.replace("color: '#FF0000'", "color: '#abcdef'"))
   assert.match(bad.stdout, /^fail {2}audit {3}node \S+audit\.mjs --check\n {6}massimo audit: 1 offender rose or is new.*\n {6} {2}color {2}src\/raw\.tsx: #abcdef {2}new\n/m)
-  assert.match(bad.stdout, /massimo check: 1 of 4 checks failed/)
+  // A component that now uses another is a graph the code has moved past.
+  failsAlone('graph', join(ctx.root, 'src', 'components', 'Toolbar.tsx'), (s) => `import { Chip } from './Chip.svelte'\n${s}`)
+  // A generated output edited by hand is behind the token set.
+  failsAlone('tokens', join(ctx.root, 'src', 'styles', 'tokens.generated.css'), (s) => s.replace(/#777777/i, '#787878'))
+  // A README block edited by hand is not what docs writes.
+  failsAlone('docs', join(ctx.project, 'README.md'), (s) => s.replace('<!-- massimo:docs:start -->\n', '<!-- massimo:docs:start -->\nEdited by hand.\n'))
+  assert.equal(run('check', ctx).status, 0)
 })
 
 test('a check that does not apply yet is skipped, and the project\'s own checks run after', () => {

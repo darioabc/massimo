@@ -10,7 +10,7 @@ import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } fro
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { mediaWidths, variantWidths } from '../scripts/audit.mjs'
-import { SCRIPTS, readJson, run, scratch } from './helpers.mjs'
+import { SCRIPTS, read, readJson, run, scratch, withTokens } from './helpers.mjs'
 
 const contexts = []
 after(() => contexts.forEach((c) => c.cleanup()))
@@ -40,6 +40,75 @@ test('media widths and Tailwind variants, as written or in rem', () => {
   assert.deepEqual(variantWidths('min-[22.5rem]:flex', screens), [{ variant: 'min-[22.5rem]', width: '22.5rem' }])
   assert.deepEqual(variantWidths('[@media(min-width:30rem)]:grid', screens), [{ variant: '[@media(min-width:30rem)]', width: '30rem' }])
   assert.deepEqual(variantWidths('group-hover:dark:flex', screens), [])
+})
+
+test('a screen variant needs a utility after it, so prose is no class', () => {
+  const screens = { md: '768px', xl: '1280px', '2xl': '1536px' }
+  assert.deepEqual(variantWidths('xl:', screens), [])
+  assert.deepEqual(variantWidths('2xl:', screens), [])
+  assert.deepEqual(variantWidths('md:-mt-2', screens), [{ variant: 'md', width: '48rem' }])
+  assert.deepEqual(variantWidths('md:!flex', screens), [{ variant: 'md', width: '48rem' }])
+  assert.deepEqual(variantWidths('md:[mask-type:luminance]', screens), [{ variant: 'md', width: '48rem' }])
+})
+
+test('an @media counts once, at its own line: never a Tailwind variant, never across a quote', () => {
+  const ctx = fresh()
+  patch(ctx, (c) => (c.audit.include = ['src/**/*.{css,ts,tsx,astro}']))
+  writeFileSync(join(ctx.root, 'src', 'components', 'Probe.astro'), [
+    '<div class="[@media(min-width:30rem)]:flex" data-x={x}>probe</div>',
+    '<style>',
+    '  @media (prefers-reduced-motion: no-preference) and',
+    '    (min-width: 35rem) {',
+    '    div { display: grid; }',
+    '  }',
+    '</style>',
+    '',
+  ].join('\n'))
+  writeFileSync(join(ctx.root, 'src', 'components', 'Media.tsx'), [
+    'export const P = ({ x }) => {',
+    "  const media = '@media (min-width: 31rem)'",
+    '  return <div className="[@media(min-width:29rem)]:flex" onClick={x}>{media}</div>',
+    '}',
+    'export const Box = styled.div`',
+    '  @media (min-width: 33rem) {',
+    '    display: flex;',
+    '  }',
+    '`',
+    "export const sx = { '@media (min-width: 34rem)': { display: 'flex' } }",
+    '',
+  ].join('\n'))
+  writeFileSync(join(ctx.root, 'src', 'lib', 'labels.ts'), "export const sizes = { big: 'xl: extra large', note: 'Time 2xl: later' }\n")
+  const latest = audit(ctx)
+  const probes = latest.findings.filter((f) => f.kind === 'breakpoint' && /Probe|Media|labels/.test(f.file)).map((f) => `${f.file}:${f.line}: ${f.value}`)
+  assert.deepEqual(probes, [
+    'src/components/Media.tsx:2: @media 31rem',
+    'src/components/Media.tsx:3: @media 29rem ([@media(min-width:29rem)]:)',
+    'src/components/Media.tsx:6: @media 33rem',
+    'src/components/Media.tsx:10: @media 34rem',
+    'src/components/Probe.astro:1: @media 30rem ([@media(min-width:30rem)]:)',
+    'src/components/Probe.astro:3: @media 35rem',
+  ])
+})
+
+test('tokens.breakpoints of another shape skips the kind, and a width with no unit is left out, each with a warning', () => {
+  const ctx = fresh()
+  patch(ctx, (c) => (c.tokens.breakpoints = ['40rem', '48rem']))
+  const bare = run('audit', ctx)
+  assert.equal(bare.status, 0, bare.stderr)
+  assert.match(bare.stderr, /warn: tokens\.breakpoints is not \{ "scale": \[\.\.\.\], "twins": \[\.\.\.\] \}, so the breakpoint kind is skipped/)
+  let latest = readJson(ctx.project, 'audits', 'latest.json')
+  assert.equal(latest.skipped.breakpoint, 'tokens.breakpoints is not { scale, twins }')
+  assert.deepEqual(keys(latest, 'breakpoint'), [])
+
+  patch(ctx, (c) => (c.tokens.breakpoints = { scale: ['40rem', 768, '48'], twins: ['40.0625rem'] }))
+  const unitless = run('audit', ctx)
+  assert.equal(unitless.status, 0, unitless.stderr)
+  assert.match(unitless.stderr, /warn: tokens\.breakpoints names 768, which is not a width in rem, px or em, so it is left out/)
+  assert.match(unitless.stderr, /warn: tokens\.breakpoints names "48", which is not a width in rem, px or em, so it is left out/)
+  latest = readJson(ctx.project, 'audits', 'latest.json')
+  // 40rem still holds; md: is off the scale now that "48" is left out.
+  assert.ok(keys(latest, 'breakpoint').includes('src/components/Card.astro: @media 48rem (md:)'))
+  assert.ok(!keys(latest, 'breakpoint').some((k) => k.includes('40.0625rem')))
 })
 
 test('every setting at once: what counts, what is exempt, what is off', () => {
@@ -161,4 +230,39 @@ test('primitives limited to colour: a DTCG set counts its colours only', () => {
   assert.deepEqual(keys(colour, 'primitive-read').filter((k) => k.startsWith('src/reads')), ['src/reads.tsx: --color-neutral-500'])
   // Arbitrary values limited to colour keep bg-[#0f0] and drop the rest.
   assert.deepEqual(keys(colour, 'arbitrary'), ['src/raw.tsx: bg-[#0f0]'])
+})
+
+test('primitives limited to colour: a colour role is no primitive, by its collection or a var() in its CSS', () => {
+  const srgb = (components, alpha) => ({ colorSpace: 'srgb', components, ...(alpha === undefined ? {} : { alpha }) })
+  const ctx = withTokens({
+    color: {
+      $type: 'color',
+      neutral: { 500: { $value: srgb([0.47, 0.47, 0.47]) } },
+      line: { $value: srgb([0, 0, 0], 0.12), $extensions: { massimo: { collection: 'Semantic' } } },
+      scrim: { $value: srgb([0, 0, 0], 0.5), $extensions: { massimo: { css: 'rgb(var(--ink) / 0.5)' } } },
+    },
+  })
+  contexts.push(ctx)
+  writeFileSync(join(ctx.root, 'src', 'roles.tsx'), "export const R = () => <i style={{ color: 'var(--color-line)', background: 'var(--color-scrim)', borderColor: 'var(--color-neutral-500)' }} />\n")
+  const reads = (latest) => keys(latest, 'primitive-read').filter((k) => k.startsWith('src/roles'))
+  assert.deepEqual(reads(audit(ctx)), ['src/roles.tsx: --color-line', 'src/roles.tsx: --color-neutral-500', 'src/roles.tsx: --color-scrim'])
+  patch(ctx, (c) => (c.audit = { ...c.audit, primitives: 'color' }))
+  assert.deepEqual(reads(audit(ctx)), ['src/roles.tsx: --color-neutral-500'])
+})
+
+test('tokens.mjs extract proposes from the audit without its settings', () => {
+  const ctx = fresh()
+  const draft = () => {
+    const r = run('tokens', ctx, ['extract'])
+    assert.equal(r.status, 0, r.stderr)
+    return ['base.tokens.json', 'report.md', 'tokens.resolver.json'].map((name) => read(ctx.project, 'tokens', 'draft', name))
+  }
+  const limited = draft()
+  // Exempt colours and an arbitrary length still reach the proposals.
+  assert.match(limited[1], /\| Colour \| #aabbcc \| 1 \|/)
+  assert.match(limited[1], /\| Spacing \| 6px \| 1 \|/)
+  patch(ctx, (c) => {
+    for (const key of ['kinds', 'exempt', 'arbitrary', 'primitives']) delete c.audit[key]
+  })
+  assert.deepEqual(draft(), limited)
 })

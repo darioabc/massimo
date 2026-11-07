@@ -299,12 +299,16 @@ function cssValue(v) {
   return v.trim()
 }
 
+// Where a Tailwind 3 config's object starts, for findObject. The audit reads
+// screens and colours from the same place.
+export const TAILWIND_CONFIG_STARTS = [/export\s+default\s*(?:defineConfig\(\s*|\{\s*\.\.\.)?/, /module\.exports\s*=\s*/, /defineConfig\(\s*/, /const\s+config(?:\s*:\s*[\w.]+)?\s*=\s*/]
+
 // The theme a Tailwind 3 config sets (both `theme` and `theme.extend`), read
 // as text. Spreads of Tailwind's own defaults and anything computed are
 // skipped and named in the notes; nothing in the file is run.
 export function readTailwindConfig(root, file) {
   const src = readFileSync(join(root, file), 'utf8')
-  const config = findObject(src, [/export\s+default\s*(?:defineConfig\(\s*|\{\s*\.\.\.)?/, /module\.exports\s*=\s*/, /defineConfig\(\s*/, /const\s+config(?:\s*:\s*[\w.]+)?\s*=\s*/])
+  const config = findObject(src, TAILWIND_CONFIG_STARTS)
   const notes = []
   if (!config) return { tokens: [], notes: [`${file}: no config object found to read`] }
   const theme = isObject(config.theme) ? config.theme : {}
