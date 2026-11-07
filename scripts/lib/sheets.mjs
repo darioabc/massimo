@@ -40,8 +40,10 @@ export function commentText(raw) {
 // { headers, decls: [{ prop, value, line, comment }] }. `headers` is the chain
 // of at-rule preludes and selectors from the outermost block in. `comment` is
 // the comment just before the declaration, or else one after it on its line.
-// Values keep what the author wrote, `!important` too, with whitespace and
-// comments inside them collapsed.
+// A comment that opens a section (one that draws a rule, or the first in its
+// block above a declaration with a comment of its own) is the section's, not
+// the declaration's. Values keep what the author wrote, `!important` too,
+// with whitespace and comments inside them collapsed.
 export function cssRules(css, file = 'x.css') {
   const { comments } = scanSource(css, { block: true, line: /\.(?:scss|sass|less|styl)$/i.test(file) })
   let text = css
@@ -70,13 +72,16 @@ export function cssRules(css, file = 'x.css') {
   const sameLine = (a, b) => !css.slice(a, b).includes('\n')
   // The comment that ends just before `at`, after `boundary`; one on the
   // line of the `;` that closed the previous declaration is that one's.
+  // `rule` says it draws a rule, `first` that nothing comes before it in
+  // its block.
   const leading = (boundary, at) => {
     for (let k = comments.length - 1; k >= 0; k--) {
       const [s, e] = comments[k]
       if (e > at) continue
       if (s <= boundary || !blank(e, at)) return null
       if (css[boundary] === ';' && sameLine(boundary, s)) return null
-      return commentText(css.slice(s, e))
+      const raw = css.slice(s, e)
+      return { text: commentText(raw), rule: RULE.test(raw), first: css[boundary] === '{' && blank(boundary + 1, s) }
     }
     return null
   }
@@ -106,7 +111,10 @@ export function cssRules(css, file = 'x.css') {
     if (colon === -1) return
     const prop = stmt.slice(0, colon).trim()
     if (!/^[-\w]+$/.test(prop)) return
-    const comment = leading(boundary, at) || (css[end] === ';' ? trailing(end) : null)
+    const lead = leading(boundary, at)
+    const trail = css[end] === ';' ? trailing(end) : null
+    const opens = lead && (lead.rule || (lead.first && trail))
+    const comment = opens ? trail : lead?.text || trail
     top.decls.push({ prop, value: clean(stmt.slice(colon + 1)), line: lineOf(at), comment: comment || '' })
   }
   for (let i = 0; i < text.length; i++) {
@@ -175,6 +183,12 @@ export const selectorKey = (member, conditions) => [...conditions.filter((c) => 
 
 const unquote = (s) => s.replace(/^(['"])(.*)\1$/, '$2')
 
+// A selector as a theme is matched by: whitespace collapsed, and an
+// attribute's plain value without its quotes, so `[data-theme='brand']`,
+// `[data-theme="brand"]` and `[data-theme=brand]` are one theme.
+const ATTRIBUTE = /\[\s*([\w-]+)\s*([~|^$*]?=)\s*(["']?)([\w-]+)\3\s*([is])?\s*\]/gi
+export const canonicalSelector = (s) => clean(s).replace(ATTRIBUTE, (_, name, op, _q, value, flag) => `[${name}${op}${value}${flag ? ` ${flag}` : ''}]`)
+
 // Where the config's themes are: `place(member, conditions, rule)` gives the
 // mode a member's values belong to ('default', 'dark' or a named theme), or
 // null for a scope. The default theme is the root (`:root`, `html`); a mode
@@ -182,8 +196,8 @@ const unquote = (s) => s.replace(/^(['"])(.*)\1$/, '$2')
 // colour-scheme query on the root when tokens.darkMedia is on. `@theme` is
 // the default theme, and a DaisyUI theme block is the theme it names.
 export function themePlacer(config) {
-  const dark = clean(config.tokens.darkSelector ?? '')
-  const named = new Map(Object.entries(config.tokens.selectors ?? {}).map(([mode, s]) => [clean(String(s)), mode === (config.tokens.defaultMode ?? 'light') ? 'default' : mode]))
+  const dark = canonicalSelector(config.tokens.darkSelector ?? '')
+  const named = new Map(Object.entries(config.tokens.selectors ?? {}).map(([mode, s]) => [canonicalSelector(String(s)), mode === (config.tokens.defaultMode ?? 'light') ? 'default' : mode]))
   const selectorOf = new Map([[dark, 'dark'], ...named])
   const place = (member, conditions, rule = null) => {
     const live = conditions.filter((c) => atRuleKind(c).kind !== 'transparent')
@@ -197,17 +211,17 @@ export function themePlacer(config) {
       }
       if (member.startsWith('@')) return null
       if (classifyMember(member).scope === 'root') return 'default'
-      return selectorOf.get(member) ?? null
+      return selectorOf.get(canonicalSelector(member)) ?? null
     }
     const scheme = live.length === 1 ? atRuleKind(live[0]) : null
     if (config.tokens.darkMedia && scheme?.kind === 'scheme' && scheme.mode === 'dark' && !member.startsWith('@') && classifyMember(member).scope === 'root') return 'dark'
     return null
   }
-  // The mode a scope's values are read in: the theme it sits inside
-  // (`html.dark .band-block`), or a theme it shares a rule with, since a
-  // rule like `html.dark, .band-dark` makes the scope a stand-in for it.
+  // The theme a scope sits inside (`html.dark .band-block`), as { mode,
+  // theme }, `theme` being the theme's selector as canonicalSelector writes it.
   const inside = (member) => {
-    for (const [selector, mode] of selectorOf) if (selector && member.startsWith(`${selector} `)) return mode
+    const own = canonicalSelector(member)
+    for (const [selector, mode] of selectorOf) if (selector && own.startsWith(`${selector} `)) return { mode, theme: selector }
     return null
   }
   // The theme a scope's selector looks like by the names themes usually
@@ -313,23 +327,43 @@ const TYPE_PROPS = new Set(['font', 'font-family', 'font-size', 'font-weight', '
 
 // Every custom property a set of sheets declares, as tokens/resolved.json
 // holds them: one token per file and name, with its layer, its family, and
-// its values in source order, one per selector, each with the colour it
-// resolves to in its theme. A theme's values read the root's and its own; a
-// scope's read its theme's (the one it sits inside, or shares a rule with)
-// and its own. Then the type classes and the @font-face rules.
+// its values in source order, one per selector (each member of a selector
+// list on its own), each with the colour it resolves to in its theme. A
+// value reads its own selector's values first, then its theme's, then the
+// root's. Each sheet reads its own declarations, then those of the sheets
+// tokens.styleFiles names, which load with every page, and never another
+// listed sheet's. Then the type classes and the @font-face rules.
 export function inventoryOf(sheets, config) {
   const inventory = config.tokens.inventory ?? {}
-  const { inside } = themePlacer(config)
+  const { place, inside } = themePlacer(config)
   const { declarations, pairs } = sheetDeclarations(sheets, config)
-  const envs = new Map([['default', new Map()]])
-  const scopes = new Map()
-  const into = (map, key) => map.get(key) ?? map.set(key, new Map()).get(key)
-  for (const d of declarations) into(d.mode ? envs : scopes, d.mode ?? d.key).set(d.name, d.value)
+  const shared = compileGlobs(config.tokens.styleFiles ?? [])
+  const sheetOf = (file) => (shared(file) ? '' : file)
+  // Values by sheet, then by selector (`key`) or by theme (`mode`).
+  const values = new Map()
+  const put = (id, name, value) => (values.get(id) ?? values.set(id, new Map()).get(id)).set(name, value)
+  for (const d of declarations) {
+    put(`${sheetOf(d.file)}\nkey\n${canonicalSelector(d.key)}`, d.name, d.value)
+    if (d.mode) put(`${sheetOf(d.file)}\nmode\n${d.mode}`, d.name, d.value)
+  }
+  // The theme a value is read in, as { mode, theme }: its own; a theme's
+  // selector under a condition (`html.dark` at a phone width) that theme; a
+  // dark colour-scheme query around it dark, when tokens.darkMedia is on; the
+  // theme it sits inside; or a theme it shares a rule with, since a rule like
+  // `html.dark, .band-dark` makes the scope a stand-in for it.
+  const contextOf = (d) => {
+    if (d.mode) return { mode: d.mode, theme: null }
+    if (config.tokens.darkMedia && d.conditions.some((c) => atRuleKind(c).mode === 'dark')) return { mode: 'dark', theme: null }
+    const bare = d.member.startsWith('@') ? null : place(d.member, [])
+    if (bare) return { mode: bare, theme: bare === 'default' ? null : canonicalSelector(d.member) }
+    return inside(d.member) ?? { mode: pairs.get(d.key) ?? 'default', theme: null }
+  }
   const lookupFor = (d) => {
-    const mode = d.mode ?? inside(d.member) ?? pairs.get(d.key) ?? 'default'
-    const own = d.mode ? null : scopes.get(d.key)
-    const theme = mode === 'default' ? null : envs.get(mode)
-    return (name) => own?.get(name) ?? theme?.get(name) ?? envs.get('default').get(name)
+    const { mode, theme } = contextOf(d)
+    const own = sheetOf(d.file)
+    const from = (kind, id) => [own, ...(own ? [''] : [])].map((sheet) => values.get(`${sheet}\n${kind}\n${id}`))
+    const maps = [...from('key', canonicalSelector(d.key)), ...(theme ? from('key', theme) : []), ...(mode !== 'default' ? from('mode', mode) : []), ...from('mode', 'default')]
+    return (name) => maps.find((m) => m?.has(name))?.get(name)
   }
   const tokens = []
   const byKey = new Map()

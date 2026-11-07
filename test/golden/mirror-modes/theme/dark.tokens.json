@@ -1,0 +1,61 @@
+{
+  "$description": "What changes in the dark context.",
+  "color": {
+    "$type": "color",
+    "edge": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.2275,
+          0.2314,
+          0.2353
+        ],
+        "hex": "#3a3b3c"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--edge"
+        }
+      }
+    },
+    "ink": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.949,
+          0.9412,
+          0.9216
+        ],
+        "hex": "#f2f0eb"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--ink",
+          "css": "242 240 235"
+        }
+      }
+    },
+    "paper": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.0863,
+          0.0902,
+          0.0941
+        ],
+        "hex": "#161718"
+      },
+      "$description": "a sheet",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--paper"
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2
+    }
+  }
+}

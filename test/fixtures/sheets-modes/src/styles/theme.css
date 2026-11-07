@@ -1,0 +1,44 @@
+/* Tokens for a site whose dark theme follows the system setting and a dark
+   class, with a brand theme besides. */
+
+:root {
+  /* ── Colour ─────────────────────────────────────────── */
+  --ink: 29 31 32;
+  --paper: #fffdf8; /* a sheet */
+  --text: rgb(var(--ink));
+  --mark: light-dark(#c84e22, #ec8f62); /* the accent, by colour scheme */
+  --edge: #d8ccac;
+}
+
+.dark {
+  --ink: 242 240 235;
+  --paper: #161718;
+  /* A softer edge on the dark ground. */
+  --edge: #3a3b3c;
+}
+
+/* The same theme from the system setting, with a darker sheet. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: 242 240 235;
+    --paper: #101112;
+    --edge: #3a3b3c;
+  }
+}
+
+[data-theme='brand'] {
+  --paper: #fff4e8;
+}
+
+/* A band, a step lighter under the system's dark setting. */
+.band {
+  --band-text: rgb(var(--ink) / 0.8);
+}
+@media (prefers-color-scheme: dark) {
+  .band { --band-text: rgb(var(--ink) / 0.9); }
+}
+
+/* The dark class at a phone width: quieter text. */
+@media (max-width: 40rem) {
+  .dark { --text: rgb(var(--ink) / 0.5); }
+}

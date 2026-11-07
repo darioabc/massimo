@@ -249,7 +249,7 @@
         ],
         "hex": "#ece5d1"
       },
-      "$description": "Palette. Channels, so a role can add an alpha.",
+      "$description": "#ece5d1 the ground",
       "$extensions": {
         "massimo": {
           "cssVar": "--sand-200",

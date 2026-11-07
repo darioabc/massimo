@@ -12,9 +12,9 @@ import { golden, read, readJson, run, scratch } from './helpers.mjs'
 
 const contexts = []
 after(() => contexts.forEach((c) => c.cleanup()))
-// The sheets fixture with the mirror off, and these token keys.
-const fresh = (tokens = {}) => {
-  const ctx = scratch('sheets')
+// A sheets fixture with the mirror off, and these token keys.
+const fresh = (tokens = {}, fixture = 'sheets') => {
+  const ctx = scratch(fixture)
   contexts.push(ctx)
   const path = join(ctx.root, 'massimo.config.json')
   const config = JSON.parse(readFileSync(path, 'utf8'))
@@ -101,6 +101,19 @@ test('without tokens.inventory: the style files as one layer, massimo families, 
     ['color', 'color', 'spacing', 'typography', 'typography', 'typography', 'radius', 'motion', 'motion', 'z-index', 'other'],
   )
   assert.deepEqual(doc.typeClasses, ['t-body', 't-h2'])
+})
+
+test('a theme under a condition, a scope under the dark colour-scheme query and a theme in other quotes resolve in their theme', () => {
+  const ctx = fresh({}, 'sheets-modes')
+  assert.equal(run('tokens', ctx, ['resolved']).status, 0)
+  const doc = resolvedOf(ctx)
+  const at = (name, selector) => token(doc, name).values.find((v) => v.selector === selector)
+  assert.equal(at('--text', '@media (max-width: 40rem) .dark').resolved, 'rgb(242 240 235 / 0.5)')
+  assert.equal(at('--band-text', '@media (prefers-color-scheme: dark) .band').resolved, 'rgb(242 240 235 / 0.9)')
+  assert.equal(at('--band-text', '.band').resolved, 'rgb(29 31 32 / 0.8)')
+  assert.equal(at('--mark', ':root').resolved, '#c84e22')
+  // Each selector keeps the text the CSS wrote it with.
+  assert.deepEqual(token(doc, '--paper').values.map((v) => v.selector), [':root', '.dark', '@media (prefers-color-scheme: dark) :root', "[data-theme='brand']"])
 })
 
 test('resolved --check and tokens check keep resolved.json current', () => {

@@ -32,7 +32,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { colorCss, contrastRatio, parseColor, toHex } from './lib/color.mjs'
+import { colorCss, colorModes, contrastRatio, parseColor, toHex } from './lib/color.mjs'
 import { DESIGN_MD, designMd } from './lib/designmd.mjs'
 import { driftReport, recordMirror } from './lib/figma.mjs'
 import {
@@ -50,7 +50,7 @@ import {
   writeLegacy,
   writeTokenSet,
 } from './lib/dtcg.mjs'
-import { compare, expandGlobs } from './lib/glob.mjs'
+import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, vendoredOlder, vendoredVersion, warnIfVendoredOlder } from './lib/project.mjs'
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
@@ -1510,8 +1510,8 @@ function mirrorDir(root, config) {
 // path in the mirror's folder, with notes on what is not kept as written.
 // A property with a value on the root is a token; its themes come from the
 // config's selectors, its values under any other selector go to
-// `$extensions.massimo.scopes`, and the comment before it is its
-// description. A property set only in a theme or inside scopes has no
+// `$extensions.massimo.scopes`, and the comment on its root declaration is
+// its description. A property set only in a theme or inside scopes has no
 // default to give a token, so the base file keeps it by name with its values.
 function mirrorSet(root, config, projectDir) {
   const sheets = styleSheets(root, config)
@@ -1525,12 +1525,21 @@ function mirrorSet(root, config, projectDir) {
       tailwind++
       continue
     }
-    const p = props.get(d.name) ?? { modes: {}, scopes: {}, all: {}, comment: '', rootComment: '' }
+    const p = props.get(d.name) ?? { modes: {}, from: {}, scopes: {}, all: {}, comment: '', rootComment: '' }
     const value = d.value.replace(IMPORTANT, '')
     if (value !== d.value) notes.push(`${d.name} under ${d.key} is !important, which a token cannot hold; the mirror keeps the value without it`)
-    if (d.mode === 'default') p.default = value
-    else if (d.mode) p.modes[d.mode] = value
-    else p.scopes[d.key] = value
+    // A theme takes its value from the first selector the config places in
+    // it. Another one placed there too (the dark class and the dark
+    // colour-scheme query) that sets a different value keeps it as a scope.
+    const kept = d.mode === 'default' ? p.default : p.modes[d.mode]
+    if (d.mode && (p.from[d.mode] ?? d.key) === d.key) {
+      p.from[d.mode] = d.key
+      if (d.mode === 'default') p.default = value
+      else p.modes[d.mode] = value
+    } else if (!d.mode || kept !== value) {
+      p.scopes[d.key] = value
+      if (d.mode) notes.push(`${d.name} is ${kept} under ${p.from[d.mode]} and ${value} under ${d.key}, which the config places in the same ${d.mode} theme; the theme keeps the first, and ${d.key} keeps its own as a scope`)
+    }
     p.all[d.key] = value
     if (!p.comment && d.comment) p.comment = d.comment
     if (d.mode === 'default' && !p.rootComment && d.comment) p.rootComment = d.comment
@@ -1552,17 +1561,26 @@ function mirrorSet(root, config, projectDir) {
   // The root and theme values, read by readCss as extract reads them.
   const byFile = new Map()
   for (const d of found) {
-    if (!d.mode || props.get(d.name)?.default === undefined) continue
+    const p = props.get(d.name)
+    if (!d.mode || p?.default === undefined || p.from[d.mode] !== d.key) continue
     byFile.set(d.file, [...(byFile.get(d.file) ?? []), { name: d.name, value: d.value.replace(IMPORTANT, ''), mode: d.mode, scope: d.mode === 'default' ? 'root' : 'selector', selector: d.key }])
   }
   const read = readCss(root, sheets.map((s) => s.file), (css, file) => byFile.get(file) ?? [])
   notes.push(...read.notes)
-  for (const t of read.tokens) t.description = props.get(t.cssVar).rootComment || props.get(t.cssVar).comment
+  for (const t of read.tokens) t.description = props.get(t.cssVar).rootComment
   const { tokens, losses, defaultMode } = draftFrom(read.tokens, config)
   for (const l of losses) notes.push(`${l.token} (${l.kind}): ${l.detail}`)
+  // light-dark() on the root stays one declaration: its dark side is no
+  // theme value the CSS sets under the dark selector, so none is written.
+  for (const t of tokens) {
+    const p = props.get(t.cssVar)
+    if (!colorModes(p.default ?? '') || p.modes.dark !== undefined) continue
+    delete t.modes.dark
+    if (t.cssModes) delete t.cssModes.dark
+  }
   // Every value the CSS output would write differently (a family's quotes,
-  // a number's form) keeps the text the author wrote, so the mirror builds
-  // back to the same declarations.
+  // a number's form, a light-dark()) keeps the text the author wrote, so the
+  // mirror builds back to the same declarations.
   const model = buildModel(tokens, config, [], { defaultMode })
   for (const t of tokens) {
     const p = props.get(t.cssVar)
@@ -1576,6 +1594,8 @@ function mirrorSet(root, config, projectDir) {
     }
     if (Object.keys(p.scopes).length > 0) t.scopes = p.scopes
   }
+  // The CSS kept as written is checked as a read of the set checks it, so
+  // the mirror never writes a set the build would then refuse.
   buildModel(tokens, config, [], { defaultMode })
   const from = sheets.map((s) => s.file)
   const files = writeTokenSet({
@@ -1610,11 +1630,15 @@ function mirrorState(root, config, projectDir) {
   return { ...set, dir, files, stale: files.filter((f) => !existsSync(f.path) || readFileSync(f.path, 'utf8') !== f.text) }
 }
 
-// Outputs that would write over a style file the mirror reads as the source.
+// Outputs that would write over a style file the mirror reads as the source,
+// or write one it would read from then on: any path tokens.styleFiles
+// matches outside an ignored folder, whether or not it exists yet.
 const overSources = (root, config) => {
   if (!config.tokens.mirror) return []
-  const sources = new Set(expandGlobs(root, config.tokens.styleFiles, [], config.ignore))
-  return (config.tokens.outputs ?? []).filter((o) => sources.has(rel(root, join(root, o.path))))
+  const source = compileGlobs(config.tokens.styleFiles)
+  const skipped = new Set(['node_modules', '.git', ...(config.ignore ?? [])])
+  const read = (path) => source(path) && !path.split('/').slice(0, -1).some((dir) => skipped.has(dir))
+  return (config.tokens.outputs ?? []).filter((o) => read(rel(root, join(root, o.path))))
 }
 
 function mirrorCommand({ root, config, projectDir, flags, shown }) {
@@ -1710,7 +1734,9 @@ function main() {
     if (!['preview', 'kit', 'check', 'hash'].includes(mode)) fail('--source reads another token set for preview, kit, check or hash only; build always reads tokens.source', 2)
     config.tokens.source = rel(root, resolve(flags.source))
   }
-  HEADER = `Generated by massimo tokens from ${config.tokens.source}. Do not edit by hand: change the tokens, then run ${scriptCommand(root, projectDir, 'tokens', 'build')}`
+  HEADER = config.tokens.mirror && typeof flags.source !== 'string'
+    ? `Generated by massimo tokens from ${config.tokens.source}, the mirror of the style files. Do not edit by hand: change the style files, then run ${scriptCommand(root, projectDir, 'tokens', 'mirror')}, then ${scriptCommand(root, projectDir, 'tokens', 'build')}`
+    : `Generated by massimo tokens from ${config.tokens.source}. Do not edit by hand: change the tokens, then run ${scriptCommand(root, projectDir, 'tokens', 'build')}`
   const shown = (abs) => {
     const r = rel(root, abs)
     return r.startsWith('..') ? abs : r
@@ -1833,7 +1859,7 @@ function main() {
   }
   const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}`]
   if (mirror) parts.push(mirror.current ? 'figma mirror current' : 'figma mirror behind')
-  if (config.tokens.mirror && typeof flags.source !== 'string') parts.push(behind.length > 0 ? 'mirror behind the style files' : 'mirror current')
+  if (config.tokens.mirror && typeof flags.source !== 'string') parts.push(behind.length > 0 ? 'token mirror behind the style files' : 'token mirror current')
   if (listed) parts.push(listed.current ? 'resolved.json current' : 'resolved.json behind')
   if (stale.length > 0 || behind.length > 0 || (listed && !listed.current)) {
     // A mirror brought up to date can change every output, so build follows it.
