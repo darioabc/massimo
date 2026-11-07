@@ -22,13 +22,23 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
    Show them to the user in one list; designers usually have the strongest views on `use-when` and `never`. Write the accepted lines as comments at the top of each component file, re-run `graph.mjs`, and check they appear under rules with no header faults.
 4. **One check script.** Add to package.json:
    ```json
-   "ds:check": "node <project>/scripts/graph.mjs --check && node <project>/scripts/audit.mjs --check && node <project>/scripts/tokens.mjs check && node <project>/scripts/docs.mjs --check"
+   "ds:check": "node <project>/scripts/check.mjs"
    ```
-   Drop the parts whose phase was skipped (no tokens → no `tokens.mjs check`; no audit baseline → no `audit.mjs --check`). Run it locally until it passes.
+   `check.mjs` runs every massimo check that applies, one line each: `graph.mjs --check` always, `audit.mjs --check` once there is an audit baseline, `tokens.mjs check` once there is a token set, and `docs.mjs --check` once the README has its generated part. A phase that was skipped drops out by itself. A check the repo already has that massimo does not cover (a script of its own that guards a shipped asset, say) goes in `guard.extraChecks` in `massimo.config.json` as `{ "name": "...", "run": "..." }`; `check.mjs` runs each through a shell from the repo root after its own. Run it locally until it passes.
 5. **CI.** Detect the CI system (`.github/workflows`, `.gitlab-ci.yml`, `.circleci`, others). For GitHub Actions, copy `<plugin>/templates/design-system-check.yml` to `.github/workflows/design-system.yml` and adjust the Node version and install command to match the repo's other workflows. For anything else, add an equivalent job and show the user. Do not push; tell the user the workflow runs on their next PR.
 6. **README.** `node <project>/scripts/docs.mjs` writes `<project>/README.md`: the token set with each semantic token's meaning and the contrast pairs, how to change tokens, each component by tier with its `ds:use-when` and props, what `ds:check` enforces, the Figma mirror's state, and how to start a design. That part sits between `massimo:docs` markers and is regenerated; write the rest around it with the user: how to run and add stories, how to update the audit baseline when a raw value is deliberate, and who decides what (from `product.md` → Team). `docs.mjs --check` joins `ds:check`, so the README cannot fall behind. Link it from the repo's main README with one line if the user agrees.
 7. **End.** `state.mjs set guard done --note "rules on <n> primitives, ds:check in <CI>"`. Next step: Figma mirror if planned, otherwise the project is complete and `/massimo:ux` takes over for new design work.
 
 ## When a check fails later
 
-Explain the fix in the failure's terms: stale graph → run `npm run ds:graph` and commit; new raw value → use a token; if it is deliberate, add the offender to `<project>/audits/baseline.json` by hand and say why in the commit (`--lower` never records a rise, on purpose); stale tokens → `npm run ds:tokens`.
+Explain the fix in the failure's terms: stale graph → run `npm run ds:graph` and commit; new raw value → use a token; if it is deliberate, add the offender to `<project>/audits/baseline.json` by hand and say why in the commit (`--lower` never records a rise, on purpose); a baseline behind the code (with `audit.failWhenBehind` set) → run `audit.mjs --lower` and commit the lower counts with the fix; stale tokens → `npm run ds:tokens`; a project check from `guard.extraChecks` → its own output, printed under its line, says what it wants.
+
+## A repo with a ratchet of its own
+
+When the repo already keeps per-offender counts in another shape (`{ note, rules: { <rule>: { count, offenders } } }`), seed the baseline from them rather than from scratch, so the ratchet carries over instead of starting loose. Map each rule to the kinds that measure it and compare, file by file:
+
+```bash
+node <project>/scripts/audit.mjs --import <their ratchet>.json --map <rule>=<kind>,<rule>=<kind>+<kind>
+```
+
+The table shows each rule against massimo's count and every file that differs. Adjust `audit.include`, `audit.exclude`, `audit.exempt` and `audit.kinds` with the user until every mapped rule matches, then run it again with `--write`. No baseline is recorded while any mapped rule differs. Rules with no massimo kind stay with the repo's own script, or move to `guard.extraChecks`.

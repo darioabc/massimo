@@ -101,7 +101,12 @@ export function docsBlock({ root, config, projectDir }) {
 
   // Checks, Figma, designing.
   lines.push('## Checks', '')
-  if (pkg.scripts?.['ds:check']) lines.push(`\`npm run ds:check\` runs in CI: \`${pkg.scripts['ds:check']}\`. It fails on a stale graph, a raw value beyond the audit's baseline, or a generated token file that is out of date.`, '')
+  const dsCheck = pkg.scripts?.['ds:check']
+  const extra = (config.guard?.extraChecks ?? []).map((c) => c?.name).filter((n) => typeof n === 'string' && n.trim())
+  if (dsCheck && /scripts\/check\.mjs\b/.test(dsCheck)) {
+    // The check runner: every massimo check that applies, then the project's own.
+    lines.push(`\`npm run ds:check\` runs in CI: \`${dsCheck}\`. It runs every massimo check that applies to the project and fails on a stale graph, a raw value beyond the audit's baseline, a generated token file that is out of date, or a stale README.${extra.length > 0 ? ` It also runs the project's own checks (\`guard.extraChecks\`): ${extra.join(', ')}.` : ''}`, '')
+  } else if (dsCheck) lines.push(`\`npm run ds:check\` runs in CI: \`${dsCheck}\`. It fails on a stale graph, a raw value beyond the audit's baseline, or a generated token file that is out of date.`, '')
   else lines.push('No `ds:check` script yet; the guard phase adds one for CI.', '')
   const mirror = readJson(join(projectDir, 'figma', 'mirror.json'), null)
   if (mirror?.syncedAt) {

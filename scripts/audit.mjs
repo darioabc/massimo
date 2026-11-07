@@ -7,8 +7,10 @@
 // primitive-read (a var() of a primitive token outside the token files),
 // undefined-var (a var() with no fallback and no definition anywhere),
 // tailwind-palette (`text-red-600` in a repo with its own colour tokens).
-// breakpoint (an @media width or a Tailwind screen off tokens.breakpoints)
-// joins when that key is set.
+// Two more families join when their key is set: breakpoint (an @media width
+// or a Tailwind screen off tokens.breakpoints), and the story lane's policies
+// (story-title, story-files, story-states, no-story), which the graph writes
+// to graph.json when stories.manifest is set.
 //
 // The audit settings: audit.kinds turns a kind off (false) or on (true);
 // audit.exempt skips a kind in files by a header role, a tier, a group or a
@@ -24,11 +26,16 @@
 //   node <project>/scripts/audit.mjs --baseline       also record every offender as the baseline
 //   node <project>/scripts/audit.mjs --lower          also lower the baseline where counts fell (never records a rise)
 //   node <project>/scripts/audit.mjs --check          no writes; exit 1 if an offender rose or is new, 2 if no baseline
+//                                                     (and 1 while the baseline is behind, with audit.failWhenBehind)
 //   node <project>/scripts/audit.mjs --cluster 0.03   OKLab distance that merges colours into one cluster
+//   node <project>/scripts/audit.mjs --import <file> --map <rule>=<kind>[+<kind>],... [--write]
+//                                                     compare a ratchet kept as { note, rules: { <rule>: { count,
+//                                                     offenders } } } with this audit, file by file, and with
+//                                                     --write record the baseline once every mapped rule matches
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deltaE, parseColor, toHex } from './lib/color.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
@@ -60,7 +67,8 @@ export const KINDS = [
 ]
 // Kinds a key turns on, unknown to scripts before 0.3.0. A baseline that
 // tracks any of them is format 2, which those scripts refuse by name.
-export const NEWER_KINDS = ['breakpoint']
+export const STORY_KINDS = ['story-title', 'story-files', 'story-states', 'no-story']
+export const NEWER_KINDS = ['breakpoint', ...STORY_KINDS]
 export const ALL_KINDS = [...KINDS, ...NEWER_KINDS]
 
 const TOP_FILES = 15
@@ -635,6 +643,22 @@ function stylePrimitives(customProps) {
   return new Set([...values].filter(([, list]) => list.every(literal)).map(([name]) => name))
 }
 
+// The story lane's policy problems the graph wrote to graph.json
+// (`storyLane.problems`, each { rule, file, detail }), as findings, or why
+// there are none to read.
+function storyFindings(projectDir) {
+  const graph = readJson(join(projectDir, 'graph.json'), null)
+  if (!graph) return { reason: 'no graph.json yet: run graph.mjs' }
+  refuseNewer('graph', graph.version, 'graph.json')
+  if (!graph.storyLane) return { reason: 'graph.json has no story lane yet: run graph.mjs' }
+  const findings = []
+  for (const p of graph.storyLane.problems ?? []) {
+    if (!STORY_KINDS.includes(p?.rule) || typeof p.file !== 'string') continue
+    findings.push({ file: p.file, line: Number.isInteger(p.line) ? p.line : 0, kind: p.rule, value: String(p.detail ?? '') })
+  }
+  return { findings }
+}
+
 function collectDefinitions(code, defs) {
   for (const m of code.matchAll(VAR_DEF)) defs.add(m[1])
   for (const m of code.matchAll(/setProperty\(\s*['"`](--[\w-]+)/g)) defs.add(m[1])
@@ -680,6 +704,23 @@ function baselineDocument(offenders, skipped) {
     if (skipped.has(kind)) continue
     kinds[kind] = recorded(offenders[kind])
   }
+  return baselineOf(kinds)
+}
+
+// The baseline an import records: the mapped kinds at this audit's counts,
+// which matched the legacy file's, and whatever else a baseline already there
+// tracks, as it was.
+function importedBaseline(offenders, mapped, before) {
+  const kinds = {}
+  for (const kind of ALL_KINDS) {
+    if (mapped.includes(kind)) kinds[kind] = recorded(offenders[kind])
+    else if (before?.kinds?.[kind]) kinds[kind] = before.kinds[kind]
+  }
+  for (const kind of before ? unknownKinds(before) : []) kinds[kind] = before.kinds[kind]
+  return baselineOf(kinds)
+}
+
+function baselineOf(kinds) {
   return {
     version: baselineVersion(kinds),
     generatedBy: 'massimo audit',
@@ -735,10 +776,10 @@ function lowerBaseline(baseline, offenders, skipped) {
 const unknownKinds = (baseline) => Object.keys(baseline.kinds ?? {}).filter((k) => !ALL_KINDS.includes(k)).sort(compare)
 
 // Offenders that rose or are new against the baseline; kinds the baseline does
-// not track are left out, and `fell` counts offenders that dropped or vanished.
+// not track are left out, and `fallen` lists offenders that dropped or vanished.
 function compareToBaseline(baseline, offenders, skipped) {
   const rises = []
-  let fell = 0
+  const fallen = []
   const untracked = []
   for (const kind of ALL_KINDS) {
     if (skipped.has(kind)) continue
@@ -751,10 +792,84 @@ function compareToBaseline(baseline, offenders, skipped) {
       const was = base.offenders[key] ?? 0
       if (now > was) rises.push({ kind, key, from: was, to: now })
     }
-    for (const [key, was] of Object.entries(base.offenders)) if ((offenders[kind][key] ?? 0) < was) fell++
+    for (const [key, was] of Object.entries(base.offenders)) {
+      const now = offenders[kind][key] ?? 0
+      if (now < was) fallen.push({ kind, key, from: was, to: now })
+    }
   }
-  rises.sort((a, b) => compare(a.kind, b.kind) || compare(a.key, b.key))
-  return { rises, fell, untracked }
+  const order = (a, b) => compare(a.kind, b.kind) || compare(a.key, b.key)
+  rises.sort(order)
+  fallen.sort(order)
+  return { rises, fallen, untracked }
+}
+
+// ── Importing a ratchet kept in another shape ──────────────────────────────
+
+// `--map raw-colour=color+tailwind-palette,breakpoint=breakpoint` as
+// [{ rule, kinds }]. A kind may take one rule's counts, never two.
+export function parseMap(text) {
+  const pairs = []
+  const taken = new Map()
+  for (const part of String(text).split(',').map((s) => s.trim()).filter(Boolean)) {
+    const [rule, kinds, extra] = part.split('=').map((s) => s.trim())
+    if (!rule || !kinds || extra !== undefined) throw new Error(`--map takes <rule>=<kind>, with + between kinds; "${part}" is not one`)
+    const list = kinds.split('+').map((s) => s.trim())
+    for (const kind of list) {
+      if (!ALL_KINDS.includes(kind)) throw new Error(`--map names "${kind}", which is not a kind: ${ALL_KINDS.join(', ')}`)
+      if (taken.has(kind)) throw new Error(`--map gives ${kind} both ${taken.get(kind)} and ${rule}; a kind takes one rule`)
+      taken.set(kind, rule)
+    }
+    pairs.push({ rule, kinds: list })
+  }
+  if (pairs.length === 0) throw new Error('--import needs --map <rule>=<kind>,... to say which rule is which kind')
+  return pairs
+}
+
+// Offender counts summed per file: "<file>: <detail>" keys, split at the first ": ".
+function perFile(offenders) {
+  const out = new Map()
+  for (const [key, n] of Object.entries(offenders ?? {})) {
+    const at = key.indexOf(': ')
+    const file = at === -1 ? key : key.slice(0, at)
+    out.set(file, (out.get(file) ?? 0) + n)
+  }
+  return out
+}
+
+// Each mapped rule of a legacy ratchet ({ rules: { <rule>: { count,
+// offenders } } }) against this audit's offenders, file by file. A pair
+// matches when every file has the same count; a kind not measured this run
+// cannot match.
+export function compareLegacy(legacy, pairs, offenders, skippedReasons) {
+  return pairs.map(({ rule, kinds }) => {
+    const theirs = perFile(legacy.rules?.[rule]?.offenders)
+    const ours = new Map()
+    for (const kind of kinds) for (const [file, n] of perFile(offenders[kind])) ours.set(file, (ours.get(file) ?? 0) + n)
+    const files = [...new Set([...theirs.keys(), ...ours.keys()])].sort(compare)
+    const differs = files.filter((f) => (theirs.get(f) ?? 0) !== (ours.get(f) ?? 0)).map((file) => ({ file, legacy: theirs.get(file) ?? 0, massimo: ours.get(file) ?? 0 }))
+    const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0)
+    const skipped = kinds.filter((k) => skippedReasons.has(k)).map((k) => `${k} (${skippedReasons.get(k)})`)
+    const missing = legacy.rules?.[rule] ? null : `the legacy file has no rule ${rule}`
+    return { rule, kinds, legacy: sum(theirs), massimo: sum(ours), differs, problem: missing ?? (skipped.length > 0 ? `not measured: ${skipped.join('; ')}` : null) }
+  })
+}
+
+// The comparison as a table, then each file that differs.
+function importReport(rows, legacyRules, measured) {
+  const out = []
+  const head = ['rule', 'kinds', 'legacy', 'massimo', 'result']
+  const cells = rows.map((r) => [r.rule, r.kinds.join(' + '), String(r.legacy), String(r.massimo), r.problem ?? (r.differs.length === 0 ? 'match' : `${r.differs.length} ${r.differs.length === 1 ? 'file differs' : 'files differ'}`)])
+  const widths = head.map((h, i) => Math.max(h.length, ...cells.map((c) => c[i].length)))
+  const line = (c) => c.map((x, i) => (i === 2 || i === 3 ? x.padStart(widths[i]) : x.padEnd(widths[i]))).join('  ').trimEnd()
+  out.push(line(head), ...cells.map(line))
+  for (const r of rows) for (const d of r.differs) out.push(`  ${r.rule}  ${d.file}  legacy ${d.legacy}, massimo ${d.massimo}`)
+  const mappedRules = new Set(rows.map((r) => r.rule))
+  const mappedKinds = new Set(rows.flatMap((r) => r.kinds))
+  const rulesLeft = legacyRules.filter((r) => !mappedRules.has(r))
+  const kindsLeft = measured.filter((k) => !mappedKinds.has(k))
+  if (rulesLeft.length > 0) out.push(`Not mapped, so not imported: ${rulesLeft.join(', ')}.`)
+  if (kindsLeft.length > 0) out.push(`This audit also measures ${kindsLeft.join(', ')}, which no rule maps to; the baseline leaves ${kindsLeft.length === 1 ? 'it' : 'them'} out.`)
+  return out.join('\n')
 }
 
 // Blank the value of every `--name: value` declaration, keeping line breaks
@@ -764,22 +879,25 @@ export function maskTokenDeclarations(text) {
 }
 
 // The kinds this run reports. Every project gets KINDS; the breakpoint kind
-// joins with tokens.breakpoints. A kind set to false in audit.kinds is
-// reported as skipped, and its findings are dropped before anything counts.
-// `warnings` name settings that point at nothing.
+// joins with tokens.breakpoints, and the story kinds with stories.manifest.
+// A kind set to false in audit.kinds is reported as skipped, and its
+// findings are dropped before anything counts. `warnings` name settings that
+// point at nothing.
 function kindsFor(config) {
   const settings = config.audit?.kinds ?? {}
-  const kinds = [...KINDS, ...(config.tokens?.breakpoints ? ['breakpoint'] : [])]
+  const kinds = [...KINDS, ...(config.tokens?.breakpoints ? ['breakpoint'] : []), ...(config.stories?.manifest ? STORY_KINDS : [])]
   const off = new Set(kinds.filter((k) => settings[k] === false))
   const warnings = []
   for (const [setting, list] of [['audit.kinds', Object.keys(settings)], ['audit.exempt', Object.keys(config.audit?.exempt ?? {})]]) {
     for (const k of list) if (!ALL_KINDS.includes(k)) warnings.push(`${setting} names "${k}", which is not a kind: ${ALL_KINDS.join(', ')}`)
   }
-  if (settings.breakpoint !== undefined && !kinds.includes('breakpoint')) warnings.push('audit.kinds sets breakpoint, which only runs with tokens.breakpoints')
+  for (const k of NEWER_KINDS) {
+    if (settings[k] !== undefined && !kinds.includes(k)) warnings.push(`audit.kinds sets ${k}, which only runs with ${k === 'breakpoint' ? 'tokens.breakpoints' : 'stories.manifest'}`)
+  }
   return { kinds, off, warnings }
 }
 
-export function runAudit(root, config, { cluster = 0.03 } = {}) {
+export function runAudit(root, config, { cluster = 0.03, projectDir = join(root, config.projectDir) } = {}) {
   const all = walk(root, { ignore: config.ignore })
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
   const outputPaths = (config.tokens.outputs ?? []).map((o) => o.path).filter(Boolean)
@@ -830,6 +948,9 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
   const scale = config.tokens?.breakpoints
   const breakpoints = scale ? [...(scale.scale ?? []), ...(scale.twins ?? [])].map(String).map(remOf).filter(Number.isFinite) : null
 
+  // Story kinds come from the graph, which reads the lane's manifest.
+  const stories = kinds.includes('story-title') ? storyFindings(projectDir) : null
+  if (stories?.reason) for (const k of STORY_KINDS) skipped.set(k, stories.reason)
   for (const k of off) skipped.set(k, 'turned off in audit.kinds')
 
   // Generated token outputs are skipped whole. Style files are audited too:
@@ -897,13 +1018,19 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
     if (infos.get(r.file)?.definitions.has(r.name)) continue
     findings.push({ file: r.file, line: r.line, kind: 'undefined-var', value: r.name, snippet: r.snippet })
   }
+  findings.push(...(stories?.findings ?? []))
 
   // Kinds turned off, and files exempt from a kind, leave no finding behind.
+  // A story finding's file was not scanned, so its header is read here.
+  const infoOf = (file) => {
+    if (!infos.has(file)) infos.set(file, fileInfo(file, existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : '', ctx))
+    return infos.get(file)
+  }
   const exempt = exemptions(config)
   const exempted = {}
   findings = findings.filter((f) => {
     if (off.has(f.kind)) return false
-    if (!exempt.get(f.kind)?.(f.file, infos.get(f.file))) return true
+    if (!exempt.get(f.kind)?.(f.file, infoOf(f.file))) return true
     exempted[f.kind] = (exempted[f.kind] ?? 0) + 1
     return false
   })
@@ -1145,7 +1272,8 @@ function renderMarkdown(result, date, command) {
   for (const [file, list] of files) {
     if (out.length - startLength >= MD_LINE_CAP) break
     out.push(`### ${file} (${list.length})`)
-    for (const f of list.slice(0, MD_PER_FILE)) out.push(`- L${f.line} ${f.kind}${f.sub ? `/${f.sub}` : ''} \`${f.value.replace(/`/g, "'")}\``)
+    // A story finding names a file, not a line, so it has none to show.
+    for (const f of list.slice(0, MD_PER_FILE)) out.push(`- ${f.line ? `L${f.line} ` : ''}${f.kind}${f.sub ? `/${f.sub}` : ''} \`${f.value.replace(/`/g, "'")}\``)
     if (list.length > MD_PER_FILE) out.push(`- +${list.length - MD_PER_FILE} more`)
     out.push('')
     shown++
@@ -1157,8 +1285,50 @@ function renderMarkdown(result, date, command) {
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
-const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower'])
+const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'write'])
 const usage = (message) => fail(message, 2)
+
+// --import <legacy.json> --map <rule>=<kind>,... [--write]: compare a ratchet
+// kept in another shape with this audit, file by file, and record the
+// baseline from it only when every mapped rule matches.
+function importLegacy(flags, { root, projectDir, result, offenders, baselinePath, shown, stats }) {
+  if (typeof flags.import !== 'string') usage('--import takes the legacy ratchet file: --import <file> --map <rule>=<kind>,...')
+  let pairs
+  try {
+    pairs = parseMap([].concat(flags.map ?? []).filter((m) => typeof m === 'string').join(','))
+  } catch (err) {
+    usage(err.message)
+  }
+  const path = resolve(flags.import)
+  if (!existsSync(path)) fail(`no ratchet file at ${flags.import}`)
+  const legacy = readJson(path, null)
+  if (!legacy || typeof legacy.rules !== 'object' || legacy.rules === null) fail(`${flags.import} is not a ratchet of the shape { note, rules: { <rule>: { count, offenders } } }`)
+  // Why a kind was not measured: skipped this run, or its key is not set.
+  const reasons = new Map(Object.entries(result.skipped))
+  for (const k of ALL_KINDS) if (!result.kinds.includes(k)) reasons.set(k, `${k === 'breakpoint' ? 'tokens.breakpoints' : 'stories.manifest'} is not set`)
+  const rows = compareLegacy(legacy, pairs, offenders, reasons)
+  const measured = result.kinds.filter((k) => !reasons.has(k))
+  process.stdout.write(`massimo audit: ${flags.import} against this audit, file by file (${stats})\n\n${importReport(rows, Object.keys(legacy.rules), measured)}\n\n`)
+  const unmeasured = rows.filter((r) => r.problem).map((r) => r.rule)
+  const differing = rows.filter((r) => !r.problem && r.differs.length > 0).map((r) => r.rule)
+  if (unmeasured.length + differing.length > 0) {
+    const why = []
+    if (unmeasured.length > 0) why.push(`${unmeasured.join(', ')} ${unmeasured.length === 1 ? 'is' : 'are'} not measured, as the table says.`)
+    if (differing.length > 0) why.push(`${differing.join(', ')} ${differing.length === 1 ? 'differs' : 'differ'} file by file: change audit.include, audit.exclude, audit.exempt or audit.kinds, or the code, until every file matches.`)
+    process.stdout.write(`${truthy(flags.write) ? 'No baseline written. ' : ''}${why.join(' ')}\n`)
+    process.exit(1)
+  }
+  if (!truthy(flags.write)) {
+    process.stdout.write('Every mapped rule matches, file by file. Run again with --write to record the baseline.\n')
+    return
+  }
+  const before = readJson(baselinePath, null)
+  refuseNewer('baseline', before?.version, 'audits/baseline.json')
+  const mapped = rows.flatMap((r) => r.kinds)
+  mkdirSync(join(projectDir, 'audits'), { recursive: true })
+  writeFileSync(baselinePath, `${JSON.stringify(importedBaseline(offenders, mapped, before), null, 2)}\n`)
+  process.stdout.write(`Every mapped rule matches, file by file: baseline written to ${shown('baseline.json')} for ${mapped.join(', ')}.\n`)
+}
 
 function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
@@ -1170,13 +1340,15 @@ function main() {
   const wantLower = truthy(flags.lower)
   if (check && (wantBaseline || wantLower)) usage('--check writes nothing; do not combine it with --baseline or --lower')
   if (wantBaseline && wantLower) usage('choose one of --baseline (record everything) and --lower (only lower)')
+  if (flags.import !== undefined && (check || wantBaseline || wantLower)) usage('--import compares, and writes only with --write; do not combine it with --check, --baseline or --lower')
+  if (flags.import === undefined && (flags.map !== undefined || truthy(flags.write))) usage('--map and --write go with --import <file>')
   let cluster = 0.03
   if (flags.cluster !== undefined) {
     cluster = Number(flags.cluster)
     if (!Number.isFinite(cluster) || cluster <= 0) usage('--cluster takes a positive number, e.g. 0.03')
   }
 
-  const result = runAudit(root, config, { cluster })
+  const result = runAudit(root, config, { cluster, projectDir })
   for (const w of result.warnings) process.stderr.write(`massimo audit: warn: ${w}\n`)
   // Not measured this run: skipped kinds, and kinds whose key is not set,
   // whose baseline entries stand as they are.
@@ -1189,6 +1361,8 @@ function main() {
   }
   const stats = `${result.findings.length} findings in ${result.scannedFiles} files`
 
+  if (flags.import !== undefined) return importLegacy(flags, { root, projectDir, result, offenders, baselinePath, shown, stats })
+
   if (check) {
     if (!existsSync(baselinePath)) {
       process.stderr.write(`massimo audit: no baseline at ${shown('baseline.json')}. Run: ${scriptCommand(root, projectDir, 'audit', '--baseline')}\n`)
@@ -1196,12 +1370,19 @@ function main() {
     }
     const baseline = readJson(baselinePath, {})
     refuseNewer('baseline', baseline.version, 'audits/baseline.json')
-    const { rises, fell, untracked } = compareToBaseline(baseline, offenders, skipped)
+    const { rises, fallen, untracked } = compareToBaseline(baseline, offenders, skipped)
     if (rises.length > 0) {
       for (const r of rises) {
         process.stderr.write(`  ${r.kind}  ${r.key}  ${r.from === 0 ? 'new' : `${r.from} -> ${r.to}`}${r.from === 0 && r.to > 1 ? ` (x${r.to})` : ''}\n`)
       }
       process.stdout.write(`massimo audit: ${rises.length} ${rises.length === 1 ? 'offender' : 'offenders'} rose or ${rises.length === 1 ? 'is' : 'are'} new against the baseline (${stats})\n`)
+      process.exit(1)
+    }
+    const fell = fallen.length
+    // audit.failWhenBehind: a fix is recorded in the change that makes it.
+    if (fell > 0 && config.audit?.failWhenBehind) {
+      for (const f of fallen) process.stderr.write(`  ${f.kind}  ${f.key}  ${f.from} -> ${f.to}\n`)
+      process.stdout.write(`massimo audit: the baseline is behind the code: ${fell} ${fell === 1 ? 'offender' : 'offenders'} fell. Run: ${scriptCommand(root, projectDir, 'audit', '--lower')}, and commit ${shown('baseline.json')} (${stats})\n`)
       process.exit(1)
     }
     const hints = []
