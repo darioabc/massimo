@@ -81,6 +81,16 @@ test('CSS: a scoped override or a phone-width value is noted, never taken as the
   assert.ok(notes.includes("--gap is also set under @media (max-width: 60rem) :root; its token holds the value outside that, and massimo's outputs do not write the override"), notes.join('\n'))
 })
 
+test('CSS: light and dark by media query, and a token set only under a condition takes that value', () => {
+  const { tokens, notes } = readCss(dir, ['conditions.css'])
+  const t = byPath(tokens)
+  assert.deepEqual([t['color.bg'].value, t['color.bg'].modes.dark], ['#ffffff', '#000000'])
+  assert.deepEqual([t['color.brand'].value, t['color.brand'].modes.dark], ['#0055ff', '#88aaff'])
+  assert.equal(t['duration.base'].value, '200ms')
+  assert.ok(notes.includes('--brand is set only under @supports (--css: variables); its token takes that value'), notes.join('\n'))
+  assert.ok(notes.includes('--duration-base is set only under @media (prefers-reduced-motion: no-preference); its token takes that value'))
+})
+
 test('Tailwind 3 config: read as text, theme and extend, DEFAULT as $root, skips named', () => {
   const { tokens, notes, typeSteps } = readTailwindConfig(dir, 'tailwind.config.mjs')
   const t = byPath(tokens)

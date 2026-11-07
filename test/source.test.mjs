@@ -257,3 +257,51 @@ html.dark .tone-block { --a: 3; }
     '11 dark/root',
   ])
 })
+
+test('parseCustomProperties: themes on body through an ancestor, :is and :where, nesting, and every colour-scheme query', () => {
+  const css = `
+[data-theme="dark"] body { --a: 1; }
+html.dark body { --a: 2; }
+html body { --a: 3; }
+:root > body { --a: 4; }
+html:not(.dark) body { --a: 5; }
+:where(html.dark .tone-block) { --a: 6; }
+.card:where(.dark, .dark *) { --a: 7; }
+:is(html.dark) { --a: 8; }
+.dark:root { --a: 9; }
+body { --a: 10; .dark & { --a: 11; } .card { --a: 12; } }
+@media (prefers-color-scheme: light) { :root { --a: 13; } }
+@media (prefers-color-scheme:dark) { :root { --a: 14; } }
+@media screen { :root { --a: 15; } }
+@media (prefers-color-scheme: dark) and (max-width: 40rem) { :root { --a: 16; } }
+@media (prefers-reduced-motion: no-preference) { :root { --a: 17; } }
+.dark-mode { --a: 18; }
+body[data-theme] { --a: 19; }
+html[dir="rtl"] { --a: 20; }
+.card[data-theme] { --a: 21; }
+`
+  const rows = parseCustomProperties(css).map((p) => `${p.value} ${p.mode}/${p.scope}${p.condition ? ` ${p.condition}` : ''}`)
+  assert.deepEqual(rows, [
+    '1 dark/selector',
+    '2 dark/selector',
+    '3 default/root',
+    '4 default/root',
+    '5 default/root',
+    '6 default/local',
+    '7 default/local',
+    '8 dark/selector',
+    '9 dark/selector',
+    '10 default/root',
+    '11 dark/selector',
+    '12 default/local',
+    '13 default/root',
+    '14 dark/root',
+    '15 default/root',
+    '16 dark/conditional @media (prefers-color-scheme: dark) and (max-width: 40rem)',
+    '17 default/conditional @media (prefers-reduced-motion: no-preference)',
+    '18 dark/selector',
+    '19 default/root',
+    '20 default/conditional html[dir="rtl"]',
+    '21 default/local',
+  ])
+})

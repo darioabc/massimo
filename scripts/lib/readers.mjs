@@ -81,11 +81,21 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 export function readCss(root, files) {
   const entries = new Map()
   // Values set only inside a component's scope or under a condition: said in
-  // a note when the same property is a token, never taken as its value.
+  // a note when the same property is a token, never taken as its value. A
+  // property set only under a condition takes that value, with a note.
   const elsewhere = new Map()
+  const onlyUnder = new Map()
   for (const file of files) {
     for (const p of parseCustomProperties(readFileSync(join(root, file), 'utf8'), file)) {
       if (p.name.startsWith('--tw-')) continue
+      if (p.scope === 'conditional') {
+        const e = onlyUnder.get(p.name) ?? { default: undefined, modes: {}, source: file, condition: p.condition }
+        if (p.condition === e.condition) {
+          if (p.mode === 'default') e.default ??= p.value
+          else e.modes[p.mode] ??= p.value
+        }
+        onlyUnder.set(p.name, e)
+      }
       if (p.scope === 'local' || p.scope === 'conditional') {
         const list = elsewhere.get(p.name) ?? []
         const where = p.scope === 'conditional' ? `${p.condition} ${p.selector}` : p.selector
@@ -107,6 +117,12 @@ export function readCss(root, files) {
     }
   }
   const notes = []
+  for (const [name, e] of [...onlyUnder].sort((a, b) => natural(a[0], b[0]))) {
+    if (entries.has(name)) continue
+    entries.set(name, e)
+    elsewhere.delete(name)
+    notes.push(`${name} is set only under ${e.condition}; its token takes that value`)
+  }
   for (const [name, list] of [...elsewhere].sort((a, b) => natural(a[0], b[0]))) {
     if (!entries.has(name)) continue
     const conditional = list.filter((x) => x.conditional).map((x) => x.where)
