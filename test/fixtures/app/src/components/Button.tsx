@@ -4,7 +4,7 @@
 //
 // ds:never nested inside another Button
 //
-// FIU-12 added the loading state, FIU-3 the icon slot
+// PROJ-12 added the loading state, PROJ-3 the icon slot
 import { Slot } from '@radix-ui/react-slot'
 import { Icon } from './Icon'
 import type { Theme } from '@/components/Card'

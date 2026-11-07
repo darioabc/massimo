@@ -30,6 +30,10 @@ export const EXPLORATION_STATUSES = [
   'parked',
 ]
 
+// An exploration is open while the design loop still has work: until the
+// handoff is written (then it is a build task), or the user parks it.
+export const isOpen = (e) => !['handed-off', 'built', 'parked'].includes(e.status)
+
 const SYMBOL = { done: '✓', in_progress: '◐', todo: '○', skipped: '–' }
 const LABEL = { done: 'done', in_progress: 'in progress', todo: 'to do', skipped: 'skipped' }
 
@@ -127,7 +131,7 @@ export function progressMarkdown(state) {
   const next = nextPhase(state)
   lines.push('')
   lines.push(next ? `**Next phase:** ${phaseMeta(next.id).title}, with \`/massimo:${phaseMeta(next.id).skill}\`.` : '**All phases are done or skipped.** Use `/massimo:ux` to design new surfaces.')
-  const open = state.explorations.filter((e) => !['built', 'parked'].includes(e.status))
+  const open = state.explorations.filter(isOpen)
   if (state.explorations.length) {
     lines.push('', '| Exploration | Arc | Round | Status | Pick |', '|---|---|---|---|---|')
     for (const e of state.explorations) {
@@ -196,7 +200,7 @@ function endsWithNewline(path) {
 export function hookContext(state, projectRel) {
   const phases = state.phases.map((p) => `${p.id} ${SYMBOL[p.status]}${p.note ? ` (${p.note})` : ''}`).join(', ')
   const next = nextPhase(state)
-  const open = state.explorations.filter((e) => !['built', 'parked', 'handed-off'].includes(e.status))
+  const open = state.explorations.filter(isOpen)
   const parts = [
     `This repo has a massimo design-system project in ${projectRel}/.`,
     `Phases: ${phases}.`,

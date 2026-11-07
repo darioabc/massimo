@@ -7,7 +7,7 @@ description: Mirror this repo's design system into a Figma library — tokens as
 
 Designers work in Figma; the system lives in code. This skill keeps a Figma library that mirrors the code: variables from `tokens.json`, components from the stories. It never writes Figma changes back into code on its own: drift is reported, and the user decides per item whether code changes (then re-mirror) or Figma is corrected.
 
-Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol.
+Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol. `<project>` is the project folder: `projectDir` in `massimo.config.json`, `design-system` by default.
 
 ## Requirements
 
@@ -21,9 +21,9 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 1. **Begin.** `state.mjs set figma in_progress`.
 2. **Target file.** Ask for the Figma library file URL. No file yet → create one (the `figma-create-new-file` skill), named "<product> design system". Open a Figma session for it (`create_session` with the file key) per the Figma server's instructions. Save the key in `massimo.config.json` → `figma.fileKey`.
 3. **Scope.** Agree one scope with the user, in this order of value: tokens only → tokens + the top primitives (from the graph's most-used list, usually 8–15) → everything storied. Record it.
-4. **Variables.** `node design-system/scripts/tokens.mjs build` refreshes `design-system/tokens/figma-variables.json`: collections (Primitives, Semantic), modes (Light, Dark, …), variables with `/`-separated names, aliases, and `codeSyntax.WEB` set to the CSS variable. Create or update exactly that in Figma, aliases preserved. Set variable scopes by type (colours on fills/strokes as their semantics say, spacing on gap/padding, radius on corner radius). Create text styles from the type tokens and effect styles from the shadow tokens.
-5. **Components.** For each in-scope component, read its source, its story file (the states), its story screenshot (`design-system/shots/stories/`, or take one), and its graph node. Build a Figma component set whose variant properties match the component's real props (variant, size, state), every fill, stroke, radius, gap and text bound to the variables and styles from step 4, never raw values. Show each component's states as instances in one review frame and compare with the story screenshot; fix what does not match before moving on. Work in batches of three to five components, with a screenshot check per batch shown to the user.
-6. **Record the mirror** in `design-system/figma/mirror.json`:
+4. **Variables.** `node <project>/scripts/tokens.mjs build` refreshes `<project>/tokens/figma-variables.json`: collections (Primitives, Semantic), modes (Light, Dark, …), variables with `/`-separated names, aliases, and `codeSyntax.WEB` set to the CSS variable. Create or update exactly that in Figma, aliases preserved. Set variable scopes by type (colours on fills/strokes as their semantics say, spacing on gap/padding, radius on corner radius). Create text styles from the type tokens and effect styles from the shadow tokens.
+5. **Components.** For each in-scope component, read its source, its story file (the states), its story screenshot (`<project>/shots/stories/`, or take one), and its graph node. Build a Figma component set whose variant properties match the component's real props (variant, size, state), every fill, stroke, radius, gap and text bound to the variables and styles from step 4, never raw values. Show each component's states as instances in one review frame and compare with the story screenshot; fix what does not match before moving on. Work in batches of three to five components, with a screenshot check per batch shown to the user.
+6. **Record the mirror** in `<project>/figma/mirror.json`:
    ```json
    {
      "fileKey": "…",
@@ -33,7 +33,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
      "components": { "src/components/Button.tsx": { "nodeId": "…", "name": "Button", "variants": ["variant", "size", "state"] } }
    }
    ```
-   Get the hash with `node design-system/scripts/tokens.mjs hash`. It hashes the tokens as canonical JSON, so reformatting the file is not drift.
+   Get the hash with `node <project>/scripts/tokens.mjs hash`. It hashes the tokens as canonical JSON, so reformatting the file is not drift.
 7. **Code Connect (optional).** If the user's Figma plan supports it and they want it, link each mirrored component to its code file with the `figma-code-connect` skill, so Dev Mode shows the real import.
 8. **End.** `state.mjs set figma done --note "<n> variables, <m> components mirrored"`.
 
@@ -43,7 +43,7 @@ Run when the user asks, or when `tokens.mjs check` reports `figma mirror behind`
 
 1. Read the Figma variables (`get_variable_defs`, or a read-only `use_figma` script) and the mirrored components' properties.
 2. Compare with `tokens.json` (values per mode, names, aliases) and the components' current props and stories.
-3. Write `design-system/figma/drift.md`: one line per difference, grouped as **code changed** (Figma is stale: re-mirror), **Figma changed** (a designer edited the library: decide), **only in Figma**, **only in code**.
+3. Write `<project>/figma/drift.md`: one line per difference, grouped as **code changed** (Figma is stale: re-mirror), **Figma changed** (a designer edited the library: decide), **only in Figma**, **only in code**.
 4. For each "Figma changed" item, ask the user: adopt it in code (edit `tokens.json` or the component, then rebuild and re-mirror) or revert Figma. Record each choice with `state.mjs decide`. Never edit code from Figma values without that yes.
 
 ## Rules

@@ -16,6 +16,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The checks are zero-dependency Node scripts vendored in design-system/scripts,
+      # The checks are zero-dependency Node scripts vendored in the project folder,
       # so no install step is needed.
       - run: npm run ds:check

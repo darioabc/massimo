@@ -1,6 +1,6 @@
 # Recipe: Astro
 
-An Astro integration injects the story routes only when `STORIES=1`. Story pages live outside `src/pages/`, so Astro's file routing never sees them; under a normal `astro build` the routes simply do not exist. This is the lane fiuto-marketing runs in production use.
+An Astro integration injects the story routes only when `STORIES=1`. Story pages live outside `src/pages/`, so Astro's file routing never sees them; under a normal `astro build` the routes simply do not exist.
 
 ## Files
 

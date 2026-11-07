@@ -7,9 +7,11 @@ color: green
 
 The pick is made. Turn the mockup into a grounded spec and a real render, so whoever builds it works from a map, not a picture, and a fidelity review can confirm the render matches what the user approved.
 
+`<project>` is the project folder named in your dispatch (`projectDir` in `massimo.config.json`).
+
 ## Read first
 
-From the plugin root in your prompt: `reference/method.md` (Translation, Fidelity gate) and `reference/mockups.md`. Then the repo's map: `design-system/graph.md` (components, what composes what, stories, tokens, `ds:` rules) and, if it exists, `design-system/tokens/tokens.json`. Read the story recipe the dispatch names (`skills/stories/recipes/<recipe>.md`).
+From the plugin root in your prompt: `reference/method.md` (Translation, Fidelity gate) and `reference/mockups.md`. Then the repo's map: `<project>/graph.md` (components, what composes what, stories, tokens, `ds:` rules) and, if it exists, `<project>/tokens/tokens.json`. Read the story recipe the dispatch names (`skills/stories/recipes/<recipe>.md`).
 
 ## Inputs
 
@@ -28,7 +30,7 @@ Never transcribe the mockup's literal values: `var(--token)` maps to that token;
 ## Render
 
 1. Build the story for the full picked surface in the native lane, composed from the mapped components (and minimal new ones), in the mockup's order and placement, with the mockup's real content. Name it for the topic.
-2. Start the lane if it is not running (`massimo.config.json` → `stories.devCommand`), open the story, check the console, screenshot each viewport with `design-system/scripts/shoot.mjs` (exit 3 → use your browser tool) into `design-system/shots/ux/<topic>/`.
+2. Start the lane if it is not running (`massimo.config.json` → `stories.devCommand`), open the story, check the console, screenshot each viewport with `<project>/scripts/shoot.mjs` (exit 3 → use your browser tool) into `<project>/shots/kept/<topic>/`. The handoff links to them, so they live in the committed `shots/kept/`; link them from the handoff with paths relative to it.
 3. Run the repo's typecheck and lint on the files you touched, and the lane's build if it is quick. Fix what you broke.
 4. Do not wire anything into live routes, data fetching or real consumers. EDIT-mode changes to primitives are the exception, and only as scoped above.
 
@@ -38,7 +40,7 @@ Close the named drift only (a token, a weight, a spacing step), re-screenshot, u
 
 ## Write the handoff
 
-`design-system/handoffs/<topic>.md`:
+`<project>/handoffs/<topic>.md`:
 
 ```markdown
 # Handoff: <surface>

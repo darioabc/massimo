@@ -1,19 +1,19 @@
 ---
 name: graph
-description: Generate and keep current the design-system graph for this repo — every component, what it composes and what uses it, its story, the tokens and CSS variables it leans on, and the ds rules a primitive declares — as design-system/graph.md and graph.json. Use for the graph phase of a massimo project, after component changes, or when someone asks what components exist, where one is used, or which ones to story first.
+description: Generate and keep current the design-system graph for this repo — every component, what it composes and what uses it, its story, the tokens and CSS variables it leans on, and the ds rules a primitive declares — as <project>/graph.md and graph.json. Use for the graph phase of a massimo project, after component changes, or when someone asks what components exist, where one is used, or which ones to story first.
 ---
 
 # massimo: graph
 
 The graph is the map every other phase reads: stories are written most-used-first from it, tidy batches use it to find what a change touches, the translator maps mockups onto it, and CI checks it stays current. It is generated from source, never edited by hand.
 
-Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol.
+Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol. `<project>` is the project folder: `projectDir` in `massimo.config.json`, `design-system` by default.
 
 ## Run
 
 1. **Begin** per the session protocol. `state.mjs set graph in_progress`.
 2. **Check the globs.** Read `components`, `consumers`, `aliases` and `tokens.styleFiles` in `massimo.config.json`. If the user has not confirmed them, show the component folders and counts and ask. Components are reusable UI pieces; pages, routes and layouts are consumers unless the team treats layouts as components.
-3. **Generate.** `node design-system/scripts/graph.mjs`. It prints a one-line summary.
+3. **Generate.** `node <project>/scripts/graph.mjs`. It prints a one-line summary.
 4. **Fix resolution.** Open `graph.md` → Unresolved imports. Each unresolved relative or alias import is a missing edge. Fix the cause in config (an alias missing from `aliases`, a tsconfig path detect did not see, a component folder outside the globs) and re-run until the list is empty or each remaining entry is explained (generated files, virtual modules). Record config changes as decisions.
 5. **Sanity-read three nodes** you can verify quickly against the code: one heavily used primitive, one leaf, one composite. If an edge is wrong, find out why before going on.
 6. **Report** to the user in plain terms:
@@ -27,7 +27,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 
 ## Re-running later
 
-Any phase that adds, renames or deletes components re-runs `graph.mjs` before it ends. Run `node design-system/scripts/graph.mjs --check` to see whether the committed graph is stale without writing.
+Any phase that adds, renames or deletes components re-runs `graph.mjs` before it ends. Run `node <project>/scripts/graph.mjs --check` to see whether the committed graph is stale without writing.
 
 ## ds headers
 

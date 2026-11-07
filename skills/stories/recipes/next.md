@@ -118,7 +118,7 @@ Same `StoryState` and story file shape as the Vite recipe's React section. Story
 "ds:stories:build": "STORIES=1 next build"
 ```
 
-On Windows teams, use `cross-env STORIES=1 …` if `cross-env` is already a dependency; otherwise note it in design-system/README.md.
+On Windows teams, use `cross-env STORIES=1 …` if `cross-env` is already a dependency; otherwise note it in <project>/README.md.
 
 ## Config
 

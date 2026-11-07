@@ -4,8 +4,11 @@
 // by eye. Exits 3 when Playwright is not installed; skills then fall back to
 // the host's browser tools.
 //
-//   shoot.mjs --url <url> --out <file.png> [--width 1280] [--height 800] [--full] [--scheme light|dark] [--wait 300] [--selector <css>]
-//   shoot.mjs --batch <shots.json>      (array of { url, out, width, height, full, scheme, wait, selector })
+//   shoot.mjs --url <url> --out <file.png> [--width 1280] [--height 800] [--full] [--scheme light|dark] [--wait 300] [--selector <css>] [--dom <file.txt>]
+//   shoot.mjs --batch <shots.json>      (array of { url, out, width, height, full, scheme, wait, selector, dom })
+//
+// --dom also saves what the page holds as text (its accessibility tree, or its
+// HTML on an older Playwright), for reviewers who read a render without a browser.
 //   shoot.mjs --diff <a.png> <b.png> --out <diff.png> [--threshold 0.05]
 //
 // Prints one JSON line per shot or diff.
@@ -47,8 +50,16 @@ async function shoot(browser, s) {
   mkdirSync(dirname(out), { recursive: true })
   if (s.selector) await page.locator(s.selector).first().screenshot({ path: out })
   else await page.screenshot({ path: out, fullPage: Boolean(s.full) })
+  let dom
+  if (s.dom) {
+    const scope = page.locator(s.selector ?? 'body').first()
+    const tree = typeof scope.ariaSnapshot === 'function' ? await scope.ariaSnapshot().catch(() => null) : null
+    dom = resolve(s.dom)
+    mkdirSync(dirname(dom), { recursive: true })
+    writeFileSync(dom, tree ?? (await page.content()))
+  }
   await context.close()
-  return { url: s.url, out, width, height }
+  return { url: s.url, out, width, height, ...(dom ? { dom } : {}) }
 }
 
 // The diff runs inside the browser on canvases, so it needs no image

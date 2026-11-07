@@ -13,6 +13,7 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { fail, parseArgs } from './lib/project.mjs'
+import { escapeHtml } from './lib/text.mjs'
 
 const { _: args, flags } = parseArgs()
 if (!args[0]) fail('usage: canvas.mjs <topic-dir> [--inline]')
@@ -48,12 +49,7 @@ function directionsOf(dir, list) {
 const kitPath = resolve(topicDir, '..', '..', 'kit', 'kit.css')
 const kit = existsSync(kitPath) ? readFileSync(kitPath, 'utf8') : ''
 
-const esc = (s) =>
-  String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+const esc = escapeHtml
 
 function frameSrc(round, file, inline) {
   if (!inline) return `src="${esc(`${round.dir}/${file}`)}"`

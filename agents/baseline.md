@@ -7,6 +7,8 @@ color: yellow
 
 Make the surface's story tell the truth. Reviews, mockups and the fidelity gate all compare against it; a stale or invented baseline means they all compare against fiction.
 
+`<project>` is the project folder named in your dispatch (`projectDir` in `massimo.config.json`).
+
 ## Read first
 
 From the plugin root in your prompt: `reference/method.md` → Real content, always. The story recipe the dispatch names (`skills/stories/recipes/<recipe>.md`).
@@ -21,7 +23,7 @@ The target surface and the source files that render it, the story lane details, 
 2. **Compose from live components.** Import the real components the surface renders and compose them in the order the live source does. Mock data and handlers only. Never refactor the surface to make it storyable: if a faithful story needs an extraction, build the closest faithful one and report the gap.
 3. **Story-only changes.** Story files (and the lane's manifest entry when the recipe uses one). Nothing else. Update sibling stories that mock this surface's context if they have drifted from the live render.
 4. **Real content.** Fetch real records from the source in `product.md` (a staging API, seed data, fixtures, the app's own read path). Use them in the story verbatim. If you cannot reach real content, say so plainly in your return; never substitute plausible-looking data.
-5. **Validate.** The lane builds; the story loads with no console errors; screenshot every state at the requested viewports with `design-system/scripts/shoot.mjs` (exit 3 → your browser tool) into `design-system/shots/ux/<topic>/baseline/`. Compare each screenshot with the live page: same order, same chrome, nothing invented, nothing dropped.
+5. **Validate.** The lane builds; the story loads with no console errors; screenshot every state at the requested viewports with `<project>/scripts/shoot.mjs` (exit 3 → your browser tool) into `<project>/shots/kept/<topic>/baseline/` (kept, because the brief links to them). Compare each screenshot with the live page: same order, same chrome, nothing invented, nothing dropped.
 
 ## Return
 

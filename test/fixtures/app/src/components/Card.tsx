@@ -1,4 +1,4 @@
-// FIU-10 stacked layout, FIU-2 first version
+// PROJ-10 stacked layout, PROJ-2 first version
 import { Button } from '@/components/Button'
 import Panel from './Panel'
 

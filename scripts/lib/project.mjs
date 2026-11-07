@@ -3,7 +3,7 @@
 // and parse the few CLI flags every script shares.
 //
 // Zero dependencies on purpose. These scripts get vendored into the target
-// repo (design-system/scripts/) so CI and teammates without the plugin can
+// repo (<project>/scripts/) so CI and teammates without the plugin can
 // run them, and a vendored script must not drag a dependency tree with it.
 
 import { execFileSync } from 'node:child_process'
@@ -34,7 +34,8 @@ export const DEFAULTS = {
     port: 4650,
   },
   tokens: {
-    source: 'design-system/tokens/tokens.json',
+    // Defaults to <projectDir>/tokens/tokens.json (see loadConfig).
+    source: null,
     styleFiles: [],
     darkSelector: '[data-theme="dark"]',
     darkMedia: true,
@@ -195,7 +196,15 @@ export function loadConfig(flags = {}) {
     : isAbsolute(config.projectDir)
       ? config.projectDir
       : join(root, config.projectDir)
+  // The token source lives in the project folder unless the config says otherwise.
+  config.tokens.source ??= `${rel(root, isAbsolute(config.projectDir) ? config.projectDir : join(root, config.projectDir))}/tokens/tokens.json`
   return { root, configPath, exists, config, projectDir }
+}
+
+// The command that runs a vendored script, from the repo root, for messages
+// and generated-file headers, such as `node <project>/scripts/graph.mjs`.
+export function scriptCommand(root, projectDir, name, args = '') {
+  return `node ${rel(root, projectDir) || '.'}/scripts/${name}.mjs${args ? ` ${args}` : ''}`
 }
 
 // Repo-relative POSIX path, stable across platforms for deterministic output.

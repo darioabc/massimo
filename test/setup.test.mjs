@@ -1,0 +1,82 @@
+// Setting a project up in repos that do not look like the default: no src/
+// folder, no package.json, a project folder other than design-system, an
+// older project's .gitignore, and no tokens at all.
+
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { loadConfig, scriptCommand } from '../scripts/lib/project.mjs'
+import { SCRIPTS, read } from './helpers.mjs'
+
+function repo(files) {
+  const root = mkdtempSync(join(tmpdir(), 'massimo-setup-'))
+  for (const [path, body] of Object.entries(files)) {
+    mkdirSync(join(root, path, '..'), { recursive: true })
+    writeFileSync(join(root, path), body)
+  }
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+}
+const script = (name, root, args = []) => spawnSync(process.execPath, [join(SCRIPTS, `${name}.mjs`), ...args, '--root', root], { encoding: 'utf8' })
+
+test('detect: a repo with no src/ gets an audit that reads its own tree', () => {
+  const r = repo({ 'package.json': '{"dependencies":{"react":"18","vite":"5"}}', 'components/Button.tsx': 'export default 1' })
+  try {
+    const out = JSON.parse(script('detect', r.root).stdout)
+    assert.equal(out.suggestedConfig.audit.include[0], '**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}')
+    assert.ok(out.suggestedConfig.audit.exclude.includes('stories/**'))
+    assert.ok(!out.suggestedConfig.audit.exclude.some((g) => g.startsWith('src/')))
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('init: no package.json gives a warning with the node command, and STATUS.md names no phase yet', () => {
+  const r = repo({ 'components/Button.tsx': 'export default 1' })
+  try {
+    const out = JSON.parse(script('init', r.root).stdout)
+    assert.ok(out.warnings.some((w) => /no package\.json, so no npm scripts were added; run the scripts with node, for example node design-system\/scripts\/serve\.mjs/.test(w)))
+    assert.match(read(r.root, 'design-system', 'STATUS.md'), /Choose the phases with `\/massimo:start`/)
+    assert.match(read(r.root, 'design-system', '.gitignore'), /^shots\/\*\n!shots\/kept\/$/m)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('init: an older project that ignores all of shots/ is told how to keep linked screenshots', () => {
+  const r = repo({ 'package.json': '{}', 'design-system/.gitignore': 'shots/\n', 'design-system/state.json': '{"phases":[]}' })
+  try {
+    const out = JSON.parse(script('init', r.root, ['--no-npm-scripts']).stdout)
+    assert.ok(out.warnings.some((w) => /ignores all of shots\/; replace that line with "shots\/\*" and "!shots\/kept\/"/.test(w)))
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a project folder other than design-system: token source and commands follow it', () => {
+  const r = repo({ 'massimo.config.json': '{"projectDir":".massimo"}' })
+  try {
+    const { config, projectDir } = loadConfig({ root: r.root })
+    assert.equal(config.tokens.source, '.massimo/tokens/tokens.json')
+    assert.equal(scriptCommand(r.root, projectDir, 'tokens', 'build'), 'node .massimo/scripts/tokens.mjs build')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('kit: a blank project gets one, so the design loop can start before there are tokens', () => {
+  const r = repo({ 'massimo.config.json': '{}' })
+  try {
+    const out = script('tokens', r.root, ['kit'])
+    assert.equal(out.status, 0, out.stderr)
+    assert.match(out.stdout, /no tokens yet, so system defaults/)
+    const kit = read(r.root, 'design-system', 'kit', 'kit.css')
+    assert.match(kit, /No tokens yet: mockups use system defaults until the tokens phase\./)
+    assert.match(kit, /font-family: system-ui, sans-serif;/)
+    assert.equal(script('tokens', r.root, ['preview']).status, 1) // nothing to preview yet
+  } finally {
+    r.cleanup()
+  }
+})

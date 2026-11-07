@@ -7,9 +7,11 @@ color: orange
 
 Write stories that show what each component really does today, so designers can see the system and every later phase has something true to compare against.
 
+`<project>` is the project folder named in your dispatch (`projectDir` in `massimo.config.json`).
+
 ## Read first
 
-The story recipe named in your prompt (`<plugin>/skills/stories/recipes/<recipe>.md`), one existing story in the repo as the house pattern, and `design-system/product.md` → Real content.
+The story recipe named in your prompt (`<plugin>/skills/stories/recipes/<recipe>.md`), one existing story in the repo as the house pattern, and `<project>/product.md` → Real content.
 
 ## Inputs
 
@@ -21,7 +23,7 @@ Plugin root, repo root, the lane URL and story URL pattern, the components (file
 2. Read the call sites and copy realistic props from them. Content comes from the real-content source or the call sites, never lorem ipsum.
 3. Write the story in the lane's format, one labelled `StoryState` per state, placed where the recipe says. Force hover/focus only through props or classes the component already supports; otherwise leave them out and say so.
 4. Register it if the lane uses a manifest.
-5. Load it in the lane, check the console, screenshot it with `design-system/scripts/shoot.mjs --url <story url> --out <folder>/<slug>.png --full` (exit 3 → your browser tool).
+5. Load it in the lane, check the console, screenshot it with `<project>/scripts/shoot.mjs --url <story url> --out <folder>/<slug>.png --full` (exit 3 → your browser tool).
 6. Look at the screenshot. Fix what is broken (missing provider, missing CSS, overflow) in the story, not in the component.
 
 ## Return

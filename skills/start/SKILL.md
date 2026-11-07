@@ -7,7 +7,7 @@ description: Start or resume massimo's design-system project in this repo. Use w
 
 Front door for everything massimo does in a repo. It sets the project up once, then on every later run reads where things stand and hands over to the right phase skill. A designer or developer should never need to remember which command comes next.
 
-**Plugin root.** Two directories above this skill's base directory. Call it `<plugin>`; scripts are at `<plugin>/scripts/`. Read `<plugin>/reference/project.md` now: it is the contract for the project folder, phases and session protocol.
+**Plugin root.** Two directories above this skill's base directory. Call it `<plugin>`; scripts are at `<plugin>/scripts/`. Read `<plugin>/reference/project.md` now: it is the contract for the project folder, phases and session protocol. `<project>` is the project folder: `projectDir` in `massimo.config.json`, `design-system` by default.
 
 ## Which path
 
@@ -28,14 +28,14 @@ Look for `massimo.config.json` at the repo root (git toplevel).
    - Where real content lives (staging API, seed data, fixtures), so mockups never invent data.
 3. **If Storybook, Ladle or Histoire exists**, say so and recommend massimo's native lane anyway: it renders through the repo's own build, so what you see is what ships. Existing stories still count in the graph. Record the choice.
 4. **Create.** Run `node <plugin>/scripts/init.mjs --config-json '<json>'` with any corrections from step 2 (component globs, style files, projectDir). Show the user what it created and skipped, including the package.json scripts it added.
-5. **Ground.** Write `design-system/product.md` from the answers (replace the template's placeholders; leave a section as "unknown" rather than inventing). Record each answer that is a choice with `state.mjs decide`.
-6. **Plan.** For each phase the user does not want: `node design-system/scripts/state.mjs set <phase> skipped --note "<why>"`. Then `state.mjs set setup done --note "<framework>, <styling>"`.
+5. **Ground.** Write `<project>/product.md` from the answers (replace the template's placeholders; leave a section as "unknown" rather than inventing). Record each answer that is a choice with `state.mjs decide`.
+6. **Plan.** For each phase the user does not want: `node <project>/scripts/state.mjs set <phase> skipped --note "<why>"`. Then `state.mjs set setup done --note "<framework>, <styling>"`.
 7. **Hand over.** Show the roadmap (`state.mjs show`), write STATUS.md's hand-written sections, and offer to start the next phase now by invoking its skill (`/massimo:<skill>`).
 
 ## Resume
 
-1. Run `node design-system/scripts/state.mjs show` and read `design-system/STATUS.md`.
-2. **Scripts current?** Compare the vendored `design-system/scripts/lib/project.mjs` `SCRIPTS_VERSION` with `<plugin>/scripts/lib/project.mjs`. If the plugin is newer, offer `node <plugin>/scripts/init.mjs --update-scripts` and say what changed if the plugin's CHANGELOG says.
+1. Run `node <project>/scripts/state.mjs show` and read `<project>/STATUS.md`.
+2. **Scripts current?** Compare the vendored `<project>/scripts/lib/project.mjs` `SCRIPTS_VERSION` with `<plugin>/scripts/lib/project.mjs`. If the plugin is newer, offer `node <plugin>/scripts/init.mjs --update-scripts` and say what changed if the plugin's CHANGELOG says.
 3. **Tell the user where things stand** in three lines: what is done, what is in progress (with its progress note), and the single next step. Mention open explorations from the ux loop and any open question in STATUS.md.
 4. **Route.** If the user said what they want ("let's do tokens", "keep going on the checkout redesign"), go there. Otherwise propose the next phase. On a yes, invoke the phase skill: `graph`, `stories`, `tokens`, `tidy`, `guard`, `figma`, or `ux <topic>` for an exploration.
 

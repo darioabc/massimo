@@ -70,7 +70,15 @@ for (const name of ['STATUS.md', 'product.md', 'decisions.md']) {
   }
   write(join(projectDir, name), readFileSync(src, 'utf8').replaceAll('{{projectDir}}', projectRel))
 }
-write(join(projectDir, '.gitignore'), '# Screenshots are cheap to regenerate and heavy to keep.\nshots/\n# Left by a run that stopped mid-write.\n*.lock\n*.tmp\n')
+write(
+  join(projectDir, '.gitignore'),
+  '# Screenshots are cheap to regenerate and heavy to keep, except the ones a\n# committed handoff, brief or baseline links to, which go in shots/kept/.\nshots/*\n!shots/kept/\n# Left by a run that stopped mid-write.\n*.lock\n*.tmp\n',
+)
+// A project made before 0.2.0 ignores every screenshot, so a handoff's links go dead for teammates.
+const ignoreFile = join(projectDir, '.gitignore')
+if (existsSync(ignoreFile) && /^shots\/\s*$/m.test(readFileSync(ignoreFile, 'utf8'))) {
+  report.warnings.push(`${projectRel}/.gitignore ignores all of shots/; replace that line with "shots/*" and "!shots/kept/" so screenshots a handoff links to are committed`)
+}
 // Two branches that both log a decision merge by keeping both lines.
 write(join(projectDir, '.gitattributes'), 'decisions.md merge=union\n')
 for (const dir of ['explorations', 'handoffs', 'audits', 'tokens', 'kit']) {
@@ -120,7 +128,9 @@ if (sameDir) {
 
 // 4. npm scripts. Phases add their own later (ds:stories, ds:tokens, ds:check).
 const pkgPath = join(root, 'package.json')
-if (!flags['no-npm-scripts'] && existsSync(pkgPath)) {
+if (!flags['no-npm-scripts'] && !existsSync(pkgPath)) {
+  report.warnings.push(`no package.json, so no npm scripts were added; run the scripts with node, for example node ${projectRel}/scripts/serve.mjs`)
+} else if (!flags['no-npm-scripts']) {
   const text = readFileSync(pkgPath, 'utf8')
   const indent = text.match(/^[ \t]+(?=")/m)?.[0] ?? '  '
   const pkg = readJson(pkgPath, {})

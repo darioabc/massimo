@@ -4,8 +4,9 @@
 // fenced code, blockquotes, rules, links, code spans, bold and italic. HTML in
 // the source is escaped, never passed through, and comments are dropped.
 
-const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
-export const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ESC[c])
+import { escapeHtml } from './text.mjs'
+
+export { escapeHtml }
 
 // Only links a reader can follow safely: web, mail, anchors and relative paths.
 const safeHref = (href) => (/^(https?:|mailto:|#|\.{0,2}\/|[\w-][\w./-]*(?:[#?].*)?$)/i.test(href) ? href : '#')

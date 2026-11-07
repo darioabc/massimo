@@ -651,10 +651,16 @@ export function splitVarName(name) {
   return { group: 'other', rest: bare }
 }
 
-// ── DaisyUI facts shared by graph and audit ─────────────────────────────────
+// ── Class-based component libraries, shared by graph and audit ─────────────
 
-// DaisyUI v5 component roots. A class token `btn-primary` reports as `btn`.
-export const DAISY_ROOTS = [
+// What the graph and audit know about a library whose components are CSS
+// classes: its component roots (`btn-primary` reports as `btn`), the theme
+// colour names it always provides, the custom properties its themes set, and
+// utilities that only look like a root (`select-none` is Tailwind, not a
+// select). A library is active when `styling` in the config names it; detect
+// adds `daisyui`. `graph.classLibraries` in the config adds others, or
+// extends a built-in one, in the same shape.
+const DAISY_ROOTS = [
   'alert', 'avatar', 'badge', 'breadcrumbs', 'btn', 'calendar', 'card', 'carousel', 'chat', 'checkbox',
   'collapse', 'countdown', 'diff', 'divider', 'dock', 'drawer', 'dropdown', 'fab', 'fieldset', 'file-input',
   'filter', 'footer', 'hero', 'indicator', 'input', 'join', 'kbd', 'label', 'link', 'list', 'loading',
@@ -663,12 +669,40 @@ export const DAISY_ROOTS = [
   'textarea', 'timeline', 'toast', 'toggle', 'tooltip', 'validator',
 ]
 
-// Colour names every DaisyUI theme provides, whether or not the repo redeclares them.
-export const DAISY_COLOR_NAMES = [
+const DAISY_COLOR_NAMES = [
   'base-100', 'base-200', 'base-300', 'base-content', 'primary', 'primary-content', 'secondary',
   'secondary-content', 'accent', 'accent-content', 'neutral', 'neutral-content', 'info', 'info-content',
   'success', 'success-content', 'warning', 'warning-content', 'error', 'error-content',
 ]
+
+export const CLASS_LIBRARIES = {
+  daisyui: {
+    roots: DAISY_ROOTS,
+    colors: DAISY_COLOR_NAMES,
+    vars: ['radius-selector', 'radius-field', 'radius-box', 'size-selector', 'size-field', 'border', 'depth', 'noise'],
+    notRoots: [
+      '^select-(?:none|text|all|auto)$',
+      '^list-(?:none|disc|decimal|inside|outside|image-.*|\\[.*)$',
+      '^table-(?!zebra$|xs$|sm$|md$|lg$|xl$|pin-rows$|pin-cols$)',
+      '^filter-',
+      '^mask-(?!squircle|heart|hexagon|decagon|pentagon|diamond|square|circle|parallelogram|star|triangle|half)',
+      '^tab-\\d',
+    ],
+  },
+}
+
+// The libraries active for a config, as `{ id, roots, colors, vars, notRoots }`
+// with `notRoots` compiled, in id order.
+export function classLibraries(config = {}) {
+  const extra = config.graph?.classLibraries ?? {}
+  const ids = new Set([...(config.styling ?? []).filter((s) => CLASS_LIBRARIES[s]), ...Object.keys(extra)])
+  return [...ids].sort().map((id) => {
+    const base = CLASS_LIBRARIES[id] ?? {}
+    const more = extra[id] ?? {}
+    const list = (key) => [...new Set([...(base[key] ?? []), ...(more[key] ?? [])])]
+    return { id, roots: list('roots'), colors: list('colors'), vars: list('vars'), notRoots: list('notRoots').map((p) => new RegExp(p)) }
+  })
+}
 
 // ── W3C design tokens (DTCG) ────────────────────────────────────────────────
 

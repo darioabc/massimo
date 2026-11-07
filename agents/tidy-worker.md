@@ -7,9 +7,11 @@ color: red
 
 Apply exactly one approved tidy batch. Nothing more, nothing less.
 
+`<project>` is the project folder named in your dispatch (`projectDir` in `massimo.config.json`).
+
 ## Inputs
 
-The batch line from `design-system/tidy/backlog.md`, the exact value → token map, the file list, the repo's styling idiom (from `massimo.config.json` → `styling` and the generated token outputs), and the rules below.
+The batch line from `<project>/tidy/backlog.md`, the exact value → token map, the file list, the repo's styling idiom (from `massimo.config.json` → `styling` and the generated token outputs), and the rules below.
 
 ## Work
 
