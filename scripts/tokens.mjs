@@ -10,21 +10,38 @@
 // deterministic, so `check` is a byte comparison.
 //
 // Usage:
-//   node <project>/scripts/tokens.mjs extract    write tokens/tokens.draft.json from the style files
+//   node <project>/scripts/tokens.mjs extract    write a 2025.10 draft in tokens/draft/ from the style files
 //   node <project>/scripts/tokens.mjs build      write every output, figma-variables.json and kit/kit.css
 //   node <project>/scripts/tokens.mjs kit        write kit/kit.css only
 //   node <project>/scripts/tokens.mjs check      rebuild in memory; exit 1 if stale (contrast failures too with --strict)
 //   node <project>/scripts/tokens.mjs preview    write tokens/preview.html
 //   node <project>/scripts/tokens.mjs hash       print the tokens' hash, as the Figma mirror records it
+//   node <project>/scripts/tokens.mjs migrate    convert a tokens.json from before 0.2.0 to 2025.10 [--to legacy] [--force]
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { contrastRatio, parseColor, toHex } from './lib/color.mjs'
+import { colorCss, contrastRatio, parseColor } from './lib/color.mjs'
+import {
+  FORMAT_VERSION,
+  checkValue,
+  cssOnlyTokens,
+  expandDocument,
+  flattenFormat,
+  formatOf,
+  inOrder,
+  isResolver,
+  looksLegacy,
+  readResolver,
+  tokenJson,
+  typedFromLegacy,
+  writeLegacy,
+  writeTokenSet,
+} from './lib/dtcg.mjs'
 import { compare, expandGlobs } from './lib/glob.mjs'
-import { fail, loadConfig, parseArgs, readJson, rel, scriptCommand } from './lib/project.mjs'
+import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, rel, scriptCommand, today } from './lib/project.mjs'
 import { aliasPath, flattenDtcg, isAlias, parseCustomProperties, splitVarName } from './lib/source.mjs'
 import { escapeHtml, natural, truthy } from './lib/text.mjs'
 
@@ -73,28 +90,18 @@ const FONT_WEIGHTS = {
 }
 
 // DTCG colour spaces CSS writes with its own function, and those it writes with color().
-const COLOR_FUNCTIONS = new Set(['hsl', 'hwb', 'lab', 'lch', 'oklab', 'oklch'])
-const COLOR_SPACES = new Set(['srgb', 'srgb-linear', 'display-p3', 'a98-rgb', 'prophoto-rgb', 'rec2020', 'xyz-d65', 'xyz-d50'])
+const CSS_COLOR_SPACES = new Set(['srgb', 'srgb-linear', 'hsl', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'display-p3', 'a98-rgb', 'prophoto-rgb', 'rec2020', 'xyz-d65', 'xyz-d50'])
 
 const numText = (n) => (n === 'none' ? 'none' : String(round(n)))
 
-// A DTCG colour object as CSS: hex for sRGB, the space's own function or color() otherwise.
+// A DTCG colour object as CSS: hex for sRGB, the space's own function or
+// color() otherwise; a space CSS cannot write falls back to the hex.
 function colorObjectText(v) {
-  const { colorSpace, components, alpha } = v
+  const { colorSpace, components } = v
   if (!Array.isArray(components) || components.length !== 3 || !components.every((c) => c === 'none' || typeof c === 'number')) {
     throw new Error(`colour ${JSON.stringify(v)} needs three numeric components`)
   }
-  const a = alpha === undefined || alpha === 1 ? '' : ` / ${numText(alpha)}`
-  if (colorSpace === 'srgb' && components.every((c) => typeof c === 'number')) {
-    return toHex({ r: components[0], g: components[1], b: components[2], a: alpha ?? 1 })
-  }
-  if (colorSpace === 'hsl' || colorSpace === 'hwb') {
-    const [h, x, y] = components.map(numText)
-    const pct = (s) => (s === 'none' ? s : `${s}%`)
-    return `${colorSpace}(${h} ${pct(x)} ${pct(y)}${a})`
-  }
-  if (COLOR_FUNCTIONS.has(colorSpace)) return `${colorSpace}(${components.map(numText).join(' ')}${a})`
-  if (COLOR_SPACES.has(colorSpace)) return `color(${colorSpace} ${components.map(numText).join(' ')}${a})`
+  if (CSS_COLOR_SPACES.has(colorSpace)) return colorCss(v)
   if (typeof v.hex === 'string') return v.hex
   throw new Error(`colour space "${colorSpace}" is not one CSS can write`)
 }
@@ -227,7 +234,9 @@ function* stringLeaves(v, where = '') {
   }
 }
 
-function buildModel(tokens, config, problems = []) {
+// The token model every output is built from. `options.defaultMode` names the
+// default context when a resolver document set it.
+function buildModel(tokens, config, problems = [], options = {}) {
   // A cycle is found once from each token in it; it is one problem.
   const cycleKey = (message) => (message.startsWith('alias cycle: ') ? [...new Set(message.slice(13).split(' -> '))].sort().join(' ') : null)
   const report = (path, message, level = 'error') => {
@@ -236,7 +245,7 @@ function buildModel(tokens, config, problems = []) {
     if (!seen) problems.push({ level, path, message })
   }
   const byName = new Map(tokens.map((t) => [t.name, t]))
-  let defaultMode = config.tokens.defaultMode ?? 'light'
+  let defaultMode = options.defaultMode ?? config.tokens.defaultMode ?? 'light'
   if (!MODE_NAME.test(defaultMode)) {
     report('tokens.defaultMode', `"${defaultMode}" must be a plain name such as light`)
     defaultMode = 'light'
@@ -253,7 +262,10 @@ function buildModel(tokens, config, problems = []) {
       }
     }
   }
-  const modes = ['default', ...[...modeNames].sort((a, b) => (a === 'dark' ? -1 : b === 'dark' ? 1 : compare(a, b)))]
+  // A resolver document's own context order; otherwise dark first, then by name.
+  const order = options.modeOrder ?? []
+  const rank = (m) => (order.includes(m) ? order.indexOf(m) : order.length)
+  const modes = ['default', ...[...modeNames].sort((a, b) => rank(a) - rank(b) || (a === 'dark' ? -1 : b === 'dark' ? 1 : compare(a, b)))]
   const modeLabel = (mode) => (mode === 'default' ? defaultMode : mode)
 
   const raw = (t, mode) => (mode === 'default' || !(mode in t.modes) ? t.value : t.modes[mode])
@@ -273,13 +285,27 @@ function buildModel(tokens, config, problems = []) {
     }
     return resolved(next, mode, seen)
   }
-  // An alias takes the type of what it points at.
+  // The token at the end of an alias chain in one mode.
+  const final = (t, mode) => {
+    let cur = t
+    for (let i = 0; i < 64; i++) {
+      const next = target(cur, mode)
+      if (!next) return cur
+      cur = next
+    }
+    return cur
+  }
+  // A token's own type, else what its alias points at. A 2025.10 token then
+  // takes its group's type and is never guessed from its value (the spec
+  // forbids it); only a token in the old dialect falls back to a guess.
   const typeOf = (t, depth = 0) => {
     if (t.type) return t.type
     const next = target(t, 'default')
-    return next && depth < 32 ? typeOf(next, depth + 1) : inferType(resolved(t, 'default'), t.path[0])
+    if (next && depth < 32) return typeOf(next, depth + 1)
+    if (t.strict) return t.groupType
+    return inferType(resolved(t, 'default'), t.path[0])
   }
-  const model = { tokens, byName, modes, defaultMode, modeLabel, raw, target, resolved, typeOf }
+  const model = { tokens, byName, modes, defaultMode, modeLabel, raw, target, resolved, final, typeOf }
 
   // Check every token, naming it: every mode must resolve, a reference inside
   // a composite must point at a token, every string must be safe in CSS and
@@ -301,11 +327,29 @@ function buildModel(tokens, config, problems = []) {
         report(t.name, `reference ${ref} points at a token that does not exist`)
         ok = false
       }
-      for (const [where, text] of stringLeaves(raw(t, mode))) {
+      const own = [...stringLeaves(raw(t, mode))]
+      const css = mode === 'default' ? t.css : t.cssModes?.[mode]
+      if (typeof css === 'string') own.push(['$extensions.massimo.css', css])
+      for (const [where, text] of own) {
         const why = unsafeCss(text)
         if (!why) continue
         report(t.name, `${where ? `${where} ` : ''}${JSON.stringify(text)} ${why}`)
         ok = false
+      }
+      // A 2025.10 token's value must be valid for its type.
+      if (t.strict && !isAlias(raw(t, mode))) {
+        const type = typeOf(t)
+        const why = type ? checkValue(type, raw(t, mode)) : 'has no $type, and no group above it sets one'
+        if (why) {
+          report(t.name, `${mode === 'default' ? '' : `in ${modeLabel(mode)}, `}${type ? `the ${type} ` : ''}${why}`)
+          ok = false
+          continue
+        }
+      }
+      if (t.cssOnly && typeof raw(t, mode) !== 'string') {
+        report(t.name, 'a CSS-only value must be a string of CSS')
+        ok = false
+        continue
       }
       if (!ok) continue
       try {
@@ -317,6 +361,14 @@ function buildModel(tokens, config, problems = []) {
     }
     if (t.on && !byName.has(t.on)) report(t.name, `"on" points at ${t.on}, which is not a token`)
     if (!ok) continue
+    // A reference and its target must agree on the type.
+    const next = target(t, 'default')
+    const own = t.type ?? (t.strict && !next ? t.groupType : null)
+    if (t.strict && next && t.type && typeOf(next) && typeOf(next) !== t.type) {
+      report(t.name, `is a ${t.type} but points at ${next.name}, a ${typeOf(next)}`)
+      continue
+    }
+    if (t.strict && !own && !next && !t.cssOnly) continue
     for (const name of cssNames(model, t)) {
       const other = owner.get(name)
       if (other) report(t.name, `${other} and ${t.name} both map to the CSS variable ${name}; give one of them its own $extensions.massimo.cssVar`)
@@ -372,10 +424,13 @@ function declarations(model, t, mode, linked) {
   const type = model.typeOf(t)
   const next = linked ? model.target(t, mode) : null
   const value = linked ? model.raw(t, mode) : model.resolved(t, mode)
-  const out = [[t.cssVar, next ? `var(${next.cssVar})` : cssText(type, value, ref)]]
+  // A value the spec cannot hold exactly keeps its exact CSS beside it.
+  const owner = linked ? t : model.final(t, mode)
+  const css = mode !== 'default' && (mode in (owner.cssModes ?? {}) || mode in owner.modes) ? owner.cssModes?.[mode] ?? null : owner.css ?? null
+  const out = [[t.cssVar, next ? `var(${next.cssVar})` : css ?? cssText(type, value, ref)]]
   if (type === 'typography') {
-    for (const [key, css, partType] of typographyParts(model, t)) {
-      out.push([`${t.cssVar}-${css}`, next ? `var(${next.cssVar}-${css})` : cssText(partType, value[key], ref)])
+    for (const [key, part, partType] of typographyParts(model, t)) {
+      out.push([`${t.cssVar}-${part}`, next ? `var(${next.cssVar}-${part})` : cssText(partType, value[key], ref)])
     }
   }
   return out
@@ -446,7 +501,10 @@ function extractDraft(root, config, all = null) {
   return { doc, files, count: entries.size }
 }
 
-// The token set, with the problems found reading it (passed on to buildModel).
+// The token set, with the problems found reading it (passed on to buildModel)
+// and which dialect it is in: '2025.10' (a resolver document, or one token
+// file with massimo's format version) or 'legacy' (what massimo wrote before
+// 0.2.0, read as before so existing projects build unchanged).
 function loadTokens(root, config, { draftOk = false, all = null } = {}) {
   const path = join(root, config.tokens.source)
   const problems = []
@@ -457,12 +515,27 @@ function loadTokens(root, config, { draftOk = false, all = null } = {}) {
     } catch (err) {
       throw new Error(`${config.tokens.source} is not valid JSON: ${err.message}`)
     }
-    return { tokens: flattenDtcg(doc, problems), problems, origin: 'tokens.json', files: [config.tokens.source] }
+    if (isResolver(doc)) {
+      const r = readResolver(path, { root, problems })
+      const modeOrder = r.contexts.filter((c) => !c.isDefault).map((c) => c.name)
+      return { tokens: r.tokens, problems, origin: 'tokens', format: '2025.10', files: r.files, defaultMode: r.defaultMode, modeOrder }
+    }
+    const format = formatOf(doc)
+    if (format !== null && format > FORMAT_VERSION) {
+      throw new Error(`${config.tokens.source} was written by a newer massimo (format ${format}; this one reads ${FORMAT_VERSION}). Update massimo.`)
+    }
+    if (format !== null || !looksLegacy(doc)) {
+      const tokens = inOrder(flattenFormat(expandDocument(doc, problems), problems), cssOnlyTokens(doc, problems))
+      return { tokens, problems, origin: 'tokens', format: '2025.10', files: [config.tokens.source] }
+    }
+    return { tokens: flattenDtcg(doc, problems), problems, origin: 'tokens', format: 'legacy', files: [config.tokens.source] }
   }
   if (!draftOk) return null
   const draft = extractDraft(root, config, all)
-  return { tokens: flattenDtcg(draft.doc, problems), problems, origin: draft.count > 0 ? 'draft' : 'none', files: draft.files }
+  return { tokens: flattenDtcg(draft.doc, problems), problems, origin: draft.count > 0 ? 'draft' : 'none', format: 'legacy', files: draft.files }
 }
+
+const modelOf = (tokens, config) => buildModel(tokens.tokens, config, tokens.problems, { defaultMode: tokens.defaultMode, modeOrder: tokens.modeOrder })
 
 // ── Output formats ──────────────────────────────────────────────────────────
 
@@ -531,27 +604,50 @@ function buildCss(model, config) {
 }
 
 // Where a token lands in Tailwind: a theme section and a key path inside it.
+// A group named for the section is dropped from the key (`font.family.sans`
+// is `sans` in fontFamily); a `$root` token is the section's DEFAULT.
 function tailwindTarget(model, t) {
   const type = model.typeOf(t)
-  const [first, ...rest] = t.path
-  if (type === 'typography') return { section: 'fontSize', keys: ['text', 'type', 'typography', 'font'].includes(first) ? rest : t.path, typography: true }
-  if (type === 'color') return { section: 'colors', keys: first === 'color' ? rest : t.path }
-  if (first === 'spacing') return { section: 'spacing', keys: rest }
-  if (first === 'radius') return { section: 'borderRadius', keys: rest }
-  if (type === 'fontFamily') return { section: 'fontFamily', keys: first === 'font' ? rest : t.path }
+  const path = t.path.filter((p) => p !== '$root')
+  const [first, ...rest] = path
+  const under = (groups, sub = []) => {
+    if (!groups.includes(first)) return path
+    // A leaf named like the section (`motion.ease`) keeps its name.
+    return sub.includes(rest[0]) && rest.length > 1 ? rest.slice(1) : rest
+  }
+  if (type === 'typography') return { section: 'fontSize', keys: under(['text', 'type', 'typography', 'font']), typography: true }
+  if (type === 'color') return { section: 'colors', keys: under(['color', 'colors']) }
+  if (type === 'fontFamily') return { section: 'fontFamily', keys: under(['font', 'fonts'], ['family', 'families']) }
+  if (type === 'fontWeight') return { section: 'fontWeight', keys: under(['font', 'fonts'], ['weight', 'weights']) }
+  if (type === 'cubicBezier') return { section: 'transitionTimingFunction', keys: under(['motion', 'ease', 'easing', 'transition'], ['ease', 'easing']) }
+  if (type === 'shadow' || first === 'shadow') return { section: 'boxShadow', keys: under(['shadow', 'shadows', 'elevation']) }
+  if (first === 'spacing' || first === 'space') return { section: 'spacing', keys: rest }
+  if (first === 'radius' || first === 'radii') return { section: 'borderRadius', keys: rest }
   if (first === 'text') return { section: 'fontSize', keys: rest }
   if (first === 'font' && /^sizes?$/.test(rest[0] ?? '')) return { section: 'fontSize', keys: rest.slice(1) }
-  if (first === 'shadow' || type === 'shadow') return { section: 'boxShadow', keys: first === 'shadow' ? rest : t.path }
+  // Tailwind 3 has theme sections for these; Tailwind 4 reads them as plain numbers.
+  if (type === 'duration') return { section: 'transitionDuration', keys: under(['motion', 'duration', 'durations'], ['duration', 'durations']), v3only: true }
+  if (type === 'number' && ['z', 'zIndex', 'z-index', 'layer'].includes(first)) return { section: 'zIndex', keys: rest, v3only: true }
+  if (type === 'number' && first === 'opacity') return { section: 'opacity', keys: rest, v3only: true }
   return null
 }
 
-const TAILWIND4_PREFIX = { colors: '--color', spacing: '--spacing', borderRadius: '--radius', fontFamily: '--font', fontSize: '--text', boxShadow: '--shadow' }
+const TAILWIND4_PREFIX = {
+  colors: '--color',
+  spacing: '--spacing',
+  borderRadius: '--radius',
+  fontFamily: '--font',
+  fontWeight: '--font-weight',
+  fontSize: '--text',
+  boxShadow: '--shadow',
+  transitionTimingFunction: '--ease',
+}
 
 function buildTailwind4(model) {
   const lines = []
   for (const t of model.tokens) {
     const hit = tailwindTarget(model, t)
-    if (!hit || (hit.keys.length === 0 && hit.section !== 'spacing')) continue
+    if (!hit || hit.v3only || (hit.keys.length === 0 && hit.section !== 'spacing')) continue
     const name = [TAILWIND4_PREFIX[hit.section], ...hit.keys].join('-')
     if (hit.typography) {
       // Tailwind 4 reads a text size's line height, letter spacing and weight from `--text-x--<part>`.
@@ -603,7 +699,7 @@ function objectLiteral(obj, depth = 0) {
 }
 
 function buildTailwind3(model) {
-  const theme = { colors: {}, spacing: {}, borderRadius: {}, fontFamily: {}, fontSize: {}, boxShadow: {} }
+  const theme = { colors: {}, spacing: {}, borderRadius: {}, fontFamily: {}, fontWeight: {}, fontSize: {}, boxShadow: {}, transitionTimingFunction: {}, transitionDuration: {}, zIndex: {}, opacity: {} }
   for (const t of model.tokens) {
     const hit = tailwindTarget(model, t)
     if (!hit) continue
@@ -648,6 +744,7 @@ function buildJson(model) {
     const values = {}
     for (const mode of model.modes) values[mode] = literal(model, t, mode)
     tokens[t.name] = { type: model.typeOf(t), cssVar: t.cssVar, values }
+    if (t.deprecated) tokens[t.name].deprecated = t.deprecated
   }
   return jsonText({ $comment: HEADER, generatedBy: 'massimo tokens', modes: model.modes, tokens })
 }
@@ -699,6 +796,7 @@ function buildFigma(model) {
   const collectionOf = (t) => t.collection ?? (isAlias(t.value) ? 'Semantic' : 'Primitives')
   const members = new Map()
   for (const t of model.tokens) {
+    if (model.typeOf(t) === 'css') continue // a CSS-only value has no Figma variable
     const name = collectionOf(t)
     if (!members.has(name)) members.set(name, [])
     members.get(name).push(t)
@@ -740,8 +838,8 @@ function buildKit(model, origin, files, config) {
   const fg = pick(BODY_COLOR)
   const bg = pick(BODY_BG)
   const source =
-    origin === 'tokens.json'
-      ? 'Source: tokens.json.'
+    origin === 'tokens'
+      ? `Source: ${config.tokens.source}.`
       : origin === 'none'
         ? 'No tokens yet: mockups use system defaults until the tokens phase.'
         : `Source: custom properties extracted from ${files.join(', ') || 'the style files'} (no tokens.json yet).`
@@ -766,6 +864,12 @@ function buildKit(model, origin, files, config) {
 
 // ── Contrast ────────────────────────────────────────────────────────────────
 
+// What a contrast pair is for, in words, by WCAG 2.2: text needs 4.5:1, large
+// text 3:1, and UI parts and focus indicators 3:1 against what they sit on.
+const USE_TEXT = { text: 'for text', 'large-text': 'for large text', ui: 'for UI', focus: 'for a focus indicator' }
+
+// Every contrast pair in every theme. A translucent colour is composited
+// over what it sits on first.
 function contrastChecks(model) {
   const results = []
   for (const t of model.tokens) {
@@ -776,7 +880,8 @@ function contrastChecks(model) {
       const bg = parseColor(literal(model, bgToken, mode))
       if (!fg || !bg) continue
       const ratio = contrastRatio(fg, bg)
-      results.push({ token: t.name, on: t.on, mode, ratio, needs: t.contrast, pass: ratio >= t.contrast })
+      const use = t.use ? ` ${USE_TEXT[t.use]}` : ''
+      results.push({ token: t.name, on: t.on, mode: model.modeLabel(mode), ratio, needs: t.contrast, use, pass: ratio >= t.contrast })
     }
   }
   return results
@@ -819,7 +924,7 @@ function buildPreview(model, origin, files, kit, config) {
   const notesFor = (name) =>
     contrast
       .filter((c) => c.token === name)
-      .map((c) => `<div class="pv-note ${c.pass ? 'ok' : 'bad'}">${c.pass ? 'passes' : 'fails'} ${c.needs}:1 on ${esc(c.on)} (${esc(c.mode)}): ${c.ratio.toFixed(2)}:1</div>`)
+      .map((c) => `<div class="pv-note ${c.pass ? 'ok' : 'bad'}">${c.pass ? 'passes' : 'fails'} ${c.needs}:1${esc(c.use)} on ${esc(c.on)} (${esc(c.mode)}): ${c.ratio.toFixed(2)}:1</div>`)
       .join('')
   const valueNote = (t) => {
     const parts = model.modes.map((m) => ({ m, v: literal(model, t, m) }))
@@ -883,7 +988,7 @@ ${PREVIEW_CSS.trim()}
 </head>
 <body>
 <div class="pv-page">
-<div class="pv-top"><div><h1>Design tokens</h1><p>${model.tokens.length} tokens from ${origin === 'draft' ? 'the style files' : 'tokens.json'}. Switch the theme to check every mode.</p></div><button class="pv-toggle" type="button" id="pv-toggle">Switch to dark</button></div>
+<div class="pv-top"><div><h1>Design tokens</h1><p>${model.tokens.length} tokens from ${origin === 'draft' ? 'the style files' : esc(config.tokens.source)}. Switch the theme to check every mode.</p></div><button class="pv-toggle" type="button" id="pv-toggle">Switch to dark</button></div>
 ${draft}
 ${sections.join('\n')}
 </div>
@@ -942,7 +1047,7 @@ const warnAll = (model) => {
 
 // Every file `build` writes, as { path (absolute), text }. Throws on a bad token set.
 function buildOutputs(root, projectDir, config, tokens) {
-  const model = buildModel(tokens.tokens, config, tokens.problems)
+  const model = modelOf(tokens, config)
   const out = []
   for (const output of config.tokens.outputs ?? []) {
     if (!FORMATS.includes(output.format)) {
@@ -963,42 +1068,144 @@ function buildOutputs(root, projectDir, config, tokens) {
   return { model, files: out }
 }
 
-const BOOLEAN_FLAGS = new Set(['strict'])
+// ── Migration between the two dialects ─────────────────────────────────────
+
+const versionParts = (v) => String(v).split('.').map((n) => Number.parseInt(n, 10) || 0)
+function olderThan(a, b) {
+  const [x, y] = [versionParts(a), versionParts(b)]
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0)
+  return false
+}
+
+// The version of the scripts vendored in the project, or null when there are none.
+function vendoredVersion(projectDir) {
+  const p = join(projectDir, 'scripts', 'lib', 'project.mjs')
+  return existsSync(p) ? (readFileSync(p, 'utf8').match(/SCRIPTS_VERSION = '([^']+)'/)?.[1] ?? null) : null
+}
+
+// Outputs as text with their "Generated by" lines left out, to compare two builds.
+const bodyOf = (text) => text.split('\n').filter((l) => !l.includes('Generated by massimo') && !l.startsWith('/* Source: ')).join('\n')
+
+function migrationReport({ from, to, direction, losses, changed }) {
+  const lines = ['# Token migration', '', `${today()} · ${from} to ${to} (${direction}).`, '', '## What did not carry over exactly', '']
+  if (losses.length === 0) lines.push('Every value carried over exactly.')
+  for (const l of losses) lines.push(`- \`${l.token}\` (${l.kind}): ${l.detail}`)
+  lines.push('', '## Outputs', '')
+  if (changed.length === 0) lines.push('Every output builds the same as before, apart from the line that names its source. Run the build to refresh that line.')
+  else for (const c of changed) lines.push(`- \`${c}\` builds differently; review it before committing.`)
+  return `${lines.join('\n')}\n`
+}
+
+// Convert the token source to 2025.10 (or back with --to legacy), write a
+// report of anything that did not carry over exactly, check every output
+// still builds the same, and point the config at the new source.
+function migrate({ root, config, projectDir, configPath, flags, shown }) {
+  const to = flags.to === undefined || flags.to === true ? '2025.10' : String(flags.to)
+  if (!['2025.10', 'legacy'].includes(to)) fail('--to takes 2025.10 or legacy', 2)
+  const loaded = loadTokens(root, config)
+  if (!loaded) fail(`no token source at ${config.tokens.source}`)
+  const vendored = vendoredVersion(projectDir)
+  if (vendored && olderThan(vendored, SCRIPTS_VERSION)) {
+    fail(`the scripts in ${shown(join(projectDir, 'scripts'))} are ${vendored}, older than this ${SCRIPTS_VERSION}; update them first (init.mjs --update-scripts), or CI and teammates on ${vendored} cannot read the new files`)
+  }
+  const dir = dirname(join(root, config.tokens.source))
+  const before = buildOutputs(root, projectDir, config, loaded)
+  let files
+  let losses
+  let source
+  if (to === '2025.10') {
+    if (loaded.format !== 'legacy') fail(`${config.tokens.source} is already in the 2025.10 format`)
+    const converted = typedFromLegacy(before.model.tokens, before.model.typeOf)
+    losses = converted.losses
+    files = writeTokenSet({ tokens: converted.tokens, defaultMode: before.model.defaultMode, name: 'Design tokens' })
+    source = 'tokens.resolver.json'
+  } else {
+    if (loaded.format !== '2025.10') fail(`${config.tokens.source} is already in the dialect before 0.2.0`)
+    const m = before.model
+    const asVar = (alias) => `var(${m.byName.get(aliasPath(alias))?.cssVar ?? alias})`
+    const legacy = writeLegacy(m.tokens.map((t) => ({ ...t, type: m.typeOf(t) })), (type, v) => cssText(type, v, asVar))
+    losses = legacy.losses
+    for (const t of m.tokens) {
+      if ([...nestedRefs(t.value)].length > 0) losses.push({ token: t.name, kind: 'changed', detail: 'a composite with references became CSS text; the references inside became var()' })
+    }
+    files = { 'tokens.json': tokenJson(legacy.doc) }
+    source = 'tokens.json'
+  }
+  const targets = Object.entries(files).map(([name, text]) => [join(dir, name), text])
+  const taken = targets.filter(([p]) => existsSync(p) && p !== join(root, config.tokens.source))
+  if (taken.length > 0 && !truthy(flags.force)) fail(`these files exist already: ${taken.map(([p]) => shown(p)).join(', ')}. Move them, or pass --force to overwrite them.`)
+  for (const [p, text] of targets) writeText(p, text)
+  const newSource = rel(root, join(dir, source))
+  const nextConfig = { ...config, tokens: { ...config.tokens, source: newSource } }
+  const after = buildOutputs(root, projectDir, nextConfig, loadTokens(root, nextConfig))
+  const changed = after.files.filter((f, i) => bodyOf(f.text) !== bodyOf(before.files[i]?.text ?? '')).map((f) => shown(f.path))
+  const reportPath = join(dir, 'migration-report.md')
+  writeText(reportPath, migrationReport({ from: config.tokens.source, to: newSource, direction: to === '2025.10' ? 'to the W3C Design Tokens format 2025.10' : 'back to the dialect massimo wrote before 0.2.0', losses, changed }))
+  if (existsSync(configPath)) {
+    const raw = readJson(configPath, {})
+    raw.tokens = { ...(raw.tokens ?? {}), source: newSource }
+    writeText(configPath, jsonText(raw))
+  }
+  process.stdout.write(
+    `massimo tokens migrate: wrote ${targets.map(([p]) => shown(p)).join(', ')} and ${shown(reportPath)}; ${losses.length} ${losses.length === 1 ? 'value' : 'values'} not carried over exactly, ${changed.length} ${changed.length === 1 ? 'output' : 'outputs'} changed. ${existsSync(configPath) ? `massimo.config.json now reads ${newSource}.` : `Set tokens.source to ${newSource} in massimo.config.json.`} Then run: ${scriptCommand(root, projectDir, 'tokens', 'build')}\n`,
+  )
+}
+
+const BOOLEAN_FLAGS = new Set(['strict', 'force'])
 
 function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { _: positionals, flags } = parseArgs(argv)
   const mode = positionals[0]
-  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash']
+  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash', 'migrate']
   if (!MODES.includes(mode)) fail(`usage: tokens.mjs <${MODES.join('|')}> [--strict]`, 2)
-  const { root, config, projectDir } = loadConfig(flags)
+  const { root, config, projectDir, configPath } = loadConfig(flags)
   HEADER = `Generated by massimo tokens from ${config.tokens.source}. Do not edit by hand: change the tokens, then run ${scriptCommand(root, projectDir, 'tokens', 'build')}`
   const shown = (abs) => {
     const r = rel(root, abs)
     return r.startsWith('..') ? abs : r
   }
 
+  if (mode === 'migrate') return migrate({ root, config, projectDir, configPath, flags, shown })
+
   if (mode === 'extract') {
     if (config.tokens.styleFiles.length === 0) fail('tokens.styleFiles is empty; list the stylesheets that define the custom properties')
     const draft = extractDraft(root, config)
     if (draft.files.length === 0) fail(`no style files matched tokens.styleFiles (${config.tokens.styleFiles.join(', ')})`)
-    const path = join(projectDir, 'tokens', 'tokens.draft.json')
-    writeText(path, jsonText(draft.doc))
-    process.stdout.write(`massimo tokens extract: ${draft.count} tokens from ${draft.files.length} ${draft.files.length === 1 ? 'file' : 'files'}; wrote ${shown(path)}\n`)
+    // The draft is read the way an old tokens.json is, then written as 2025.10.
+    const loaded = { tokens: flattenDtcg(draft.doc), problems: [] }
+    const legacy = modelOf(loaded, config)
+    const { tokens, losses } = typedFromLegacy(legacy.tokens, legacy.typeOf)
+    const sources = draft.files.join(', ')
+    const set = writeTokenSet({
+      tokens,
+      defaultMode: legacy.defaultMode,
+      name: 'Draft tokens',
+      description: `Draft extracted by massimo from ${sources}. Nothing here is in use yet: review it with the tokens skill.`,
+    })
+    const dir = join(projectDir, 'tokens', 'draft')
+    for (const [name, text] of Object.entries(set)) writeText(join(dir, name), text)
+    const report = ['# Draft tokens', '', `Extracted from ${sources}. ${draft.count} custom properties.`, '', '## What did not convert exactly', '']
+    if (losses.length === 0) report.push('Every value converted exactly.')
+    for (const l of losses) report.push(`- \`${l.token}\` (${l.kind}): ${l.detail}`)
+    writeText(join(dir, 'report.md'), `${report.join('\n')}\n`)
+    process.stdout.write(`massimo tokens extract: ${draft.count} tokens from ${draft.files.length} ${draft.files.length === 1 ? 'file' : 'files'}; wrote ${shown(join(dir, 'tokens.resolver.json'))} and the files it names\n`)
     return
   }
 
   const tokens = loadTokens(root, config, { draftOk: mode === 'kit' || mode === 'preview' })
   if (!tokens) {
-    const message = `no tokens.json at ${config.tokens.source}. Run \`tokens.mjs extract\`, review the draft, then save it there.`
+    const message = `no tokens at ${config.tokens.source}. Run \`tokens.mjs extract\`, review the draft in tokens/draft/, then move it into tokens/.`
     if (mode === 'check') {
       process.stderr.write(`massimo tokens: ${message}\n`)
       process.exit(2)
     }
     fail(message)
   }
+  // When reading found problems and no tokens, the problems explain the empty set.
+  if (tokens.tokens.length === 0 && tokens.problems.some((p) => p.level === 'error')) throw new TokenProblems(tokens.problems)
   // A blank project still gets a kit, so the ux loop can start before there are tokens.
-  if (tokens.tokens.length === 0 && mode !== 'kit') fail(`${tokens.origin === 'tokens.json' ? `${config.tokens.source} defines` : 'the style files define'} no tokens`)
+  if (tokens.tokens.length === 0 && mode !== 'kit') fail(`${tokens.origin === 'tokens' ? `${config.tokens.source} defines` : 'the style files define'} no tokens`)
 
   if (mode === 'hash') {
     process.stdout.write(`${tokensHash(root, config)}\n`)
@@ -1014,7 +1221,7 @@ function main() {
   }
 
   if (mode === 'kit') {
-    const model = buildModel(tokens.tokens, config, tokens.problems)
+    const model = modelOf(tokens, config)
     warnAll(model)
     const path = join(projectDir, 'kit', 'kit.css')
     writeText(path, buildKit(model, tokens.origin, tokens.files, config))
@@ -1024,7 +1231,7 @@ function main() {
   }
 
   if (mode === 'preview') {
-    const model = buildModel(tokens.tokens, config, tokens.problems)
+    const model = modelOf(tokens, config)
     warnAll(model)
     const kit = buildKit(model, tokens.origin, tokens.files, config)
     const path = join(projectDir, 'tokens', 'preview.html')
@@ -1040,13 +1247,13 @@ function main() {
   const failures = contrastChecks(model).filter((c) => !c.pass)
   const strict = truthy(flags.strict)
   // The Figma library is a mirror, so drift is reported, never failed on.
-  const mirror = tokens.origin === 'tokens.json' ? figmaMirror(root, projectDir, config) : null
+  const mirror = tokens.origin === 'tokens' ? figmaMirror(root, projectDir, config) : null
   if (mirror && !mirror.current) {
     process.stderr.write(`  figma: the mirror was synced on ${mirror.syncedAt} from other tokens; run the figma skill's drift check\n`)
   }
   for (const f of stale) process.stderr.write(`  stale: ${shown(f.path)}${existsSync(f.path) ? '' : ' (missing)'}\n`)
   for (const c of failures) {
-    process.stderr.write(`  ${strict ? 'fail' : 'warn'}: ${c.token} on ${c.on} (${c.mode}) is ${c.ratio.toFixed(2)}:1, needs ${c.needs}:1\n`)
+    process.stderr.write(`  ${strict ? 'fail' : 'warn'}: ${c.mode}: ${c.token} on ${c.on} is ${c.ratio.toFixed(2)}:1, needs ${c.needs}:1${c.use}\n`)
   }
   const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}`]
   if (mirror) parts.push(mirror.current ? 'figma mirror current' : 'figma mirror behind')

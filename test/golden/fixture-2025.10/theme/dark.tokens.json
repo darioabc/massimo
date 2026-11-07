@@ -1,0 +1,39 @@
+{
+  "$description": "What changes in the dark context.",
+  "color": {
+    "$type": "color",
+    "bg": {
+      "default": {
+        "$value": "{color.neutral.950}",
+        "$description": "Page background"
+      }
+    },
+    "fg": {
+      "muted": {
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [
+            0.6039,
+            0.6039,
+            0.6039
+          ],
+          "hex": "#9a9a9a"
+        },
+        "$description": "Secondary text",
+        "$extensions": {
+          "massimo": {
+            "contrast": {
+              "on": "color.bg.default",
+              "use": "text"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2
+    }
+  }
+}

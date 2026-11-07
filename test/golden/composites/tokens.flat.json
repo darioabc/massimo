@@ -1,0 +1,212 @@
+{
+  "generatedBy": "massimo tokens",
+  "modes": [
+    "default"
+  ],
+  "tokens": {
+    "color.ink": {
+      "type": "color",
+      "cssVar": "--color-ink",
+      "values": {
+        "default": "#00000033"
+      }
+    },
+    "color.teal": {
+      "type": "color",
+      "cssVar": "--color-teal",
+      "values": {
+        "default": "oklch(0.7 0.1 200)"
+      }
+    },
+    "color.vivid": {
+      "type": "color",
+      "cssVar": "--color-vivid",
+      "values": {
+        "default": "color(display-p3 1 0 0 / 0.5)"
+      }
+    },
+    "color.white": {
+      "type": "color",
+      "cssVar": "--color-white",
+      "values": {
+        "default": "hsl(none 0% 100%)"
+      }
+    },
+    "color.film": {
+      "type": "color",
+      "cssVar": "--color-film",
+      "values": {
+        "default": "color(rec2020 0.5 0.25 1)"
+      }
+    },
+    "color.bg": {
+      "type": "color",
+      "cssVar": "--color-bg",
+      "values": {
+        "default": "#ffffff"
+      }
+    },
+    "color.text": {
+      "type": "color",
+      "cssVar": "--color-text",
+      "values": {
+        "default": "#00000033"
+      }
+    },
+    "font.family.sans": {
+      "type": "fontFamily",
+      "cssVar": "--font-family-sans",
+      "values": {
+        "default": "Inter, sans-serif"
+      }
+    },
+    "font.family.mono": {
+      "type": "fontFamily",
+      "cssVar": "--font-family-mono",
+      "values": {
+        "default": "\"JetBrains Mono\""
+      }
+    },
+    "font.weight.regular": {
+      "type": "fontWeight",
+      "cssVar": "--font-weight-regular",
+      "values": {
+        "default": "400"
+      }
+    },
+    "font.weight.strong": {
+      "type": "fontWeight",
+      "cssVar": "--font-weight-strong",
+      "values": {
+        "default": "600"
+      }
+    },
+    "size.lg": {
+      "type": "dimension",
+      "cssVar": "--size-lg",
+      "values": {
+        "default": "1.125rem"
+      }
+    },
+    "size.hairline": {
+      "type": "dimension",
+      "cssVar": "--size-hairline",
+      "values": {
+        "default": "1px"
+      }
+    },
+    "space.1": {
+      "type": "dimension",
+      "cssVar": "--space-1",
+      "values": {
+        "default": "0.25rem"
+      }
+    },
+    "space.2": {
+      "type": "dimension",
+      "cssVar": "--space-2",
+      "values": {
+        "default": "0.5rem"
+      }
+    },
+    "radius.md": {
+      "type": "dimension",
+      "cssVar": "--radius-md",
+      "values": {
+        "default": "6px"
+      }
+    },
+    "radius.full": {
+      "type": "dimension",
+      "cssVar": "--radius-full",
+      "values": {
+        "default": "9999px"
+      }
+    },
+    "text.body": {
+      "type": "typography",
+      "cssVar": "--text-body",
+      "values": {
+        "default": "400 1.125rem/1.5 Inter, sans-serif"
+      }
+    },
+    "text.label": {
+      "type": "typography",
+      "cssVar": "--text-label",
+      "values": {
+        "default": "600 0.75rem/1.2 Inter, sans-serif"
+      }
+    },
+    "border.thin": {
+      "type": "border",
+      "cssVar": "--border-thin",
+      "values": {
+        "default": "1px solid #00000033"
+      }
+    },
+    "motion.fast": {
+      "type": "duration",
+      "cssVar": "--motion-fast",
+      "values": {
+        "default": "150ms"
+      }
+    },
+    "motion.ease": {
+      "type": "cubicBezier",
+      "cssVar": "--motion-ease",
+      "values": {
+        "default": "cubic-bezier(0.4, 0, 0.2, 1)"
+      }
+    },
+    "motion.emphasis": {
+      "type": "transition",
+      "cssVar": "--motion-emphasis",
+      "values": {
+        "default": "150ms cubic-bezier(0.4, 0, 0.2, 1) 0ms"
+      }
+    },
+    "gradient.sky": {
+      "type": "gradient",
+      "cssVar": "--gradient-sky",
+      "values": {
+        "default": "linear-gradient(#0000ff 0%, oklch(0.7 0.1 200) 100%)"
+      }
+    },
+    "shadow.card": {
+      "type": "shadow",
+      "cssVar": "--shadow-card",
+      "values": {
+        "default": "0px 1px 2px 0px #00000033"
+      }
+    },
+    "shadow.ring": {
+      "type": "shadow",
+      "cssVar": "--shadow-ring",
+      "values": {
+        "default": "0px 4px 12px 0px #0000001a, inset 0px 0px 0px 1px #00000033"
+      }
+    },
+    "stroke.focus": {
+      "type": "strokeStyle",
+      "cssVar": "--stroke-focus",
+      "values": {
+        "default": "dashed"
+      }
+    },
+    "layer.modal": {
+      "type": "number",
+      "cssVar": "--layer-modal",
+      "values": {
+        "default": "50"
+      }
+    },
+    "opacity.scrim": {
+      "type": "number",
+      "cssVar": "--opacity-scrim",
+      "values": {
+        "default": "0.6"
+      },
+      "deprecated": "Use a color with alpha"
+    }
+  }
+}

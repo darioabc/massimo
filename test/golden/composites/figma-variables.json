@@ -1,0 +1,373 @@
+{
+  "generatedBy": "massimo tokens",
+  "collections": [
+    {
+      "name": "Primitives",
+      "modes": [
+        "Light"
+      ],
+      "variables": [
+        {
+          "name": "color/ink",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 0.2
+            }
+          },
+          "description": "Hairlines and shadows",
+          "codeSyntax": {
+            "WEB": "var(--color-ink)"
+          }
+        },
+        {
+          "name": "color/teal",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "r": 0.251831,
+              "g": 0.69425,
+              "b": 0.717064,
+              "a": 1
+            }
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--color-teal)"
+          }
+        },
+        {
+          "name": "color/vivid",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "r": 1,
+              "g": 0,
+              "b": 0,
+              "a": 0.5
+            }
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--color-vivid)"
+          }
+        },
+        {
+          "name": "color/white",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "r": 1,
+              "g": 1,
+              "b": 1,
+              "a": 1
+            }
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--color-white)"
+          }
+        },
+        {
+          "name": "color/film",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "r": 0.594683,
+              "g": 0.242586,
+              "b": 1,
+              "a": 1
+            }
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--color-film)"
+          }
+        },
+        {
+          "name": "color/bg",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "r": 1,
+              "g": 1,
+              "b": 1,
+              "a": 1
+            }
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--color-bg)"
+          }
+        },
+        {
+          "name": "font/family/sans",
+          "type": "STRING",
+          "values": {
+            "Light": "Inter, sans-serif"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--font-family-sans)"
+          }
+        },
+        {
+          "name": "font/family/mono",
+          "type": "STRING",
+          "values": {
+            "Light": "\"JetBrains Mono\""
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--font-family-mono)"
+          }
+        },
+        {
+          "name": "font/weight/regular",
+          "type": "FLOAT",
+          "values": {
+            "Light": 400
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--font-weight-regular)"
+          }
+        },
+        {
+          "name": "font/weight/strong",
+          "type": "FLOAT",
+          "values": {
+            "Light": 600
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--font-weight-strong)"
+          }
+        },
+        {
+          "name": "size/lg",
+          "type": "FLOAT",
+          "values": {
+            "Light": 18
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--size-lg)"
+          }
+        },
+        {
+          "name": "size/hairline",
+          "type": "FLOAT",
+          "values": {
+            "Light": 1
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--size-hairline)"
+          }
+        },
+        {
+          "name": "space/1",
+          "type": "FLOAT",
+          "values": {
+            "Light": 4
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--space-1)"
+          }
+        },
+        {
+          "name": "space/2",
+          "type": "FLOAT",
+          "values": {
+            "Light": 8
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--space-2)"
+          }
+        },
+        {
+          "name": "radius/md",
+          "type": "FLOAT",
+          "values": {
+            "Light": 6
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--radius-md)"
+          }
+        },
+        {
+          "name": "radius/full",
+          "type": "FLOAT",
+          "values": {
+            "Light": 9999
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--radius-full)"
+          }
+        },
+        {
+          "name": "text/body",
+          "type": "STRING",
+          "values": {
+            "Light": "400 1.125rem/1.5 Inter, sans-serif"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--text-body)"
+          }
+        },
+        {
+          "name": "text/label",
+          "type": "STRING",
+          "values": {
+            "Light": "600 0.75rem/1.2 Inter, sans-serif"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--text-label)"
+          }
+        },
+        {
+          "name": "border/thin",
+          "type": "STRING",
+          "values": {
+            "Light": "1px solid #00000033"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--border-thin)"
+          }
+        },
+        {
+          "name": "motion/fast",
+          "type": "STRING",
+          "values": {
+            "Light": "150ms"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--motion-fast)"
+          }
+        },
+        {
+          "name": "motion/ease",
+          "type": "STRING",
+          "values": {
+            "Light": "cubic-bezier(0.4, 0, 0.2, 1)"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--motion-ease)"
+          }
+        },
+        {
+          "name": "motion/emphasis",
+          "type": "STRING",
+          "values": {
+            "Light": "150ms cubic-bezier(0.4, 0, 0.2, 1) 0ms"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--motion-emphasis)"
+          }
+        },
+        {
+          "name": "gradient/sky",
+          "type": "STRING",
+          "values": {
+            "Light": "linear-gradient(#0000ff 0%, oklch(0.7 0.1 200) 100%)"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--gradient-sky)"
+          }
+        },
+        {
+          "name": "shadow/card",
+          "type": "STRING",
+          "values": {
+            "Light": "0px 1px 2px 0px #00000033"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--shadow-card)"
+          }
+        },
+        {
+          "name": "shadow/ring",
+          "type": "STRING",
+          "values": {
+            "Light": "0px 4px 12px 0px #0000001a, inset 0px 0px 0px 1px #00000033"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--shadow-ring)"
+          }
+        },
+        {
+          "name": "stroke/focus",
+          "type": "STRING",
+          "values": {
+            "Light": "dashed"
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--stroke-focus)"
+          }
+        },
+        {
+          "name": "layer/modal",
+          "type": "FLOAT",
+          "values": {
+            "Light": 50
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--layer-modal)"
+          }
+        },
+        {
+          "name": "opacity/scrim",
+          "type": "FLOAT",
+          "values": {
+            "Light": 0.6
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--opacity-scrim)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Semantic",
+      "modes": [
+        "Light"
+      ],
+      "variables": [
+        {
+          "name": "color/text",
+          "type": "COLOR",
+          "values": {
+            "Light": {
+              "alias": "color/ink",
+              "collection": "Primitives"
+            }
+          },
+          "description": "",
+          "codeSyntax": {
+            "WEB": "var(--color-text)"
+          }
+        }
+      ]
+    }
+  ]
+}

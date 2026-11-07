@@ -229,7 +229,7 @@ const suggestedConfig = {
   stories: { ...DEFAULTS.stories, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
   tokens: {
     ...DEFAULTS.tokens,
-    source: `${projectDir}/tokens/tokens.json`,
+    source: `${projectDir}/tokens/tokens.resolver.json`,
     styleFiles: styles.slice(0, 3).map((s) => s.file),
   },
   // The audit reads the same tree as the consumers, so a repo with no src/ is still audited.

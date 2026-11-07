@@ -16,7 +16,8 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── README.md                  how the team uses the system (written in the guard phase)
 ├── graph.md / graph.json      generated component graph (graph.mjs)
 ├── audits/                    latest.md, latest.json, baseline.json (audit.mjs)
-├── tokens/                    tokens.json (DTCG source of truth), tokens.draft.json, preview.html, figma-variables.json
+├── tokens/                    the token set in W3C Design Tokens 2025.10: tokens.resolver.json (the entry point), base.tokens.json,
+│                              theme/<context>.tokens.json; draft/ from extract; preview.html, figma-variables.json
 ├── kit/kit.css                generated token stylesheet that mockups link to
 ├── explorations/<topic>/      one folder per design topic in the ux loop (brief.md, round-N/, index.html)
 ├── handoffs/<topic>.md        translate specs ready to build

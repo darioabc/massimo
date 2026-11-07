@@ -1,0 +1,31 @@
+/* Utilities read these through var(), so the values (and the dark mode) come from the css output. */
+/* A token whose css variable has the same name as its theme variable maps to itself; that is intended, not a loop. */
+
+@theme inline {
+  --color-ink: var(--color-ink);
+  --color-teal: var(--color-teal);
+  --color-vivid: var(--color-vivid);
+  --color-white: var(--color-white);
+  --color-film: var(--color-film);
+  --color-bg: var(--color-bg);
+  --color-text: var(--color-text);
+  --font-sans: var(--font-family-sans);
+  --font-mono: var(--font-family-mono);
+  --font-weight-regular: var(--font-weight-regular);
+  --font-weight-strong: var(--font-weight-strong);
+  --spacing-1: var(--space-1);
+  --spacing-2: var(--space-2);
+  --radius-md: var(--radius-md);
+  --radius-full: var(--radius-full);
+  --text-body: var(--text-body-font-size);
+  --text-body--line-height: var(--text-body-line-height);
+  --text-body--letter-spacing: var(--text-body-letter-spacing);
+  --text-body--font-weight: var(--text-body-font-weight);
+  --text-label: var(--text-label-font-size);
+  --text-label--line-height: var(--text-label-line-height);
+  --text-label--letter-spacing: var(--text-label-letter-spacing);
+  --text-label--font-weight: var(--text-label-font-weight);
+  --ease-ease: var(--motion-ease);
+  --shadow-card: var(--shadow-card);
+  --shadow-ring: var(--shadow-ring);
+}

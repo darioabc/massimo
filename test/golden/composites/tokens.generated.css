@@ -1,0 +1,67 @@
+
+:root {
+  /* color */
+  --color-ink: #00000033;
+  --color-teal: oklch(0.7 0.1 200);
+  --color-vivid: color(display-p3 1 0 0 / 0.5);
+  --color-white: hsl(none 0% 100%);
+  --color-film: color(rec2020 0.5 0.25 1);
+  --color-bg: #ffffff;
+  --color-text: var(--color-ink);
+
+  /* font */
+  --font-family-sans: Inter, sans-serif;
+  --font-family-mono: "JetBrains Mono";
+  --font-weight-regular: 400;
+  --font-weight-strong: 600;
+
+  /* size */
+  --size-lg: 1.125rem;
+  --size-hairline: 1px;
+
+  /* space */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+
+  /* radius */
+  --radius-md: 6px;
+  --radius-full: 9999px;
+
+  /* text */
+  --text-body: var(--font-weight-regular) var(--size-lg)/1.5 var(--font-family-sans);
+  --text-body-font-family: var(--font-family-sans);
+  --text-body-font-size: var(--size-lg);
+  --text-body-font-weight: var(--font-weight-regular);
+  --text-body-line-height: 1.5;
+  --text-body-letter-spacing: 0px;
+  --text-label: 600 0.75rem/1.2 Inter, sans-serif;
+  --text-label-font-family: Inter, sans-serif;
+  --text-label-font-size: 0.75rem;
+  --text-label-font-weight: 600;
+  --text-label-line-height: 1.2;
+  --text-label-letter-spacing: 0.02rem;
+
+  /* border */
+  --border-thin: var(--size-hairline) solid var(--color-ink);
+
+  /* motion */
+  --motion-fast: 150ms;
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-emphasis: var(--motion-fast) var(--motion-ease) 0ms;
+
+  /* gradient */
+  --gradient-sky: linear-gradient(#0000ff 0%, var(--color-teal) 100%);
+
+  /* shadow */
+  --shadow-card: 0px 1px 2px 0px var(--color-ink);
+  --shadow-ring: 0px 4px 12px 0px #0000001a, inset 0px 0px 0px 1px var(--color-ink);
+
+  /* stroke */
+  --stroke-focus: dashed;
+
+  /* layer */
+  --layer-modal: 50;
+
+  /* opacity */
+  --opacity-scrim: 0.6;
+}

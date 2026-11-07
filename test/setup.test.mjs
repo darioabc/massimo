@@ -59,7 +59,10 @@ test('a project folder other than design-system: token source and commands follo
   const r = repo({ 'massimo.config.json': '{"projectDir":".massimo"}' })
   try {
     const { config, projectDir } = loadConfig({ root: r.root })
-    assert.equal(config.tokens.source, '.massimo/tokens/tokens.json')
+    assert.equal(config.tokens.source, '.massimo/tokens/tokens.resolver.json') // a new project starts in 2025.10
+    mkdirSync(join(r.root, '.massimo', 'tokens'), { recursive: true })
+    writeFileSync(join(r.root, '.massimo', 'tokens', 'tokens.json'), '{}')
+    assert.equal(loadConfig({ root: r.root }).config.tokens.source, '.massimo/tokens/tokens.json') // an older project keeps its file
     assert.equal(scriptCommand(r.root, projectDir, 'tokens', 'build'), 'node .massimo/scripts/tokens.mjs build')
   } finally {
     r.cleanup()
