@@ -449,7 +449,7 @@ function tagEnd(src, i) {
     const c = src[i]
     if (c === '"' || c === "'") i = skipQuoted(src, i)
     else if (c === '{') {
-      const close = closeBrace(src, i)
+      const close = closeBracket(src, i)
       if (close === -1) return null
       i = close
     } else if (c === '>') return { selfClosing: src[i - 1] === '/' }
