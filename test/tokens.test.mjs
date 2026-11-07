@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { read, readJson, run, scratch } from './helpers.mjs'
+import { read, readJson, run, scratch, withTokens } from './helpers.mjs'
 
 const ctx = scratch()
 after(() => ctx.cleanup())
@@ -77,18 +77,22 @@ test('figma-variables.json: collections, modes, aliases, value types', () => {
   assert.equal(figma.generatedBy, 'massimo tokens')
   assert.deepEqual(figma.collections.map((c) => c.name), ['Primitives', 'Semantic'])
   const [primitives, semantic] = figma.collections
-  assert.deepEqual(primitives.modes, ['Light', 'Dark'])
+  assert.deepEqual(primitives.modes, ['Light']) // no primitive changes in dark, so no Dark mode to fill
+  assert.deepEqual(semantic.modes, ['Light', 'Dark'])
   const byName = (c, n) => c.variables.find((v) => v.name === n)
   assert.deepEqual(byName(primitives, 'color/neutral/0'), {
     name: 'color/neutral/0',
     type: 'COLOR',
-    values: { Light: { r: 1, g: 1, b: 1, a: 1 }, Dark: { r: 1, g: 1, b: 1, a: 1 } },
+    values: { Light: { r: 1, g: 1, b: 1, a: 1 } },
     description: '',
     codeSyntax: { WEB: 'var(--color-neutral-0)' },
   })
-  assert.deepEqual(byName(semantic, 'color/bg/default').values, { Light: { alias: 'color/neutral/0' }, Dark: { alias: 'color/neutral/950' } })
+  assert.deepEqual(byName(semantic, 'color/bg/default').values, {
+    Light: { alias: 'color/neutral/0', collection: 'Primitives' },
+    Dark: { alias: 'color/neutral/950', collection: 'Primitives' },
+  })
   assert.equal(byName(semantic, 'color/bg/default').description, 'Page background')
-  assert.deepEqual(byName(primitives, 'spacing/1').values, { Light: 4, Dark: 4 }) // 0.25rem -> 4
+  assert.deepEqual(byName(primitives, 'spacing/1').values, { Light: 4 }) // 0.25rem -> 4
   assert.equal(byName(primitives, 'spacing/1').type, 'FLOAT')
   assert.equal(byName(primitives, 'font/sans').type, 'STRING')
   assert.equal(byName(primitives, 'size/touch').values.Light, 44)
@@ -180,12 +184,6 @@ test('build is deterministic', () => {
     other.cleanup()
   }
 })
-
-function withTokens(doc) {
-  const t = scratch()
-  writeFileSync(join(t.root, 'design-system', 'tokens', 'tokens.json'), JSON.stringify(doc))
-  return t
-}
 
 test('alias chains resolve through several hops, per mode', () => {
   const t = withTokens({
