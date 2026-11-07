@@ -299,6 +299,13 @@ function verifyAudit(ledger) {
   const result = runAudit(root, config, { projectDir })
   const compared = compareLegacy(legacy, pairs, offendersOf(result.findings), notMeasured(result))
   const differences = []
+  // The story kinds count the problems graph.json holds: one behind the code
+  // counts an old lane.
+  const graphPath = join(projectDir, 'graph.json')
+  if (result.kinds.includes('no-story') && existsSync(graphPath)) {
+    refuseNewer('graph', readJson(graphPath, null)?.version, 'graph.json')
+    if (readFileSync(graphPath, 'utf8') !== `${JSON.stringify(graphJson(), null, 2)}\n`) differences.push({ key: 'check:graph', detail: `graph.json is behind the code, so the story kinds count an old lane: run ${scriptCommand(root, projectDir, 'graph')}` })
+  }
   const rows = [['Rule', 'Kinds', 'Repo', 'massimo', 'Result']]
   for (const r of compared) {
     rows.push([r.rule, r.kinds.join(' + '), String(r.legacy), String(r.massimo), r.problem ?? (r.differs.length === 0 ? 'match' : `${plural(r.differs.length, 'file differs', 'files differ')}`)])

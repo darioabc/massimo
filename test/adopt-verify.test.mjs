@@ -249,6 +249,17 @@ test('plan proposes the audit map from the rule names and keeps the one you edit
   const ok = adopt('verify', 'audit')
   assert.equal(ok.status, 0, ok.stdout)
   assert.match(ok.stdout, /Kept by the repo, with no massimo kind: logo-colour\./)
+  // The story kinds count graph.json's problems, so one behind the code is a difference.
+  assert.equal(script('graph').status, 0)
+  assert.equal(adopt('verify', 'audit').status, 0)
+  const poster = join(ctx.root, 'src', 'components', 'Poster.astro')
+  const was = readFileSync(poster, 'utf8')
+  writeFileSync(poster, was.replace('// ds:group Components / Cards', '// ds:group Components / Cards\n// ds:no-story a poster is shown in its card'))
+  const behind = adopt('verify', 'audit')
+  assert.equal(behind.status, 1)
+  assert.match(behind.stdout, /  open {6}check:graph  graph\.json is behind the code, so the story kinds count an old lane: run node design-system\/scripts\/graph\.mjs\n/)
+  writeFileSync(poster, was)
+  assert.equal(script('graph').status, 0)
   l.classes.audit.verify.map = 'raw-colour=colour'
   writeFileSync(path, JSON.stringify(l, null, 2))
   assert.match(adopt('verify', 'audit').stderr, /design-system\/adopt\/ledger\.json: audit\.verify\.map: --map names "colour", which is not a kind/)
