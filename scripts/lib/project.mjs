@@ -38,6 +38,10 @@ export const DEFAULTS = {
     styleFiles: [],
     darkSelector: '[data-theme="dark"]',
     darkMedia: true,
+    // The default mode's name (Figma's first mode, the selector dark mode's media query opts out of).
+    defaultMode: 'light',
+    // A selector per mode name, where the dark selector with the name swapped in does not fit.
+    selectors: {},
     outputs: [],
   },
   audit: {

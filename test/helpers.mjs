@@ -2,7 +2,7 @@
 // never dirty the committed fixtures) and run a massimo script as a child process.
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,3 +38,17 @@ export function run(name, ctx, args = []) {
 
 export const read = (...parts) => readFileSync(join(...parts), 'utf8')
 export const readJson = (...parts) => JSON.parse(read(...parts))
+
+// A scratch copy of the app fixture with its tokens.json replaced, and its
+// config's `tokens` block patched when `tokensConfig` is given.
+export function withTokens(doc, tokensConfig = null) {
+  const t = scratch()
+  writeFileSync(join(t.root, 'design-system', 'tokens', 'tokens.json'), JSON.stringify(doc))
+  if (tokensConfig) {
+    const path = join(t.root, 'massimo.config.json')
+    const config = JSON.parse(readFileSync(path, 'utf8'))
+    config.tokens = { ...config.tokens, ...tokensConfig }
+    writeFileSync(path, JSON.stringify(config))
+  }
+  return t
+}

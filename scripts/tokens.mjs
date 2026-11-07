@@ -55,7 +55,7 @@ const GENERIC_FAMILY = /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui
 
 function inferType(value, group = '') {
   if (typeof value === 'number') return 'number'
-  if (typeof value !== 'string') return 'string'
+  if (typeof value !== 'string') return shapeType(value) ?? 'string'
   const v = value.trim()
   if (parseColor(v)) return 'color'
   if (LENGTH.test(v)) return 'dimension'
@@ -66,48 +66,144 @@ function inferType(value, group = '') {
 
 // ── Values to CSS and to Figma ──────────────────────────────────────────────
 
-function dimensionText(v) {
-  if (typeof v === 'number') return `${v}px`
-  if (v && typeof v === 'object' && 'value' in v) return `${v.value}${v.unit ?? 'px'}`
-  return String(v)
-}
-
 const quoteFamily = (name) => (/^[\w-]+$/.test(name) || GENERIC_FAMILY.test(name) ? name : `"${name}"`)
 
-// A resolved DTCG value as CSS text.
-function cssText(type, v) {
+// DTCG fontWeight keywords, as the numbers CSS needs.
+const FONT_WEIGHTS = {
+  thin: 100, hairline: 100, 'extra-light': 200, 'ultra-light': 200, light: 300, normal: 400, regular: 400, book: 400,
+  medium: 500, 'semi-bold': 600, 'demi-bold': 600, bold: 700, 'extra-bold': 800, 'ultra-bold': 800, black: 900,
+  heavy: 900, 'extra-black': 950, 'ultra-black': 950,
+}
+
+// DTCG colour spaces CSS writes with its own function, and those it writes with color().
+const COLOR_FUNCTIONS = new Set(['hsl', 'hwb', 'lab', 'lch', 'oklab', 'oklch'])
+const COLOR_SPACES = new Set(['srgb', 'srgb-linear', 'display-p3', 'a98-rgb', 'prophoto-rgb', 'rec2020', 'xyz-d65', 'xyz-d50'])
+
+const numText = (n) => (n === 'none' ? 'none' : String(round(n)))
+
+// A DTCG colour object as CSS: hex for sRGB, the space's own function or color() otherwise.
+function colorObjectText(v) {
+  const { colorSpace, components, alpha } = v
+  if (!Array.isArray(components) || components.length !== 3 || !components.every((c) => c === 'none' || typeof c === 'number')) {
+    throw new Error(`colour ${JSON.stringify(v)} needs three numeric components`)
+  }
+  const a = alpha === undefined || alpha === 1 ? '' : ` / ${numText(alpha)}`
+  if (colorSpace === 'srgb' && components.every((c) => typeof c === 'number')) {
+    return toHex({ r: components[0], g: components[1], b: components[2], a: alpha ?? 1 })
+  }
+  if (colorSpace === 'hsl' || colorSpace === 'hwb') {
+    const [h, x, y] = components.map(numText)
+    const pct = (s) => (s === 'none' ? s : `${s}%`)
+    return `${colorSpace}(${h} ${pct(x)} ${pct(y)}${a})`
+  }
+  if (COLOR_FUNCTIONS.has(colorSpace)) return `${colorSpace}(${components.map(numText).join(' ')}${a})`
+  if (COLOR_SPACES.has(colorSpace)) return `color(${colorSpace} ${components.map(numText).join(' ')}${a})`
+  if (typeof v.hex === 'string') return v.hex
+  throw new Error(`colour space "${colorSpace}" is not one CSS can write`)
+}
+
+const unitText = (v) => (v && typeof v === 'object' && 'value' in v ? `${numText(v.value)}${v.unit ?? 'px'}` : String(v))
+
+const TYPOGRAPHY_PARTS = [
+  ['fontFamily', 'font-family', 'fontFamily'],
+  ['fontSize', 'font-size', 'dimension'],
+  ['fontWeight', 'font-weight', 'fontWeight'],
+  ['lineHeight', 'line-height', 'number'],
+  ['letterSpacing', 'letter-spacing', 'dimension'],
+]
+
+// What a value with no usable `$type` looks like, for the old dialect's untyped composites.
+function shapeType(v) {
+  if (Array.isArray(v)) return v.length > 0 && v.every((x) => x && typeof x === 'object' && 'offsetX' in x) ? 'shadow' : null
+  if (!v || typeof v !== 'object') return null
+  if ('colorSpace' in v) return 'color'
+  if ('offsetX' in v) return 'shadow'
+  if ('fontFamily' in v || 'fontSize' in v) return 'typography'
+  if ('timingFunction' in v) return 'transition'
+  if ('width' in v && 'style' in v) return 'border'
+  if ('value' in v) return 'dimension'
+  return null
+}
+
+// A DTCG value as CSS text. `ref` turns a "{path}" reference into CSS: the
+// var() of its token where the output stays linked, the resolved literal where
+// it does not. References may sit inside composites (a shadow's colour).
+function cssText(type, v, ref = (alias) => alias) {
+  if (isAlias(v)) return ref(v)
+  const sub = (t, x) => cssText(t, x, ref)
+  if (typeof v === 'string' && type === 'fontFamily') return v.includes(',') || /^['"]/.test(v.trim()) ? v.trim() : quoteFamily(v.trim())
+  if (typeof v === 'string' && type === 'fontWeight') return String(FONT_WEIGHTS[v.trim()] ?? v.trim())
   if (typeof v === 'string') return v.trim()
   if (typeof v === 'number') return type === 'dimension' ? `${v}px` : String(v)
-  if (Array.isArray(v)) {
-    if (type === 'cubicBezier') return `cubic-bezier(${v.join(', ')})`
-    if (type === 'fontFamily') return v.map(quoteFamily).join(', ')
-    if (type === 'shadow') return v.map((s) => cssText('shadow', s)).join(', ')
-    return v.join(', ')
-  }
-  if (v && typeof v === 'object') {
-    if (type === 'color' || 'colorSpace' in v) {
-      if (v.colorSpace === 'srgb' && Array.isArray(v.components)) {
-        return toHex({ r: v.components[0], g: v.components[1], b: v.components[2], a: v.alpha ?? 1 })
-      }
-      return String(v.hex ?? JSON.stringify(v))
+  const kind = type && type !== 'string' ? type : shapeType(v)
+  switch (kind) {
+    case 'color':
+      return v && typeof v === 'object' ? colorObjectText(v) : String(v)
+    case 'dimension':
+    case 'duration':
+      return unitText(v)
+    case 'fontFamily':
+      return Array.isArray(v) ? v.map(quoteFamily).join(', ') : String(v)
+    case 'fontWeight':
+      return String(FONT_WEIGHTS[v] ?? v)
+    case 'cubicBezier':
+      return Array.isArray(v) ? `cubic-bezier(${v.map((n) => sub('number', n)).join(', ')})` : String(v)
+    case 'strokeStyle':
+      // CSS has no dash pattern for borders: an object form becomes `dashed`.
+      return typeof v === 'string' ? v.trim() : 'dashed'
+    case 'shadow':
+      return [].concat(v).map((s) => {
+        if (isAlias(s)) return ref(s)
+        const parts = [s.offsetX, s.offsetY, s.blur, s.spread].filter((x) => x !== undefined).map((x) => sub('dimension', x))
+        return `${s.inset ? 'inset ' : ''}${parts.join(' ')} ${sub('color', s.color ?? '#000000')}`
+      }).join(', ')
+    case 'border':
+      return [sub('dimension', v.width), sub('strokeStyle', v.style), sub('color', v.color)].join(' ')
+    case 'transition':
+      return [['duration', v.duration], ['cubicBezier', v.timingFunction], ['duration', v.delay]]
+        .filter(([, x]) => x !== undefined)
+        .map(([t, x]) => sub(t, x))
+        .join(' ')
+    case 'gradient':
+      return `linear-gradient(${[].concat(v).map((stop) => {
+        if (isAlias(stop)) return ref(stop)
+        const at = isAlias(stop.position) ? `calc(${ref(stop.position)} * 100%)` : `${numText(stop.position * 100)}%`
+        return `${sub('color', stop.color)} ${at}`
+      }).join(', ')})`
+    case 'typography': {
+      // The `font` shorthand; letter-spacing has no place in it and lives in its own variable.
+      const size = v.fontSize === undefined ? null : sub('dimension', v.fontSize)
+      const sized = size && v.lineHeight !== undefined ? `${size}/${sub('number', v.lineHeight)}` : size
+      return [v.fontWeight === undefined ? null : sub('fontWeight', v.fontWeight), sized, v.fontFamily === undefined ? null : sub('fontFamily', v.fontFamily)]
+        .filter(Boolean)
+        .join(' ')
     }
-    if (type === 'shadow' || 'offsetX' in v) {
-      const color = cssText('color', v.color ?? '#000000')
-      const parts = [v.offsetX, v.offsetY, v.blur, v.spread].filter((x) => x !== undefined).map(dimensionText)
-      return `${v.inset ? 'inset ' : ''}${parts.join(' ')} ${color}`
-    }
-    if ('value' in v) return dimensionText(v)
+    default:
+      if (Array.isArray(v)) return v.join(', ')
+      return String(v)
   }
-  return String(v)
 }
 
 // ── The token model ─────────────────────────────────────────────────────────
 
-function buildModel(tokens) {
+const MODE_NAME = /^[a-z][a-z0-9-]*$/i
+
+function buildModel(tokens, config) {
   const byName = new Map(tokens.map((t) => [t.name, t]))
+  const defaultMode = config.tokens.defaultMode ?? 'light'
+  if (!MODE_NAME.test(defaultMode)) throw new Error(`tokens.defaultMode "${defaultMode}" must be a plain name such as light`)
   const modeNames = new Set()
-  for (const t of tokens) for (const m of Object.keys(t.modes)) modeNames.add(m)
+  for (const t of tokens) {
+    for (const m of Object.keys(t.modes)) {
+      if (m === 'default' || m === defaultMode) {
+        throw new Error(`${t.name}: "${m}" is the default mode; put its value in $value, not in $extensions.massimo.modes`)
+      }
+      if (!MODE_NAME.test(m)) throw new Error(`${t.name}: mode "${m}" must be a plain name such as dark`)
+      modeNames.add(m)
+    }
+  }
   const modes = ['default', ...[...modeNames].sort((a, b) => (a === 'dark' ? -1 : b === 'dark' ? 1 : compare(a, b)))]
+  const modeLabel = (mode) => (mode === 'default' ? defaultMode : mode)
 
   const raw = (t, mode) => (mode === 'default' || !(mode in t.modes) ? t.value : t.modes[mode])
   const target = (t, mode) => {
@@ -126,25 +222,90 @@ function buildModel(tokens) {
     }
     return resolved(next, mode, seen)
   }
-  const typeOf = (t) => t.type ?? inferType(resolved(t, 'default'), t.path[0])
-  const model = { tokens, byName, modes, raw, target, resolved, typeOf }
+  // An alias takes the type of what it points at.
+  const typeOf = (t, depth = 0) => {
+    if (t.type) return t.type
+    const next = target(t, 'default')
+    return next && depth < 32 ? typeOf(next, depth + 1) : inferType(resolved(t, 'default'), t.path[0])
+  }
+  const model = { tokens, byName, modes, defaultMode, modeLabel, raw, target, resolved, typeOf }
 
-  // Fail early, naming the chain: every token in every mode must resolve, and
-  // every contrast pair must point at a real token.
+  // Fail early, naming the token: every token in every mode must resolve, a
+  // reference inside a composite must point at a token, every value must be
+  // one CSS can write, a contrast pair must point at a real token, and no two
+  // tokens may claim the same CSS variable.
+  const owner = new Map()
   for (const t of tokens) {
-    for (const mode of modes) resolved(t, mode)
+    for (const mode of modes) {
+      resolved(t, mode)
+      for (const ref of nestedRefs(raw(t, mode))) {
+        if (!byName.has(aliasPath(ref))) throw new Error(`${t.name}: reference ${ref} points at a token that does not exist`)
+      }
+      try {
+        declarations(model, t, mode, false)
+      } catch (err) {
+        throw new Error(`${t.name}: ${err.message}`)
+      }
+    }
     if (t.on && !byName.has(t.on)) throw new Error(`${t.name}: "on" points at ${t.on}, which is not a token`)
+    for (const name of cssNames(model, t)) {
+      const other = owner.get(name)
+      if (other) throw new Error(`${other} and ${t.name} both map to the CSS variable ${name}; give one of them its own $extensions.massimo.cssVar`)
+      owner.set(name, t.name)
+    }
   }
   return model
 }
 
-// The CSS value a token declares in one mode: var(--target) for an alias, else the literal.
-function declared(model, t, mode) {
-  const next = model.target(t, mode)
-  return next ? `var(${next.cssVar})` : cssText(model.typeOf(t), model.raw(t, mode))
+// Every "{path}" reference inside a composite value (not the value itself).
+function* nestedRefs(v, top = true) {
+  if (isAlias(v)) {
+    if (!top) yield v
+    return
+  }
+  if (Array.isArray(v)) for (const x of v) yield* nestedRefs(x, false)
+  else if (v && typeof v === 'object') for (const x of Object.values(v)) yield* nestedRefs(x, false)
 }
 
-const literal = (model, t, mode) => cssText(model.typeOf(t), model.resolved(t, mode))
+// The CSS variables a token owns: its own, plus one per part of a typography
+// composite, since letter-spacing has no place in the `font` shorthand and
+// Tailwind reads the parts one by one.
+function cssNames(model, t) {
+  if (model.typeOf(t) !== 'typography') return [t.cssVar]
+  return [t.cssVar, ...TYPOGRAPHY_PARTS.map(([, css]) => `${t.cssVar}-${css}`)]
+}
+
+// The typography parts a token's value has, as [key, css name, part type].
+function typographyParts(model, t) {
+  const v = model.resolved(t, 'default')
+  return TYPOGRAPHY_PARTS.filter(([key]) => v && typeof v === 'object' && v[key] !== undefined)
+}
+
+// A token's declarations in one mode, as [css variable, value] pairs. Linked
+// output keeps aliases as var() so the theme cascades through them; literal
+// output resolves every reference, for mockups, JSON and contrast.
+function declarations(model, t, mode, linked) {
+  let depth = 0
+  const ref = (alias) => {
+    const next = model.byName.get(aliasPath(alias))
+    if (!next) throw new Error(`reference ${alias} points at a token that does not exist`)
+    if (linked) return `var(${next.cssVar})`
+    if (++depth > 32) throw new Error(`reference ${alias} goes round in a cycle`)
+    return cssText(model.typeOf(next), model.resolved(next, mode), ref)
+  }
+  const type = model.typeOf(t)
+  const next = linked ? model.target(t, mode) : null
+  const value = linked ? model.raw(t, mode) : model.resolved(t, mode)
+  const out = [[t.cssVar, next ? `var(${next.cssVar})` : cssText(type, value, ref)]]
+  if (type === 'typography') {
+    for (const [key, css, partType] of typographyParts(model, t)) {
+      out.push([`${t.cssVar}-${css}`, next ? `var(${next.cssVar}-${css})` : cssText(partType, value[key], ref)])
+    }
+  }
+  return out
+}
+
+const literal = (model, t, mode) => declarations(model, t, mode, false)[0][1]
 
 // ── Loading tokens: tokens.json, or a draft from the style files ───────────
 
@@ -223,27 +384,48 @@ function loadTokens(root, config, { draftOk = false, all = null } = {}) {
 
 const cssBlock = (selector, lines, indent = '') => [`${indent}${selector} {`, ...lines.map((l) => (l ? `${indent}  ${l}` : l)), `${indent}}`]
 
-// Declarations for one mode: tokens with their own value in that mode.
-function modeLines(model, mode, valueOf) {
+// Declarations for one mode. Linked output (var() for aliases) needs only the
+// tokens with their own value in the mode, since an alias follows its target
+// through the cascade. Literal output needs every value that differs from the
+// default, or an alias would keep its default value in that mode.
+function modeLines(model, mode, linked) {
   const lines = []
   for (const t of model.tokens) {
-    if (mode !== 'default' && !(mode in t.modes)) continue
-    lines.push(`${t.cssVar}: ${valueOf(t, mode)};`)
+    const decls = declarations(model, t, mode, linked)
+    if (mode === 'default' || (linked && mode in t.modes)) {
+      for (const [name, text] of decls) lines.push(`${name}: ${text};`)
+    } else if (!linked) {
+      const base = new Map(declarations(model, t, 'default', false))
+      for (const [name, text] of decls) if (base.get(name) !== text) lines.push(`${name}: ${text};`)
+    }
   }
   return lines
 }
 
-function modeBlocks(model, darkSelector, darkMedia, valueOf) {
+// The selector a mode's block uses: tokens.selectors[mode] when set, else the
+// dark selector with "dark" swapped for the mode's name, so `.dark` gives
+// `.brand` and `[data-theme="dark"]` gives `[data-theme="brand"]`. The default
+// mode's selector is the one the media query opts out of.
+function modeSelector(config, model, mode) {
+  const name = model.modeLabel(mode)
+  const own = config.tokens.selectors?.[name]
+  if (own) return own
+  const dark = config.tokens.darkSelector
+  if (name === 'dark') return dark
+  return /dark/.test(dark) ? dark.replace(/dark/g, name) : `[data-theme="${name}"]`
+}
+
+// Every mode after the default, each under its selector; dark also under the
+// media query when the app follows the system setting.
+function modeBlocks(model, config) {
   const out = []
-  const dark = modeLines(model, 'dark', valueOf)
-  if (dark.length > 0) {
-    out.push('', ...cssBlock(darkSelector, dark))
-    if (darkMedia) {
-      out.push('', '@media (prefers-color-scheme: dark) {', ...cssBlock(':root:not([data-theme="light"])', dark, '  '), '}')
+  for (const mode of model.modes.slice(1)) {
+    const lines = modeLines(model, mode, true)
+    if (lines.length === 0) continue
+    out.push('', ...cssBlock(modeSelector(config, model, mode), lines))
+    if (mode === 'dark' && config.tokens.darkMedia) {
+      out.push('', '@media (prefers-color-scheme: dark) {', ...cssBlock(`:root:not(${modeSelector(config, model, 'default')})`, lines, '  '), '}')
     }
-  }
-  for (const mode of model.modes.filter((m) => m !== 'default' && m !== 'dark')) {
-    out.push('', ...cssBlock(`[data-theme="${mode}"]`, modeLines(model, mode, valueOf)))
   }
   return out
 }
@@ -257,10 +439,10 @@ function buildCss(model, config) {
       if (root.length > 0) root.push('')
       root.push(`/* ${group} */`)
     }
-    root.push(`${t.cssVar}: ${declared(model, t, 'default')};`)
+    for (const [name, text] of declarations(model, t, 'default', true)) root.push(`${name}: ${text};`)
   }
   const out = [`/* ${HEADER} */`, '', ...cssBlock(':root', root)]
-  out.push(...modeBlocks(model, config.tokens.darkSelector, config.tokens.darkMedia, (t, mode) => declared(model, t, mode)))
+  out.push(...modeBlocks(model, config))
   return `${out.join('\n')}\n`
 }
 
@@ -268,6 +450,7 @@ function buildCss(model, config) {
 function tailwindTarget(model, t) {
   const type = model.typeOf(t)
   const [first, ...rest] = t.path
+  if (type === 'typography') return { section: 'fontSize', keys: ['text', 'type', 'typography', 'font'].includes(first) ? rest : t.path, typography: true }
   if (type === 'color') return { section: 'colors', keys: first === 'color' ? rest : t.path }
   if (first === 'spacing') return { section: 'spacing', keys: rest }
   if (first === 'radius') return { section: 'borderRadius', keys: rest }
@@ -286,6 +469,16 @@ function buildTailwind4(model) {
     const hit = tailwindTarget(model, t)
     if (!hit || (hit.keys.length === 0 && hit.section !== 'spacing')) continue
     const name = [TAILWIND4_PREFIX[hit.section], ...hit.keys].join('-')
+    if (hit.typography) {
+      // Tailwind 4 reads a text size's line height, letter spacing and weight from `--text-x--<part>`.
+      const parts = typographyParts(model, t).map(([, css]) => css)
+      if (!parts.includes('font-size')) continue
+      lines.push(`${name}: var(${t.cssVar}-font-size);`)
+      for (const css of ['line-height', 'letter-spacing', 'font-weight']) {
+        if (parts.includes(css)) lines.push(`${name}--${css}: var(${t.cssVar}-${css});`)
+      }
+      continue
+    }
     lines.push(`${name}: var(${t.cssVar});`)
   }
   return [
@@ -305,23 +498,23 @@ function setNested(obj, keys, value) {
   keys.forEach((key, i) => {
     const last = i === keys.length - 1
     if (last) {
-      if (cur[key] && typeof cur[key] === 'object') cur[key].DEFAULT = value
+      if (cur[key] && typeof cur[key] === 'object' && !Array.isArray(cur[key])) cur[key].DEFAULT = value
       else cur[key] = value
     } else {
-      if (typeof cur[key] === 'string') cur[key] = { DEFAULT: cur[key] }
+      if (typeof cur[key] === 'string' || Array.isArray(cur[key])) cur[key] = { DEFAULT: cur[key] }
       cur[key] ??= {}
       cur = cur[key]
     }
   })
 }
 
+const jsString = (v) => `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+
 function objectLiteral(obj, depth = 0) {
   const pad = '  '.repeat(depth + 1)
-  const lines = Object.keys(obj).map((k) => {
-    const key = IDENT.test(k) ? k : `'${k}'`
-    const v = obj[k]
-    return `${pad}${key}: ${typeof v === 'string' ? `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'` : objectLiteral(v, depth + 1)},`
-  })
+  const valueText = (v) =>
+    typeof v === 'string' ? jsString(v) : Array.isArray(v) ? `[${v.map(valueText).join(', ')}]` : objectLiteral(v, depth + 1)
+  const lines = Object.keys(obj).map((k) => `${pad}${IDENT.test(k) ? k : jsString(k)}: ${valueText(obj[k])},`)
   return `{\n${lines.join('\n')}\n${'  '.repeat(depth)}}`
 }
 
@@ -330,7 +523,17 @@ function buildTailwind3(model) {
   for (const t of model.tokens) {
     const hit = tailwindTarget(model, t)
     if (!hit) continue
-    setNested(theme[hit.section], hit.keys.length > 0 ? hit.keys : ['DEFAULT'], `var(${t.cssVar})`)
+    const keys = hit.keys.length > 0 ? hit.keys : ['DEFAULT']
+    if (hit.typography) {
+      // Tailwind 3 takes a font size as [size, { lineHeight, letterSpacing, fontWeight }].
+      const parts = typographyParts(model, t).map(([key, css]) => [key, css])
+      if (!parts.some(([key]) => key === 'fontSize')) continue
+      const extra = {}
+      for (const [key, css] of parts) if (['lineHeight', 'letterSpacing', 'fontWeight'].includes(key)) extra[key] = `var(${t.cssVar}-${css})`
+      setNested(theme.fontSize, keys, Object.keys(extra).length > 0 ? [`var(${t.cssVar}-font-size)`, extra] : `var(${t.cssVar}-font-size)`)
+      continue
+    }
+    setNested(theme[hit.section], keys, `var(${t.cssVar})`)
   }
   for (const k of Object.keys(theme)) if (Object.keys(theme[k]).length === 0) delete theme[k]
   return [
@@ -378,53 +581,60 @@ function buildTs(model) {
 
 // ── Figma variables ─────────────────────────────────────────────────────────
 
-const figmaMode = (mode) => (mode === 'default' ? 'Light' : titleCase(mode))
+const figmaMode = (model, mode) => titleCase(model.modeLabel(mode))
 
-function figmaValue(model, t, mode, type) {
+// Figma has no em: a length in em depends on the text it sits in, so it stays a string.
+const FIGMA_FLOAT = /^(-?[\d.]+)(px|rem)?$/
+
+function figmaValue(model, t, mode, type, collectionOf) {
   const next = model.target(t, mode)
-  if (next) return { alias: next.path.join('/') }
-  const v = model.raw(t, mode)
-  const css = cssText(model.typeOf(t), v)
+  if (next) return { alias: next.path.join('/'), collection: collectionOf(next) }
+  const css = literal(model, t, mode)
   if (type === 'COLOR') {
     const c = parseColor(css)
     return { r: round(c.r), g: round(c.g), b: round(c.b), a: round(c.a) }
   }
   if (type === 'FLOAT') {
-    const m = /^(-?[\d.]+)(px|rem|em)?$/.exec(css)
-    return round(m[2] === 'rem' || m[2] === 'em' ? parseFloat(m[1]) * 16 : parseFloat(m[1]), 4)
+    const m = FIGMA_FLOAT.exec(css)
+    return round(m[2] === 'rem' ? parseFloat(m[1]) * 16 : parseFloat(m[1]), 4)
   }
   return css
 }
 
 function figmaType(model, t) {
   const type = model.typeOf(t)
-  const all = model.modes.map((m) => cssText(type, model.resolved(t, m)))
+  const all = model.modes.map((m) => literal(model, t, m))
   if (type === 'color' && all.every((v) => parseColor(v))) return 'COLOR'
-  if (['dimension', 'number', 'fontWeight', 'duration'].includes(type) && all.every((v) => /^-?[\d.]+(px|rem|em)?$/.test(v))) return 'FLOAT'
+  if (['dimension', 'number', 'fontWeight', 'duration'].includes(type) && all.every((v) => FIGMA_FLOAT.test(v))) return 'FLOAT'
   return 'STRING'
 }
 
+// Each collection carries only the modes its own variables change in; an alias
+// names the collection of the variable it points at, since one name can sit in two.
 function buildFigma(model) {
-  const collections = new Map()
+  const collectionOf = (t) => t.collection ?? (isAlias(t.value) ? 'Semantic' : 'Primitives')
+  const members = new Map()
   for (const t of model.tokens) {
-    const type = figmaType(model, t)
-    const name = t.collection ?? (isAlias(t.value) ? 'Semantic' : 'Primitives')
-    const values = {}
-    for (const mode of model.modes) values[figmaMode(mode)] = figmaValue(model, t, mode, type)
-    if (!collections.has(name)) collections.set(name, [])
-    collections.get(name).push({
-      name: t.path.join('/'),
-      type,
-      values,
-      description: t.description,
-      codeSyntax: { WEB: `var(${t.cssVar})` },
-    })
+    const name = collectionOf(t)
+    if (!members.has(name)) members.set(name, [])
+    members.get(name).push(t)
   }
-  const order = ['Primitives', 'Semantic', ...[...collections.keys()].filter((k) => k !== 'Primitives' && k !== 'Semantic').sort(compare)]
+  const collection = (name) => {
+    const list = members.get(name)
+    const modes = model.modes.filter((m) => m === 'default' || list.some((t) => m in t.modes))
+    const variables = list.map((t) => {
+      const type = figmaType(model, t)
+      const values = {}
+      for (const mode of modes) values[figmaMode(model, mode)] = figmaValue(model, t, mode, type, collectionOf)
+      return { name: t.path.join('/'), type, values, description: t.description, codeSyntax: { WEB: `var(${t.cssVar})` } }
+    })
+    return { name, modes: modes.map((m) => figmaMode(model, m)), variables }
+  }
+  const order = ['Primitives', 'Semantic', ...[...members.keys()].filter((k) => k !== 'Primitives' && k !== 'Semantic').sort(compare)]
   return jsonText({
     $comment: HEADER,
     generatedBy: 'massimo tokens',
-    collections: order.filter((n) => collections.has(n)).map((name) => ({ name, modes: model.modes.map(figmaMode), variables: collections.get(name) })),
+    collections: order.filter((n) => members.has(n)).map(collection),
   })
 }
 
@@ -434,23 +644,28 @@ const BODY_FONT = ['--font-sans', '--font-body', '--font-family', '--font-base']
 const BODY_COLOR = ['--color-base-content', '--color-fg', '--color-foreground', '--color-text', '--color-text-default', '--color-fg-default', '--color-content', '--color-on-surface']
 const BODY_BG = ['--color-base-100', '--color-bg', '--color-background', '--color-bg-default', '--color-surface', '--color-surface-default']
 
-function buildKit(model, origin, files) {
-  const present = new Set(model.tokens.map((t) => t.cssVar))
+// The kit answers to the app's own theme selectors and to `data-theme`, which
+// the canvas and the preview flip to show every mode.
+const kitSelector = (config, model, mode) =>
+  [...new Set([modeSelector(config, model, mode), `[data-theme="${model.modeLabel(mode)}"]`])].join(', ')
+
+function buildKit(model, origin, files, config) {
+  const present = new Set(model.tokens.flatMap((t) => cssNames(model, t)))
   const pick = (names) => names.find((n) => present.has(n))
   const font = pick(BODY_FONT)
   const fg = pick(BODY_COLOR)
   const bg = pick(BODY_BG)
   const source = origin === 'tokens.json' ? 'Source: tokens.json.' : `Source: custom properties extracted from ${files.join(', ') || 'the style files'} (no tokens.json yet).`
-  const valueOf = (t, mode) => literal(model, t, mode)
   const out = [`/* ${HEADER} */`, `/* ${source} Link this file from mockups so they look like the product. */`, '']
-  out.push(...cssBlock(':root', ['color-scheme: light;', ...modeLines(model, 'default', valueOf)]))
-  const dark = modeLines(model, 'dark', valueOf)
-  out.push('', ...cssBlock('[data-theme="dark"]', ['color-scheme: dark;', ...dark]))
-  if (dark.length > 0) {
-    out.push('', '@media (prefers-color-scheme: dark) {', ...cssBlock(':root:not([data-theme="light"])', ['color-scheme: dark;', ...dark], '  '), '}')
+  out.push(...cssBlock(':root', ['color-scheme: light;', ...modeLines(model, 'default', false)]))
+  const dark = model.modes.includes('dark') ? modeLines(model, 'dark', false) : []
+  out.push('', ...cssBlock(kitSelector(config, model, 'dark'), ['color-scheme: dark;', ...dark]))
+  if (dark.length > 0 && config.tokens.darkMedia) {
+    const optOut = [...new Set([modeSelector(config, model, 'default'), '[data-theme="light"]', `[data-theme="${model.defaultMode}"]`])]
+    out.push('', '@media (prefers-color-scheme: dark) {', ...cssBlock(`:root${optOut.map((s) => `:not(${s})`).join('')}`, ['color-scheme: dark;', ...dark], '  '), '}')
   }
   for (const mode of model.modes.filter((m) => m !== 'default' && m !== 'dark')) {
-    out.push('', ...cssBlock(`[data-theme="${mode}"]`, modeLines(model, mode, valueOf)))
+    out.push('', ...cssBlock(kitSelector(config, model, mode), modeLines(model, mode, false)))
   }
   out.push('', '*, *::before, *::after {', '  box-sizing: border-box;', '}')
   const body = ['margin: 0;', `font-family: ${font ? `var(${font})` : 'system-ui, sans-serif'};`]
@@ -543,13 +758,16 @@ function buildPreview(model, origin, files, kit, config) {
       ? ''
       : `<section class="pv-section"><h2>${title}</h2>${list.map((t) => `<div class="pv-row"><div>${label(t)}<div class="pv-value">${valueNote(t)}</div></div><div>${render(t)}</div></div>`).join('')}</section>`
   const notColor = model.tokens.filter((t) => model.typeOf(t) !== 'color')
-  const sizes = notColor.filter((t) => t.path[0] === 'text' || (t.path[0] === 'font' && /^sizes?$/.test(t.path[1] ?? '')))
+  const typography = notColor.filter((t) => model.typeOf(t) === 'typography')
+  const sizes = notColor.filter((t) => model.typeOf(t) !== 'typography' && (t.path[0] === 'text' || (t.path[0] === 'font' && /^sizes?$/.test(t.path[1] ?? ''))))
   const families = notColor.filter((t) => model.typeOf(t) === 'fontFamily')
   const spacing = notColor.filter((t) => t.path[0] === 'spacing' && model.typeOf(t) === 'dimension')
   const radii = notColor.filter((t) => t.path[0] === 'radius')
-  const shadows = notColor.filter((t) => t.path[0] === 'shadow')
-  const shown = new Set([...sizes, ...families, ...spacing, ...radii, ...shadows])
+  const shadows = notColor.filter((t) => t.path[0] === 'shadow' || model.typeOf(t) === 'shadow')
+  const shown = new Set([...typography, ...sizes, ...families, ...spacing, ...radii, ...shadows])
   const rest = notColor.filter((t) => !shown.has(t))
+  const spacingOf = (t) => (typographyParts(model, t).some(([key]) => key === 'letterSpacing') ? `; letter-spacing: var(${esc(t.cssVar)}-letter-spacing)` : '')
+  sections.push(rows('Typography', typography, (t) => `<p class="pv-sample" style="font: var(${esc(t.cssVar)})${spacingOf(t)}">The quick brown fox jumps over the lazy dog</p>`))
   sections.push(rows('Type scale', sizes, (t) => `<p class="pv-sample" style="font-size: var(${esc(t.cssVar)})">The quick brown fox jumps over the lazy dog</p>`))
   sections.push(rows('Font families', families, (t) => `<p class="pv-sample" style="font-family: var(${esc(t.cssVar)}); font-size: 22px">Sphinx of black quartz, judge my vow</p>`))
   sections.push(rows('Spacing', spacing, (t) => `<div class="pv-bar" style="width: var(${esc(t.cssVar)})"></div>`))
@@ -601,7 +819,7 @@ ${sections.join('\n')}
 
 // Every file `build` writes, as { path (absolute), text }. Throws on a bad token set.
 function buildOutputs(root, projectDir, config, tokens) {
-  const model = buildModel(tokens.tokens)
+  const model = buildModel(tokens.tokens, config)
   const out = []
   for (const output of config.tokens.outputs ?? []) {
     if (!FORMATS.includes(output.format)) {
@@ -618,7 +836,7 @@ function buildOutputs(root, projectDir, config, tokens) {
     out.push({ path: join(root, output.path), text })
   }
   out.push({ path: join(projectDir, 'tokens', 'figma-variables.json'), text: buildFigma(model) })
-  out.push({ path: join(projectDir, 'kit', 'kit.css'), text: buildKit(model, tokens.origin, tokens.files) })
+  out.push({ path: join(projectDir, 'kit', 'kit.css'), text: buildKit(model, tokens.origin, tokens.files, config) })
   return { model, files: out }
 }
 
@@ -666,16 +884,16 @@ function main() {
   }
 
   if (mode === 'kit') {
-    const model = buildModel(tokens.tokens)
+    const model = buildModel(tokens.tokens, config)
     const path = join(projectDir, 'kit', 'kit.css')
-    writeText(path, buildKit(model, tokens.origin, tokens.files))
+    writeText(path, buildKit(model, tokens.origin, tokens.files, config))
     process.stdout.write(`massimo tokens kit: ${tokens.tokens.length} tokens from ${tokens.origin}; wrote ${shown(path)}\n`)
     return
   }
 
   if (mode === 'preview') {
-    const model = buildModel(tokens.tokens)
-    const kit = buildKit(model, tokens.origin, tokens.files)
+    const model = buildModel(tokens.tokens, config)
+    const kit = buildKit(model, tokens.origin, tokens.files, config)
     const path = join(projectDir, 'tokens', 'preview.html')
     writeText(path, buildPreview(model, tokens.origin, tokens.files, kit, config))
     process.stdout.write(`massimo tokens preview: ${tokens.tokens.length} tokens from ${tokens.origin}; wrote ${shown(path)}\n`)
