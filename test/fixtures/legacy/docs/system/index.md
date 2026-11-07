@@ -10,3 +10,13 @@ Read this first, then [graph.md](graph.md). The reasoning is in [notes.md](notes
 - Components: it knows a product concept.
 
 ## Groups
+
+## Foundations
+
+## Primitives
+
+## Components
+
+## Shells
+
+## Pages

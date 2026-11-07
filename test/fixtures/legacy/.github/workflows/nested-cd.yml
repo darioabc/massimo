@@ -1,0 +1,14 @@
+name: Nested app by cd
+
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd app && npm ci && npm run build
+      - name: Stories of the nested app
+        run: |
+          cd app
+          npm run stories:build

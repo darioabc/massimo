@@ -2,11 +2,13 @@
 // has it skipped, so its next step, its STATUS.md, its session hook and its
 // done-over-total count are as they were. init sets it to do only when the
 // repo has something to adopt, and when an older script drops the entry on
-// save, the ledger brings it back.
+// save, the ledger brings it back. A ledger with nothing in it, or a phase
+// the user skipped, leaves the phase as it is.
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { emptyState, hookBanner, hookContext, loadState, nextPhase, progressMarkdown, setPhase } from '../scripts/lib/state.mjs'
@@ -120,12 +122,57 @@ test('init --update-scripts vendors adopt, leaves the old state.json as it was, 
   assert.match(show.stdout, /\*\*Next phase:\*\* Map the component graph/)
 })
 
-test('the start skill offers adopt when detect reports something adoptable, and Resume can route to it', () => {
+test('the start skill offers adopt when detect reports something adoptable, and Resume routes it to adopt.mjs until its skill ships', () => {
   const skill = read(SCRIPTS, '..', 'skills', 'start', 'SKILL.md')
   assert.match(skill, /If detect reports `adoptable`/)
   assert.match(skill, /Recommend massimo's native story lane only when there is nothing to adopt/)
   assert.match(skill, /node <project>\/scripts\/adopt\.mjs`: `scan`, `plan`, `config`/)
-  assert.match(skill, /invoke the phase skill: `adopt`/)
+  assert.doesNotMatch(skill, /invoke the phase skill: `adopt`/)
+  assert.match(skill, /The adopt phase has no skill yet: run `node <project>\/scripts\/adopt\.mjs status`/)
+  assert.match(skill, /graph\.taxonomy\.rules/)
+})
+
+test('plan on a repo with nothing to adopt leaves the phase, the next step and STATUS.md as they were', () => {
+  const root = mkdtempSync(join(tmpdir(), 'massimo-adopt-empty-'))
+  try {
+    writeFileSync(join(root, 'package.json'), '{"dependencies":{"react":"18","vite":"5"}}')
+    mkdirSync(join(root, 'src'))
+    writeFileSync(join(root, 'src', 'App.tsx'), 'export const App = () => null\n')
+    const go = (name, args = []) => spawnSync(process.execPath, [join(SCRIPTS, `${name}.mjs`), ...args, '--root', root], { encoding: 'utf8', env })
+    assert.equal(go('init', ['--no-npm-scripts']).status, 0)
+    assert.equal(go('state', ['set', 'setup', 'done']).status, 0)
+    const status = read(root, 'design-system', 'STATUS.md')
+    const next = go('state', ['next']).stdout
+    assert.equal(go('adopt', ['scan']).status, 0)
+    const plan = go('adopt', ['plan'])
+    assert.equal(plan.status, 0, plan.stderr)
+    assert.match(plan.stdout, /^The ledger has no classes: scan found nothing to adopt\.\n\nWrote .*There is nothing to adopt/)
+    assert.deepEqual(readJson(root, 'design-system', 'adopt', 'ledger.json').classes, {})
+    assert.equal(go('state', ['next']).stdout, next)
+    assert.equal(read(root, 'design-system', 'STATUS.md'), status)
+    const state = loadState(join(root, 'design-system'))
+    assert.deepEqual(state.phases.find((p) => p.id === 'adopt'), { id: 'adopt', status: 'skipped', note: '', updatedAt: null })
+    assert.equal(nextPhase(state).id, 'graph')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a phase the user skipped stays skipped through plan, and marking a class takes it up again', () => {
+  const legacy = scratch('legacy')
+  try {
+    const go = (name, args = []) => spawnSync(process.execPath, [join(SCRIPTS, `${name}.mjs`), ...args, '--root', legacy.root], { encoding: 'utf8', env })
+    assert.equal(go('init', ['--no-npm-scripts']).status, 0)
+    assert.equal(go('state', ['set', 'adopt', 'skipped', '--note', 'native lane instead']).status, 0)
+    assert.equal(go('adopt', ['scan']).status, 0)
+    assert.equal(go('adopt', ['plan']).status, 0)
+    const phase = () => readJson(legacy.root, 'design-system', 'state.json').phases.find((p) => p.id === 'adopt')
+    assert.deepEqual([phase().status, phase().note], ['skipped', 'native lane instead'])
+    assert.equal(go('adopt', ['mark', 'stories', 'mapped']).status, 0)
+    assert.deepEqual([phase().status, phase().note], ['in_progress', 'graph found, stories mapped, audit found, tokens found, docs found'])
+  } finally {
+    legacy.cleanup()
+  }
 })
 
 test('when an older script drops the adopt entry, the ledger brings it back', () => {
@@ -147,4 +194,8 @@ test('when an older script drops the adopt entry, the ledger brings it back', ()
   // A ledger these scripts cannot read is left alone, and the phase stays skipped.
   writeFileSync(join(project, 'adopt', 'ledger.json'), JSON.stringify({ ...ledger, format: 2 }))
   assert.equal(loadState(project).phases[1].status, 'skipped')
+  // So does one with nothing in it, out of sight as before.
+  writeFileSync(join(project, 'adopt', 'ledger.json'), JSON.stringify({ ...ledger, classes: {} }))
+  assert.deepEqual(loadState(project).phases[1], { id: 'adopt', status: 'skipped', note: '', updatedAt: null })
+  assert.equal(nextPhase(loadState(project)).id, 'graph')
 })

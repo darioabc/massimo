@@ -5,7 +5,7 @@
 // never guessed.
 
 import { parseArrayAt, parseObjectAt } from './jsobject.mjs'
-import { stripComments } from './source.mjs'
+import { stringLiterals, stripComments } from './source.mjs'
 
 // The fields a manifest entry may carry, beyond any of the lane's own:
 //   slug         the route (`/stories/<slug>`) and the page's folder or name
@@ -321,41 +321,94 @@ function importBindings(code) {
   return out
 }
 
+// `code` with the contents of its strings and templates blanked, offsets
+// kept, so `export default` inside a string is not the module's own.
+function stringsBlanked(text, code, file) {
+  let out = ''
+  let from = 0
+  for (const { text: s, start } of stringLiterals(text, file)) {
+    out += code.slice(from, start) + s.replace(/[^\n]/g, ' ')
+    from = start + s.length
+  }
+  return out + code.slice(from)
+}
+
+// The module named in the string literal that ends the match `m` of a
+// regex run on the blanked code, read from the code itself.
+const moduleIn = (code, m) => /(['"])([^'"\n]+)\1\s*$/.exec(code.slice(m.index, m.index + m[0].length))?.[2] ?? null
+
 // The object a CSF file default-exports: an inline literal, or the const it
 // names. null when there is no default export, { expr } when it is not a
-// literal.
-function csfDefault(text, code) {
-  const m = /(?<![\w$.])export\s+default\s+\(?\s*/.exec(code)
-  const named = /(?<![\w$.])export\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/.exec(code)
+// literal. `blanked` is `code` with its strings blanked, where the export is
+// looked for.
+function csfDefault(text, code, blanked) {
+  const m = /(?<![\w$.])export\s+default\s+\(?\s*/.exec(blanked)
+  const named = /(?<![\w$.])export\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/.exec(blanked)
   if (!m && !named) return null
   const after = m ? m.index + m[0].length : -1
-  if (m && code[after] === '{') return parseObjectAt(text, after)
-  const name = m ? IDENT.exec(code.slice(after))?.[0] : named[1]
+  if (m && blanked[after] === '{') return parseObjectAt(text, after)
+  const name = m ? IDENT.exec(blanked.slice(after))?.[0] : named[1]
   if (!name) return { expr: code.slice(after).split('\n')[0].trim() }
-  const decl = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(name)}\\s*(?::[^=;]*)?=\\s*\\(?\\s*`).exec(code)
-  if (decl && code[decl.index + decl[0].length] === '{') return parseObjectAt(text, decl.index + decl[0].length)
+  const decl = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(name)}\\s*(?::[^=;]*)?=\\s*\\(?\\s*`).exec(blanked)
+  if (decl && blanked[decl.index + decl[0].length] === '{') return parseObjectAt(text, decl.index + decl[0].length)
   return { expr: name }
+}
+
+// Whether the declaration whose name ends at `i` declares more names in the
+// same statement (`export const A = {}, B = {}`): a comma outside brackets,
+// before the statement ends, followed by another name and its `=`.
+const NEXT_DECLARATOR = /,\s*[A-Za-z_$][\w$]*\s*(?::[^=;,]*)?=(?![=>])/y
+const LINE_GAP = /\s*/y
+function declaresMore(blanked, i) {
+  const init = /^\s*(?::[^=;,]*)?=/.exec(blanked.slice(i, i + 400))
+  if (!init) return /^\s*,/.test(blanked.slice(i, i + 40))
+  let depth = 0
+  for (let j = i + init[0].length; j < blanked.length; j++) {
+    const c = blanked[j]
+    if ('([{'.includes(c)) depth++
+    else if (')]}'.includes(c)) {
+      if (depth === 0) return false
+      depth--
+    } else if (depth > 0) continue
+    else if (c === ';') return false
+    else if (c === ',') {
+      NEXT_DECLARATOR.lastIndex = j
+      if (NEXT_DECLARATOR.test(blanked)) return true
+    } else if (c === '\n') {
+      LINE_GAP.lastIndex = j + 1
+      LINE_GAP.test(blanked)
+      const next = blanked.slice(LINE_GAP.lastIndex, LINE_GAP.lastIndex + 12)
+      if (next[0] !== ',' && !CONTINUES.test(next)) return false
+    }
+  }
+  return false
 }
 
 // The names a module exports beyond its default, in file order, as
 // { name, local, at, from }: `local` is the name inside the module, and
 // `from` the module a re-export comes from. `stars` lists the modules an
-// `export * from` passes on whole.
-function namedExports(code) {
+// `export * from` passes on whole, and `more` the exported declarations that
+// go on to declare other names in the same statement. Exports are looked
+// for in `blanked`, the code with its strings blanked.
+function namedExports(code, blanked) {
   const found = []
+  const more = []
   const add = (name, local, at, from = null) => {
     if (name && name !== 'default' && !found.some((f) => f.name === name)) found.push({ name, local, at, from })
   }
-  for (const m of code.matchAll(/(?<![\w$.])export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?)\s+([A-Za-z_$][\w$]*)/g)) add(m[1], m[1], m.index)
-  for (const m of code.matchAll(/(?<![\w$.])export\s*\{([^}]*)\}\s*(?:from\s*(['"])([^'"\n]+)\2)?/g)) {
+  for (const m of blanked.matchAll(/(?<![\w$.])export\s+(?:declare\s+)?(?:async\s+)?(const|let|var|function\*?)\s+([A-Za-z_$][\w$]*)/g)) {
+    add(m[2], m[2], m.index)
+    if (!m[1].startsWith('function') && declaresMore(blanked, m.index + m[0].length)) more.push(m[2])
+  }
+  for (const m of blanked.matchAll(/(?<![\w$.])export\s*\{([^}]*)\}\s*(?:from\s*(['"])[^'"\n]*\2)?/g)) {
     for (const part of m[1].split(',')) {
       if (/^\s*type\s/.test(part)) continue
       const [local, name = local] = part.split(/\s+as\s+/).map((s) => s.trim())
-      add(name, local, m.index, m[3] ?? null)
+      add(name, local, m.index, m[2] ? moduleIn(code, m) : null)
     }
   }
-  const stars = [...code.matchAll(/(?<![\w$.])export\s*\*\s*(?:as\s+[\w$]+\s*)?from\s*(['"])([^'"\n]+)\1/g)].map((m) => m[2])
-  return { found: found.sort((a, b) => a.at - b.at), stars }
+  const stars = [...blanked.matchAll(/(?<![\w$.])export\s*\*\s*(?:as\s+[\w$]+\s*)?from\s*(['"])[^'"\n]*\1/g)].map((m) => moduleIn(code, m))
+  return { found: found.sort((a, b) => a.at - b.at), stars, more }
 }
 
 // A CSF file (Component Story Format: Storybook's, which Ladle reads too)
@@ -371,13 +424,14 @@ function namedExports(code) {
 // null: Storybook then takes it from the path.
 export function readCsf(text, file = 'x.stories.tsx') {
   const code = stripComments(text, file)
+  const blanked = stringsBlanked(text, code, file)
   const out = { title: null, component: null, meta: {}, stories: [], args: false, argTypes: false, unreadable: [] }
   const skip = (story, field, detail) => out.unreadable.push({ story, field, detail })
-  if (/(?<![\w$.])storiesOf\s*\(/.test(code)) {
+  if (/(?<![\w$.])storiesOf\s*\(/.test(blanked)) {
     skip(null, null, 'it uses storiesOf(), which adds its stories at run time')
     return out
   }
-  const meta = csfDefault(text, code)
+  const meta = csfDefault(text, code, blanked)
   let only = null
   let except = null
   if (meta === null) skip(null, null, 'it has no default export, so it is not a CSF file')
@@ -402,9 +456,10 @@ export function readCsf(text, file = 'x.stories.tsx') {
       else out.meta[key] = value
     }
   }
-  const { found, stars } = namedExports(code)
+  const { found, stars, more } = namedExports(code, blanked)
   for (const from of stars) skip(null, null, `it passes on every export of ${from}, which are not listed`)
-  const assigned = (name, prop) => new RegExp(`(?<![\\w$.])${escapeName(name)}\\.${prop}\\s*=\\s*`).exec(code)
+  for (const name of more) skip(name, null, `${name} is declared with more names in one statement, and the names after it are not listed`)
+  const assigned = (name, prop) => new RegExp(`(?<![\\w$.])${escapeName(name)}\\.${prop}\\s*=\\s*`).exec(blanked)
   for (const { name, local, from } of found) {
     if (name === '__namedExportsOrder' || (only && !only.includes(name)) || except?.includes(name)) continue
     const story = { export: name, storyName: null, args: false, argTypes: false }
@@ -414,9 +469,9 @@ export function readCsf(text, file = 'x.stories.tsx') {
       continue
     }
     // A CSF3 story is an object literal: its name, args and argTypes are keys.
-    const value = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(local)}\\s*(?::[^=;]*)?=\\s*`).exec(code)
+    const value = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(local)}\\s*(?::[^=;]*)?=\\s*`).exec(blanked)
     const objectAt = value ? value.index + value[0].length : -1
-    const object = objectAt !== -1 && code[objectAt] === '{' ? parseObjectAt(text, objectAt) : null
+    const object = objectAt !== -1 && blanked[objectAt] === '{' ? parseObjectAt(text, objectAt) : null
     if (object) {
       for (const key of ['name', 'storyName']) {
         if (object[key] === undefined) continue

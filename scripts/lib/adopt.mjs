@@ -25,7 +25,7 @@ export const inventoryPath = (projectDir) => join(projectDir, 'adopt', 'inventor
 export const proposedPath = (projectDir) => join(projectDir, 'adopt', 'config.proposed.json')
 
 const LEDGER_NOTE =
-  'What becomes of each part of the repo\'s own setup. Edit a decision or a loss here once you have agreed it; adopt.mjs plan keeps your edits once a class is past found, and adopt.mjs mark moves a class. A blocker stops its class at mapped.'
+  'What becomes of each part of the repo\'s own setup. Edit a decision or a loss here once you have agreed it; adopt.mjs plan keeps your edits once an asset is past found, and adopt.mjs mark moves a class one state at a time. A blocker stops its class at mapped.'
 
 // ── Reading ─────────────────────────────────────────────────────────────────
 
@@ -89,10 +89,13 @@ function assess(asset, inv) {
       break
     case 'manifest': {
       const m = lane.manifest
-      const whole = m.notReadable.filter((u) => /not an object literal|exports no array/.test(u))
-      if (whole.length > 0) {
+      // Whole entries it cannot read, or no entries at all: massimo's list of
+      // stories would be a guess.
+      const whole = m.entriesNotReadable ?? []
+      if (whole.length > 0 || m.entries === 0) {
         worse('blocker')
-        lines.push(`${plural(whole.length, 'entry is', 'entries are')} not statically readable, so massimo cannot list ${whole.length === 1 ? 'it' : 'them'}: ${whole.join('; ')}. Make each a literal, then set this loss.`)
+        if (m.entries === 0) lines.push(`massimo reads no entries from it${m.notReadable.length ? ` (${m.notReadable.join('; ')})` : ''}, so it cannot list the stories. Make the list a literal, then set this loss.`)
+        else lines.push(`${plural(whole.length, 'entry is', 'entries are')} not statically readable, so massimo cannot list ${whole.length === 1 ? 'it' : 'them'}: ${whole.join('; ')}. Make each a literal, then set this loss.`)
       } else if (m.notReadable.length > 0) {
         worse('carried')
         lines.push(`${plural(m.notReadable.length, 'field is', 'fields are')} not statically readable; the lane still uses ${m.notReadable.length === 1 ? 'it' : 'them'}, and massimo's checks skip ${m.notReadable.length === 1 ? 'it' : 'them'}: ${m.notReadable.join('; ')}.`)
@@ -168,9 +171,13 @@ function assess(asset, inv) {
       lines.push('massimo has no plan for this kind of asset yet.')
       worse('carried')
   }
-  // A part that moves needs what reads it at build or run time repointed first.
+  // A part that moves needs what reads it at build or run time repointed
+  // first, and a generated doc that names it changes through its writer.
   const deploy = asset.consumers.filter((c) => c.class === 'deploy')
   if (decision !== 'keep' && deploy.length > 0) lines.push(`Read at build or run time by ${list(deploy.map((c) => `${c.file}${c.script ? ` (${c.script})` : ''}`))}: repoint ${deploy.length === 1 ? 'it' : 'them'} before cut-over.`)
+  const written = new Map()
+  for (const c of asset.consumers.filter((x) => x.writtenBy)) written.set(c.writtenBy, [...(written.get(c.writtenBy) ?? []), c.file])
+  if (decision !== 'keep') for (const [writer, docs] of written) lines.push(`Named in ${list(docs)}, which ${writer} writes: change ${writer} and regenerate with it, rather than editing by hand.`)
   return { decision, loss, lines }
 }
 
@@ -187,15 +194,27 @@ function headersAsset(inv) {
       lines.push(`ds:${k.key} on ${plural(k.files, 'file')}: no role fits, so it is read as an extra key and its values are not checked.`)
     }
   }
-  if (inv.headers.taxonomy) lines.push(`${plural(inv.headers.taxonomy.groups.length, 'group')} in ${plural(inv.headers.taxonomy.tiers.length, 'tier')}, proposed as graph.taxonomy.`)
+  if (inv.headers.taxonomy) {
+    lines.push(`${plural(inv.headers.taxonomy.groups.length, 'group')} in ${plural(inv.headers.taxonomy.tiers.length, 'tier')}, proposed as graph.taxonomy.`)
+    lines.push('Scan proposes no path rules: add rules to graph.taxonomy.rules for the files without a ds:group line, or the graph reports each as having no group.')
+  }
   if (lines.length === 0) lines.push('Only the built-in keys.')
   return { id: 'headers', class: 'graph', kind: 'headers', paths: [], consumers: [], decision: 'keep', loss, lines }
 }
 
-// The ledger from an inventory. A class still at found is planned afresh; in
-// a class past found, each asset keeps the decision, loss and lines it has
-// (agreed with the user, perhaps edited by hand) and takes the new consumers,
-// and an asset the scan no longer finds is kept and marked missing.
+const CUT_OVER = STATES.indexOf('cut-over')
+// The furthest state an asset goes: a kept asset stays cut over, never retired.
+const lastState = (a) => (a.decision === 'keep' ? CUT_OVER : STATES.length - 1)
+// Where an asset stands against its class: a kept asset at the end of its
+// way is as far on as a retired one.
+const standing = (a) => (STATES.indexOf(a.state) >= lastState(a) ? STATES.length - 1 : STATES.indexOf(a.state))
+
+// The ledger from an inventory. An asset past found was agreed with the user:
+// it keeps its decision, loss, lines, state, date and batch (perhaps edited
+// by hand) and takes the new consumers, and when the scan no longer finds it,
+// it is kept and marked missing. An asset at found, or new to the scan, is
+// planned afresh, and a class with a new asset goes back to found until it
+// is agreed too, so nothing counts as mapped or cut over that was not.
 export function planLedger(inv, previous = null, { date = today() } = {}) {
   const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv) }))
   if (inv.headers.files > 0) assets.push(headersAsset(inv))
@@ -204,14 +223,16 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
     const mine = assets.filter((a) => a.class === cls).sort((a, b) => compare(a.id, b.id))
     const was = previous?.classes?.[cls]
     if (mine.length === 0 && !was) continue
-    const agreed = was && was.state !== 'found'
     const entries = mine.map((a) => {
       const old = was?.assets?.find((x) => x.id === a.id)
-      const fresh = { id: a.id, kind: a.kind, paths: a.paths, decision: a.decision, loss: a.loss, lines: a.lines, consumers: a.consumers, state: was?.state ?? 'found', date: was?.date ?? date, batch: was?.batch ?? null }
-      return agreed && old ? { ...fresh, decision: old.decision, loss: old.loss, lines: old.lines, state: old.state, date: old.date, batch: old.batch } : fresh
+      const fresh = { id: a.id, kind: a.kind, paths: a.paths, decision: a.decision, loss: a.loss, lines: a.lines, consumers: a.consumers, state: 'found', date: old?.date ?? date, batch: null }
+      return old && old.state !== 'found' ? { ...fresh, decision: old.decision, loss: old.loss, lines: old.lines, state: old.state, date: old.date, batch: old.batch } : fresh
     })
-    if (agreed) for (const old of was.assets ?? []) if (!mine.some((a) => a.id === old.id)) entries.push({ ...old, missing: true })
-    classes[cls] = { state: was?.state ?? 'found', date: was?.date ?? date, batch: was?.batch ?? null, assets: entries.sort((a, b) => compare(a.id, b.id)) }
+    for (const old of was?.assets ?? []) if (old.state !== 'found' && !mine.some((a) => a.id === old.id)) entries.push({ ...old, missing: true })
+    const wasAt = was ? STATES.indexOf(was.state) : 0
+    const at = Math.min(wasAt, ...entries.filter((a) => !a.missing).map(standing))
+    const same = was && at === wasAt
+    classes[cls] = { state: STATES[at], date: same ? was.date : date, batch: same ? was.batch : at >= CUT_OVER ? was.batch : null, assets: entries.sort((a, b) => compare(a.id, b.id)) }
   }
   return { format: LEDGER_FORMAT, generatedBy: 'massimo adopt', note: LEDGER_NOTE, classes }
 }
@@ -220,10 +241,13 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
 
 const blockersOf = (c) => c.assets.filter((a) => a.loss === 'blocker' && !a.missing)
 
-// Move a class to `state`: forward only, unless `force`; never past mapped
-// while it has a blocker; cut-over with the batch id its commit carries. Its
-// assets follow, except that a kept asset is not retired: it stays cut over.
-// Returns a line on what changed.
+// Move a class one state on: found, mapped, shadowed, proven, cut-over (with
+// the batch id its commit carries), retired. Never past mapped while it has a
+// blocker. With `force`, a repair: back, or more than one state on (cut-over
+// still needs its batch). The assets behind the new state follow it (a kept
+// asset stays cut over, never retired), and going back, those ahead of it;
+// an asset already there keeps its date and batch. Returns a line on what
+// changed.
 export function markClass(ledger, cls, state, { batch = null, force = false, date = today() } = {}) {
   const c = ledger.classes[cls]
   if (!c) throw new Error(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
@@ -232,31 +256,38 @@ export function markClass(ledger, cls, state, { batch = null, force = false, dat
   const to = STATES.indexOf(state)
   if (to === from) return `${cls} is already ${state}`
   if (to < from && !force) throw new Error(`${cls} is ${c.state}; moving it back to ${state} needs --force`)
+  if (to > from + 1 && !force) throw new Error(`${cls} is ${c.state}, so it moves to ${STATES[from + 1]} next: one state at a time, or --force to repair the ledger`)
   const blockers = blockersOf(c)
   if (to > STATES.indexOf('mapped') && blockers.length > 0) {
     throw new Error(`${cls} has ${plural(blockers.length, 'blocker')} (${blockers.map((a) => a.id).join(', ')}), so it cannot move past mapped: resolve ${blockers.length === 1 ? 'it' : 'each'}, then change its loss in adopt/ledger.json`)
   }
-  if (state === 'cut-over' && (typeof batch !== 'string' || !batch)) throw new Error('cut-over needs --batch <id>, the id the batch commit carries in its trailer')
-  const keepsBatch = to >= STATES.indexOf('cut-over')
+  const cuts = from < CUT_OVER && to >= CUT_OVER
+  if (cuts && (typeof batch !== 'string' || !batch)) throw new Error('cut-over needs --batch <id>, the id the batch commit carries in its trailer')
+  // The batch an asset or the class carries at `next`, coming from `was`.
+  const batchAt = (next, was, kept) => (next < CUT_OVER ? null : was < CUT_OVER ? batch : kept)
   c.state = state
   c.date = date
-  c.batch = state === 'cut-over' ? batch : keepsBatch ? c.batch : null
+  c.batch = batchAt(to, from, c.batch)
   for (const a of c.assets) {
     if (a.missing) continue
-    a.state = state === 'retired' && a.decision === 'keep' ? 'cut-over' : state
+    const at = STATES.indexOf(a.state)
+    const target = Math.min(to, lastState(a))
+    if (to > from ? at >= target : at <= target) continue
+    a.state = STATES[target]
     a.date = date
-    a.batch = state === 'cut-over' ? batch : keepsBatch ? a.batch : null
+    a.batch = batchAt(target, at, a.batch)
   }
-  return `${cls}: ${STATES[from]} -> ${state}${state === 'cut-over' ? ` (batch ${batch})` : ''}`
+  return `${cls}: ${STATES[from]} -> ${state}${cuts ? ` (batch ${batch})` : ''}`
 }
 
 // ── Views ───────────────────────────────────────────────────────────────────
 
 // The adopt phase as the ledger has it: done once every class is cut over
 // or retired, in progress before that; the note names each class's state.
+// A ledger with no classes has nothing to adopt, so the phase is skipped.
 export function ledgerPhase(ledger) {
   const classes = Object.entries(ledger?.classes ?? {})
-  if (classes.length === 0) return { status: 'in_progress', note: 'nothing to adopt in the ledger' }
+  if (classes.length === 0) return { status: 'skipped', note: 'nothing to adopt' }
   const done = classes.every(([, c]) => STATES.indexOf(c.state) >= STATES.indexOf('cut-over'))
   const blocked = classes.filter(([, c]) => blockersOf(c).length > 0).map(([name]) => name)
   const note = `${classes.map(([name, c]) => `${name} ${c.state}`).join(', ')}${blocked.length ? `; ${list(blocked)} blocked` : ''}`
@@ -274,6 +305,7 @@ export function statusTable(ledger) {
     const consumers = c.assets.flatMap((a) => a.consumers ?? [])
     rows.push([name, c.state, c.date, c.batch ?? '-', String(c.assets.length), String(blockersOf(c).length), CONSUMER_CLASSES.map((k) => consumers.filter((x) => x.class === k).length).join(', ')])
   }
+  if (rows.length === 1) return 'The ledger has no classes: scan found nothing to adopt.\n'
   const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)))
   const out = rows.map((r) => r.map((cell, i) => cell.padEnd(widths[i])).join('  ').trimEnd())
   for (const [name, c] of Object.entries(ledger.classes)) {

@@ -363,9 +363,10 @@ const suggestedConfig = {
 }
 
 // What `adopt.mjs scan` would find: a lane or story tool, ds: keys beyond the
-// built-in ones, the repo's own graph, ratchet or token inventory, a
-// DESIGN.md. Only listed when there is something, so the report of a repo
-// with nothing to adopt is as it was.
+// built-in ones and those the config already gives a role or lists as extra,
+// the repo's own graph, ratchet or token inventory, a DESIGN.md. Only listed
+// when there is something, so the report of a repo with nothing to adopt is
+// as it was.
 let existingConfig = null
 try {
   existingConfig = readJson(join(root, CONFIG_FILE), null)
@@ -373,7 +374,7 @@ try {
   // an unreadable config: the project folder detect would choose stands in
 }
 const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
-const adoptable = adoptableSummary(root, files.filter((f) => !f.startsWith(ownDir)), { tools: stories.tools, lane })
+const adoptable = adoptableSummary(root, files.filter((f) => !f.startsWith(ownDir)), { tools: stories.tools, lane, config: existingConfig ?? {} })
 
 const result = {
   root,

@@ -61,11 +61,11 @@ export function statePath(projectDir) {
 }
 
 // A phase state.json does not have. The adopt phase is rebuilt from its
-// ledger when there is one, since an older script drops the entry when it
-// saves; without a ledger it is skipped.
+// ledger when there is one with something in it, since an older script
+// drops the entry when it saves; without one it is skipped.
 function missingPhase(p, projectDir) {
   const ledger = p.id === 'adopt' ? loadLedger(projectDir, { quiet: true }) : null
-  if (ledger) return { id: p.id, ...ledgerPhase(ledger), updatedAt: null }
+  if (ledger && Object.keys(ledger.classes ?? {}).length > 0) return { id: p.id, ...ledgerPhase(ledger), updatedAt: null }
   return { id: p.id, status: p.whenMissing ?? 'todo', note: '', updatedAt: null }
 }
 

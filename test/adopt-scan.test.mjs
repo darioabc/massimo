@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { walk } from '../scripts/lib/glob.mjs'
-import { headerEntries, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
+import { headerCensus, headerEntries, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
 import { SCRIPTS, read, readJson, scratch } from './helpers.mjs'
 
 const ctx = scratch('legacy')
@@ -42,7 +42,7 @@ test('the lane: its gate, manifest, pages, frames, states, scripts, port and bui
   const lane = inv.stories.lane
   assert.equal(lane.dir, 'src/stories')
   assert.equal(lane.integration, 'lab-integration.mjs')
-  assert.deepEqual(lane.manifest, { path: 'src/stories/manifest.ts', list: 'stories', entries: 2, notReadable: [] })
+  assert.deepEqual(lane.manifest, { path: 'src/stories/manifest.ts', list: 'stories', entries: 2, notReadable: [], entriesNotReadable: [] })
   assert.equal(lane.pages, 'src/stories/pages/{slug}/index.astro')
   assert.equal(lane.frames, 'src/stories/pages/{slug}/frame.astro')
   assert.deepEqual([lane.states, lane.statesNotReadable], [3, 1])
@@ -67,10 +67,23 @@ test('the header census counts files per key, knows the built-in ones and propos
   assert.ok(!key('group').examples.includes('scripts/build-system.mjs'))
 })
 
-test('groups give the proposed taxonomy, tiers in massimo order then as they appear; pages and layouts give node kinds', () => {
-  assert.deepEqual(inv.headers.taxonomy.tiers, ['Foundations', 'Primitives', 'Shells', 'Pages', 'Components'])
-  assert.deepEqual(inv.headers.taxonomy.groups, ['Foundations / Icons', 'Primitives / Status', 'Primitives / Actions', 'Shells / Site', 'Pages / Home', 'Components / Cards'])
+test('groups give the proposed taxonomy, tiers in the order the repo index lists them; pages and layouts give node kinds', () => {
+  assert.deepEqual(inv.headers.taxonomy.tiers, ['Foundations', 'Primitives', 'Components', 'Shells', 'Pages'])
+  assert.equal(inv.headers.tiersFrom, 'docs/system/index.md')
+  assert.deepEqual(inv.headers.taxonomy.groups, ['Foundations / Icons', 'Primitives / Status', 'Primitives / Actions', 'Components / Cards', 'Shells / Site', 'Pages / Home'])
   assert.deepEqual(inv.headers.kinds, { layout: ['src/layouts/**/*.astro'], page: ['src/pages/**/*.astro'] })
+  assert.match(printed.stdout, /Proposed tiers, in order \(as the headings of docs\/system\/index\.md list them\): Foundations, Primitives, Components, Shells, Pages\.\n\nScan proposes no path rules/)
+})
+
+test('without an index that lists them, tiers go in massimo order, then as they first appear', () => {
+  const files = { 'a/One.astro': '// ds:group Components / Cards\n', 'a/Two.astro': '// ds:group Labs / Odd\n', 'a/Three.astro': '// ds:group Primitives / Actions\n', 'a/Four.astro': '// ds:group Foundations / Icons\n' }
+  const census = (options) => headerCensus('/nowhere', Object.keys(files), {}, (f) => files[f], options)
+  assert.deepEqual(census().taxonomy.tiers, ['Foundations', 'Primitives', 'Components', 'Labs'])
+  assert.equal(census().tiersFrom, undefined)
+  // Tiers the index lists come first, in its order; the rest follow as before.
+  const listed = census({ tierOrder: ['Placement test', 'Labs', 'Components'], tierSource: 'docs/index.md' })
+  assert.deepEqual(listed.taxonomy.tiers, ['Labs', 'Components', 'Foundations', 'Primitives'])
+  assert.equal(listed.tiersFrom, 'docs/index.md')
 })
 
 test("the repo's own files: generated docs, ratchet, token list, notes, DESIGN.md and the script that writes them", () => {
@@ -115,11 +128,33 @@ test('consumers: imports, reads by path, type checks, workflows, tooling and doc
   assert.deepEqual(consumer('notes:docs/system/notes.md', 'tailwind.config.mjs'), { file: 'tailwind.config.mjs', line: 1, class: 'docs', how: 'comment' })
 })
 
+test('a component file reads in its code and only mentions in its markup', () => {
+  // The frontmatter reads index.md at build time; the page text names a command.
+  assert.deepEqual(consumer('doc:docs/system/index.md', 'src/stories/index.astro'), { file: 'src/stories/index.astro', line: 7, class: 'deploy', how: 'names' })
+  assert.deepEqual(consumer('generator:scripts/build-system.mjs', 'src/stories/index.astro'), { file: 'src/stories/index.astro', line: 10, class: 'docs', how: 'mentions' })
+  const astro = "---\nconst a = readFileSync('x/a.md')\n---\n<p>See x/b.md</p>\n<div>{import('x/c.md')}</div>\n<script>load('x/d.md')</script>\n"
+  const kept = markupBlanked(astro, 'P.astro')
+  assert.equal(kept.length, astro.length)
+  assert.deepEqual(['x/a.md', 'x/b.md', 'x/c.md', 'x/d.md'].map((p) => kept.includes(p)), [true, false, true, true])
+  const vue = '<template><a href="/docs/e.md">e</a></template>\n<script setup>\nimport f from "./f.md"\n</script>\n'
+  assert.deepEqual(['e.md', 'f.md'].map((p) => markupBlanked(vue, 'V.vue').includes(p)), [false, true])
+  assert.equal(markupBlanked(astro, 'p.ts'), astro)
+})
+
+test('a doc that names its writer is marked, so the ledger says to regenerate it', () => {
+  assert.deepEqual(consumer('doc:docs/system/graph.md', 'docs/map.md'), { file: 'docs/map.md', line: 5, class: 'docs', how: 'mentions', writtenBy: 'scripts/make-map.mjs' })
+  assert.equal(consumer('lane:src/stories', 'docs/guide.md').writtenBy, undefined)
+  assert.match(printed.stdout, /\| docs\/map\.md:5 \| docs \| mentions \(written by scripts\/make-map\.mjs\) \|/)
+})
+
 test('what a consumer is not: the lane inside itself, the writer of its own output, a nested app and a comment in a workflow', () => {
   assert.equal(consumer('manifest:src/stories/manifest.ts', 'src/stories/index.astro'), undefined)
   assert.equal(consumer('doc:docs/system/graph.md', 'scripts/build-system.mjs'), undefined)
   assert.equal(consumer('ratchet:docs/system/ratchet.json', '.github/workflows/check.yml'), undefined)
-  for (const a of inv.assets) assert.equal(a.consumers.find((c) => c.file === '.github/workflows/other.yml'), undefined, a.id)
+  // A nested app's workflow: by a job's defaults, the workflow's defaults, or a cd.
+  for (const w of ['other.yml', 'nested-defaults.yml', 'nested-cd.yml']) {
+    for (const a of inv.assets) assert.equal(a.consumers.find((c) => c.file === `.github/workflows/${w}`), undefined, `${w} ${a.id}`)
+  }
 })
 
 test('after init it writes its inventory, the same bytes every run, and nothing else', () => {
@@ -161,6 +196,22 @@ test('a workflow step or job run in another folder is blanked, and so are commen
   const out = workflowText(text)
   assert.equal(out.split('\n').length, text.split('\n').length)
   assert.deepEqual([...out.matchAll(/npm run (\w+)/g)].map((m) => m[1]), ['two', 'three'])
+})
+
+test("a workflow's own defaults and a cd into another folder count as that folder", () => {
+  const runs = (lines) => [...workflowText(lines.join('\n')).matchAll(/npm run (\w+)/g)].map((m) => m[1])
+  const defaults = ['on: push', 'defaults:', '  run:', '    working-directory: app', 'jobs:', '  a:', '    steps:', '      - run: npm run one', '  b:', '    defaults:', '      run:', '        working-directory: ./', '    steps:', '      - run: npm run two']
+  assert.deepEqual(runs(defaults), ['two'])
+  const cd = [
+    'jobs:', '  a:', '    steps:',
+    '      - run: npm run one && cd app && npm run two',
+    '      - name: cd into nothing',
+    '        run: npm run three',
+    '      - run: |', '          npm run four', '          cd "app"', '          npm run five',
+    '      - run: cd ./ && npm run six',
+    '      - run: cd $GITHUB_WORKSPACE; npm run seven',
+  ]
+  assert.deepEqual(runs(cd), ['one', 'three', 'four', 'six', 'seven'])
 })
 
 test('story tools: CSF files read statically, and what is not readable is listed', () => {

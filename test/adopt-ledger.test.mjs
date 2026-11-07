@@ -56,6 +56,8 @@ test('plan needs the inventory, then writes the ledger and the proposed config',
   assert.ok(asset('tokens', 'tokens:docs/system/tokens.json').lines.includes('Read at build or run time by src/stories/foundations.ts: repoint it before cut-over.'))
   assert.ok(asset('graph', 'headers').lines.includes('ds:owner on 1 file: no role fits, so it is read as an extra key and its values are not checked.'))
   assert.deepEqual(asset('stories', 'gate:lab-integration.mjs').consumers, [{ file: 'astro.config.mjs', line: 1, class: 'deploy', how: 'imports' }])
+  assert.ok(asset('graph', 'doc:docs/system/graph.md').lines.includes('Named in docs/map.md, which scripts/make-map.mjs writes: change scripts/make-map.mjs and regenerate with it, rather than editing by hand.'))
+  assert.ok(asset('graph', 'headers').lines.some((line) => /^Scan proposes no path rules: add rules to graph\.taxonomy\.rules/.test(line)))
   const phase = readJson(project, 'state.json').phases.find((p) => p.id === 'adopt')
   assert.deepEqual([phase.status, phase.note], ['in_progress', 'graph found, stories found, audit found, tokens found, docs found'])
 })
@@ -66,7 +68,7 @@ test('the proposed config holds what scan can fill', () => {
     graph: {
       extraKeys: ['breakpoint', 'inputs', 'owner', 'styles', 'theme'],
       keys: { breakpoint: 'breakpoint', inputs: 'definitions', styles: { role: 'list', under: 'src/styles' }, theme: { role: 'scope', values: ['kiosk', 'print'] } },
-      taxonomy: { tiers: ['Foundations', 'Primitives', 'Shells', 'Pages', 'Components'], groups: ['Foundations / Icons', 'Primitives / Status', 'Primitives / Actions', 'Shells / Site', 'Pages / Home', 'Components / Cards'] },
+      taxonomy: { tiers: ['Foundations', 'Primitives', 'Components', 'Shells', 'Pages'], groups: ['Foundations / Icons', 'Primitives / Status', 'Primitives / Actions', 'Components / Cards', 'Shells / Site', 'Pages / Home'] },
       kinds: { layout: ['src/layouts/**/*.astro'], page: ['src/pages/**/*.astro'] },
     },
     stories: {
@@ -114,6 +116,23 @@ test('config prints the proposal as a diff, and --write adds keys without overwr
   assert.equal(script('graph').status, 0)
 })
 
+test('config --write leaves a config with comments for a hand edit, and shows the changes to make', () => {
+  const clean = readFileSync(configFile, 'utf8')
+  const config = JSON.parse(clean)
+  delete config.graph.kinds
+  const text = `// The project folder: the docs build reads it.\n${JSON.stringify(config, null, 2)}\n`
+  writeFileSync(configFile, text)
+  const r = adopt('config', '--write')
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /^\+ graph\.kinds/m)
+  assert.match(r.stderr, /massimo\.config\.json has comments \(or trailing commas\), which --write would drop: make the changes above by hand/)
+  assert.equal(readFileSync(configFile, 'utf8'), text)
+  // With nothing to write, the comments are no reason to fail.
+  writeFileSync(configFile, `// The project folder: the docs build reads it.\n${clean}`)
+  assert.equal(adopt('config', '--write').status, 0)
+  writeFileSync(configFile, clean)
+})
+
 test('status prints the ledger; --json prints it whole', () => {
   const r = adopt('status')
   assert.equal(r.status, 0, r.stderr)
@@ -122,12 +141,17 @@ test('status prints the ledger; --json prints it whole', () => {
   assert.deepEqual(JSON.parse(adopt('status', '--json').stdout), ledger())
 })
 
-test('mark moves a class forward, needs a batch to cut over, and goes back only with --force', () => {
+test('mark moves a class one state on, needs a batch to cut over, and goes back only with --force', () => {
   assert.equal(adopt('mark', 'stories', 'mapped').stdout, 'stories: found -> mapped\n')
+  const jump = adopt('mark', 'stories', 'cut-over', '--batch', 'adopt-3')
+  assert.equal(jump.status, 1)
+  assert.match(jump.stderr, /stories is mapped, so it moves to shadowed next: one state at a time, or --force to repair the ledger/)
+  assert.equal(adopt('mark', 'stories', 'shadowed').status, 0)
+  assert.equal(adopt('mark', 'stories', 'proven').status, 0)
   const noBatch = adopt('mark', 'stories', 'cut-over')
   assert.equal(noBatch.status, 1)
   assert.match(noBatch.stderr, /cut-over needs --batch <id>/)
-  assert.equal(adopt('mark', 'stories', 'cut-over', '--batch', 'adopt-3').stdout, 'stories: mapped -> cut-over (batch adopt-3)\n')
+  assert.equal(adopt('mark', 'stories', 'cut-over', '--batch', 'adopt-3').stdout, 'stories: proven -> cut-over (batch adopt-3)\n')
   const s = ledger().classes.stories
   assert.deepEqual([s.state, s.batch, s.assets[0].state, s.assets[0].batch], ['cut-over', 'adopt-3', 'cut-over', 'adopt-3'])
   const back = adopt('mark', 'stories', 'mapped')
@@ -174,7 +198,23 @@ test('a newer ledger or inventory is refused: update massimo', () => {
   const savedInv = readFileSync(inv, 'utf8')
   writeFileSync(inv, JSON.stringify({ ...JSON.parse(savedInv), format: 2 }))
   assert.match(adopt('plan').stderr, /adopt\/inventory\.json is format 2.*update massimo/)
+  // Nor is one overwritten: scan keeps a newer inventory, and plan a newer proposed config.
+  writeFileSync(inv, JSON.stringify({ ...JSON.parse(savedInv), format: 2, later: true }))
+  const scan = adopt('scan')
+  assert.equal(scan.status, 1)
+  assert.match(scan.stderr, /adopt\/inventory\.json is format 2.*update massimo/)
+  assert.equal(JSON.parse(readFileSync(inv, 'utf8')).later, true)
   writeFileSync(inv, savedInv)
+  const proposed = join(project, 'adopt', 'config.proposed.json')
+  const savedProposed = readFileSync(proposed, 'utf8')
+  writeFileSync(proposed, JSON.stringify({ ...JSON.parse(savedProposed), version: 2 }))
+  const ledgerBefore = readFileSync(path, 'utf8')
+  const plan = adopt('plan')
+  assert.equal(plan.status, 1)
+  assert.match(plan.stderr, /adopt\/config\.proposed\.json is format 2.*update massimo/)
+  assert.equal(JSON.parse(readFileSync(proposed, 'utf8')).version, 2)
+  assert.equal(readFileSync(path, 'utf8'), ledgerBefore)
+  writeFileSync(proposed, savedProposed)
 })
 
 test('planning again keeps what a class past found agreed, and marks what scan no longer finds', () => {
@@ -191,6 +231,58 @@ test('planning again keeps what a class past found agreed, and marks what scan n
   assert.equal(next.classes.graph.assets.find((a) => a.id === 'doc:docs/system/graph.md').loss, 'carried')
   assert.equal(next.classes.graph.assets.find((a) => a.id === 'doc:docs/system/index.md'), undefined)
   assert.equal(next.classes.graph.date, '2026-11-07')
+})
+
+test('a new asset in a class past found starts at found, and takes its class back until it is agreed too', () => {
+  const inv = readJson(project, 'adopt', 'inventory.json')
+  const first = planLedger(inv, null, { date: 'd0' })
+  for (const s of ['mapped', 'shadowed', 'proven']) markClass(first, 'stories', s, { date: 'd1' })
+  markClass(first, 'stories', 'cut-over', { batch: 'b2', date: 'd2' })
+  assert.equal(first.classes.stories.state, 'cut-over')
+  // Ladle turns up in the next scan.
+  const ladle = { tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle'], port: null, files: 1, stories: 1, withArgs: 0, notReadable: 0 }
+  const more = { ...inv, stories: { ...inv.stories, tools: [ladle] }, assets: [...inv.assets, { id: 'tool:ladle', class: 'stories', kind: 'tool', paths: ['.ladle/'], consumers: [] }] }
+  const next = planLedger(more, first, { date: 'd3' })
+  const s = next.classes.stories
+  const tool = s.assets.find((a) => a.id === 'tool:ladle')
+  const lane = s.assets.find((a) => a.id === 'lane:src/stories')
+  assert.deepEqual([s.state, s.date, s.batch], ['found', 'd3', null])
+  assert.deepEqual([tool.state, tool.date, tool.batch, tool.decision, tool.loss], ['found', 'd3', null, 'keep', 'carried'])
+  assert.deepEqual([lane.state, lane.date, lane.batch], ['cut-over', 'd2', 'b2'])
+  assert.equal(ledgerPhase(next).status, 'in_progress')
+  // Marked through again, only the new asset moves; the others keep their batch.
+  for (const st of ['mapped', 'shadowed', 'proven']) markClass(next, 'stories', st, { date: 'd4' })
+  assert.equal(markClass(next, 'stories', 'cut-over', { batch: 'b3', date: 'd5' }), 'stories: proven -> cut-over (batch b3)')
+  assert.deepEqual([tool.state, tool.batch, lane.state, lane.batch, lane.date], ['cut-over', 'b3', 'cut-over', 'b2', 'd2'])
+  assert.deepEqual([s.state, s.batch], ['cut-over', 'b3'])
+  // Planned again with nothing new, the class stays where it is.
+  const again = planLedger(more, next, { date: 'd6' }).classes.stories
+  assert.deepEqual([again.state, again.date, again.batch], ['cut-over', 'd5', 'b3'])
+})
+
+test('mark goes one state at a time; --force repairs, and passing cut-over still needs a batch', () => {
+  const l = { classes: { graph: { state: 'found', date: 'x', batch: null, assets: [{ id: 'a', decision: 'convert', loss: 'clean', state: 'found' }] } } }
+  assert.throws(() => markClass(l, 'graph', 'retired'), /graph is found, so it moves to mapped next: one state at a time/)
+  assert.throws(() => markClass(l, 'graph', 'retired', { force: true }), /cut-over needs --batch <id>/)
+  assert.equal(markClass(l, 'graph', 'proven', { force: true, date: 'd1' }), 'graph: found -> proven')
+  assert.equal(markClass(l, 'graph', 'retired', { force: true, batch: 'b9', date: 'd2' }), 'graph: proven -> retired (batch b9)')
+  assert.deepEqual([l.classes.graph.batch, l.classes.graph.assets[0].state, l.classes.graph.assets[0].batch], ['b9', 'retired', 'b9'])
+  // Back from retired to cut-over keeps the batch that cut it over.
+  assert.equal(markClass(l, 'graph', 'cut-over', { force: true, date: 'd3' }), 'graph: retired -> cut-over')
+  assert.deepEqual([l.classes.graph.batch, l.classes.graph.assets[0].state, l.classes.graph.assets[0].batch], ['b9', 'cut-over', 'b9'])
+})
+
+test('a manifest is a blocker by what readManifest says of each entry, not by the wording of its message', () => {
+  const inv = readJson(project, 'adopt', 'inventory.json')
+  const manifestWith = (fields) => {
+    const lane = { ...inv.stories.lane, manifest: { ...inv.stories.lane.manifest, ...fields } }
+    return planLedger({ ...inv, stories: { ...inv.stories, lane } }).classes.stories.assets.find((a) => a.id === 'manifest:src/stories/manifest.ts')
+  }
+  assert.equal(manifestWith({ notReadable: ['cards: entry 2 is built by a call'], entriesNotReadable: ['cards: entry 2 is built by a call'] }).loss, 'blocker')
+  assert.equal(manifestWith({ notReadable: ['cards: title is not statically readable'], entriesNotReadable: [] }).loss, 'carried')
+  const none = manifestWith({ entries: 0, notReadable: ['the list is assembled elsewhere'], entriesNotReadable: ['the list is assembled elsewhere'] })
+  assert.equal(none.loss, 'blocker')
+  assert.match(none.lines[0], /^massimo reads no entries from it \(the list is assembled elsewhere\), so it cannot list the stories/)
 })
 
 test('a kept asset is cut over, never retired; the phase is done when every class is', () => {

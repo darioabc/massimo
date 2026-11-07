@@ -93,6 +93,18 @@ test('what a CSF reader cannot read is said, not guessed', () => {
   assert.deepEqual(readCsf('export default { component: X }\nexport const A = {}', 'x.stories.ts').unreadable, [])
 })
 
+test('an export written inside a string is not one, and a statement that declares several stories says so', () => {
+  const quoted = readCsf("const s = \"export default { title: 'Fake' }\"\nconst t = `export const Ghost = 1`\nexport default { title: 'Real' }\nexport const A = () => <p>Hello, world</p>\n", 'x.stories.tsx')
+  assert.equal(quoted.title, 'Real')
+  assert.deepEqual(quoted.stories.map((s) => s.export), ['A'])
+  assert.deepEqual(quoted.unreadable, [])
+  const several = readCsf("export default { title: 'X' }\nexport const A = {}, B = { args: { a: 1 } }\nexport const C = {\n  args: { a: 1, b: 2 },\n}\n", 'x.stories.ts')
+  assert.deepEqual(several.stories.map((s) => s.export), ['A', 'C'])
+  assert.deepEqual(several.unreadable, [{ story: 'A', field: null, detail: 'A is declared with more names in one statement, and the names after it are not listed' }])
+  // A re-export keeps its module, read from the code and not the blanked text.
+  assert.deepEqual(readCsf("export default {}\nexport { D } from './d'\n", 'x.stories.ts').unreadable, [{ story: 'D', field: null, detail: 'D is re-exported from ./d' }])
+})
+
 const HISTOIRE = `<script setup>
 import Button from './Button.vue'
 </script>
