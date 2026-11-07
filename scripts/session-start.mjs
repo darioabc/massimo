@@ -9,16 +9,18 @@ import { hookBanner, hookContext, loadState } from './lib/state.mjs'
 
 try {
   const start = process.env.CLAUDE_PROJECT_DIR || process.cwd()
-  const { exists, root, projectDir } = loadConfig({ root: findRoot(start) })
+  const { exists, root, projectDir, refusal } = loadConfig({ root: findRoot(start) }, { gate: false })
   if (!exists || !existsSync(projectDir)) process.exit(0)
   const state = loadState(projectDir)
   if (!state) process.exit(0)
+  // A config newer than these scripts: say so, and carry on.
+  const banner = hookBanner(state)
   process.stdout.write(
     JSON.stringify({
-      systemMessage: hookBanner(state),
+      systemMessage: refusal ? `${banner}\nmassimo: ${refusal}` : banner,
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: hookContext(state, rel(root, projectDir) || '.'),
+        additionalContext: `${hookContext(state, rel(root, projectDir) || '.')}${refusal ? `\n\nThe scripts cannot run here yet: ${refusal}.` : ''}`,
       },
     }),
   )

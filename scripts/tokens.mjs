@@ -44,7 +44,7 @@ import {
   writeTokenSet,
 } from './lib/dtcg.mjs'
 import { compare, expandGlobs } from './lib/glob.mjs'
-import { SCRIPTS_VERSION, fail, loadConfig, olderThan, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, vendoredVersion, warnIfVendoredOlder } from './lib/project.mjs'
+import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, vendoredOlder, vendoredVersion, warnIfVendoredOlder } from './lib/project.mjs'
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
 import { FAMILIES, propose } from './lib/propose.mjs'
@@ -1437,7 +1437,7 @@ function migrate({ root, config, projectDir, configPath, flags, shown }) {
   const loaded = loadTokens(root, config)
   if (!loaded) fail(`no token source at ${config.tokens.source}`)
   const vendored = vendoredVersion(projectDir)
-  if (vendored && olderThan(vendored, SCRIPTS_VERSION)) {
+  if (vendoredOlder(vendored)) {
     fail(`the scripts in ${shown(join(projectDir, 'scripts'))} are ${vendored}, older than this ${SCRIPTS_VERSION}; update them first (init.mjs --update-scripts), or CI and teammates on ${vendored} cannot read the new files`)
   }
   const dir = dirname(join(root, config.tokens.source))

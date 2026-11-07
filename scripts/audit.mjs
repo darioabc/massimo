@@ -950,6 +950,7 @@ function main() {
   writeFileSync(join(auditsDir, 'latest.md'), renderMarkdown(result, date, scriptCommand(root, projectDir, 'audit')))
   let extra = ''
   if (wantBaseline) {
+    refuseNewer('baseline', readJson(baselinePath, null)?.version, 'audits/baseline.json')
     writeFileSync(baselinePath, `${JSON.stringify(baselineDocument(offenders, skipped), null, 2)}\n`)
     extra = `; baseline written to ${shown('baseline.json')}`
   } else if (wantLower) {

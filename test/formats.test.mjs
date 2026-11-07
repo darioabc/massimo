@@ -4,11 +4,12 @@
 // project's vendored copy is older.
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { SCRIPTS_VERSION, olderThan } from '../scripts/lib/project.mjs'
-import { readJson, run, scratch } from './helpers.mjs'
+import { SCRIPTS, readJson, run, scratch } from './helpers.mjs'
 
 const contexts = []
 after(() => contexts.forEach((c) => c.cleanup()))
@@ -21,7 +22,7 @@ const config = (ctx, extra) => {
   const path = join(ctx.root, 'massimo.config.json')
   writeFileSync(path, JSON.stringify({ ...readJson(path), ...extra }))
 }
-const updateHint = /update massimo \(init\.mjs --update-scripts\)/
+const updateHint = /update massimo: the plugin, then its init\.mjs --update-scripts for the project's copy/
 
 test('versions compare part by part', () => {
   assert.ok(olderThan('0.2.9', '0.2.10'))
@@ -90,4 +91,43 @@ test('run from the plugin, a script warns when the vendored copy is older', () =
   const r = run('graph', ctx)
   assert.equal(r.status, 0, r.stderr)
   assert.match(r.stderr, /warn: the project's vendored scripts are 0\.1\.0, older than this/)
+})
+
+test('graph and audit --baseline never check against or overwrite a newer file', () => {
+  const ctx = fresh()
+  mkdirSync(ctx.project, { recursive: true })
+  writeFileSync(join(ctx.project, 'graph.json'), JSON.stringify({ version: 2 }))
+  const g = run('graph', ctx)
+  assert.equal(g.status, 1)
+  assert.match(g.stderr, /graph\.json is format 2/)
+  assert.equal(readJson(ctx.project, 'graph.json').version, 2)
+  mkdirSync(join(ctx.project, 'audits'), { recursive: true })
+  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 2, kinds: {} }))
+  const a = run('audit', ctx, ['--baseline'])
+  assert.equal(a.status, 1)
+  assert.equal(readJson(ctx.project, 'audits', 'baseline.json').version, 2)
+})
+
+test('a vendored version in either quote style reads; one that cannot be read neither warns nor blocks', () => {
+  for (const [line, warns] of [[`export const SCRIPTS_VERSION = "${SCRIPTS_VERSION}"\n`, false], ["export const SCRIPTS_VERSION = '0.1.0'\n", true], ['// no version here\n', false]]) {
+    const ctx = fresh()
+    mkdirSync(join(ctx.project, 'scripts', 'lib'), { recursive: true })
+    writeFileSync(join(ctx.project, 'scripts', 'lib', 'project.mjs'), line)
+    const r = run('graph', ctx)
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(/vendored scripts are/.test(r.stderr), warns, line)
+  }
+})
+
+test('the hooks never fail on a config these scripts cannot use: the guard still denies, the session still starts', () => {
+  const ctx = fresh()
+  config(ctx, { version: 2 })
+  const guard = spawnSync(process.execPath, [join(SCRIPTS, 'agent-guard.mjs')], { input: JSON.stringify({ cwd: ctx.root, tool_name: 'Write', agent_type: 'massimo:reviewer', tool_input: { file_path: 'src/x.ts' } }), encoding: 'utf8' })
+  assert.equal(guard.status, 0)
+  assert.equal(JSON.parse(guard.stdout).hookSpecificOutput.permissionDecision, 'deny')
+  mkdirSync(join(ctx.root, 'design-system'), { recursive: true })
+  writeFileSync(join(ctx.root, 'design-system', 'state.json'), JSON.stringify({ version: 1, massimo: '0.2.0', createdAt: '2026-11-01', updatedAt: '2026-11-01', phases: [], explorations: [] }))
+  const start = spawnSync(process.execPath, [join(SCRIPTS, 'session-start.mjs')], { env: { ...process.env, CLAUDE_PROJECT_DIR: ctx.root }, encoding: 'utf8' })
+  assert.equal(start.status, 0, start.stderr)
+  assert.match(JSON.parse(start.stdout).systemMessage, /massimo\.config\.json is format 2/)
 })
