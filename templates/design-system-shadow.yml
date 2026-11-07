@@ -1,0 +1,32 @@
+# Design-system shadow (massimo). While massimo adopts this repo's own
+# design-system setup, this job runs massimo's checks beside the repo's own, on
+# pull requests only. It never blocks a merge: each step may fail, and the
+# job is not a required check. Read its log to see where massimo and the
+# repo's own tools disagree; `adopt.mjs verify` prints the same tables
+# locally. Replace <project> with the project folder (projectDir in
+# massimo.config.json). Once every class is proven, the guard skill makes
+# ds:check the required check instead.
+name: Design system (shadow)
+
+on:
+  pull_request:
+
+jobs:
+  ds-shadow:
+    name: Design system (shadow, not required)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The scripts are zero-dependency Node scripts vendored in the project
+      # folder, so no install step is needed, unless a guard.extraChecks
+      # command needs the repo's packages: then add the repo's install here.
+      - name: massimo checks (shadow)
+        continue-on-error: true
+        run: node <project>/scripts/check.mjs
+      - name: massimo against the repo's own outputs (shadow)
+        continue-on-error: true
+        run: node <project>/scripts/adopt.mjs verify

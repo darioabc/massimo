@@ -25,9 +25,17 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
    "ds:check": "node <project>/scripts/check.mjs"
    ```
    `check.mjs` runs every massimo check that applies, one line each: `graph.mjs --check` always, `audit.mjs --check` once there is an audit baseline, `tokens.mjs check` once there is a token set, and `docs.mjs --check` once the README has its generated part. A phase that was skipped drops out by itself. A check the repo already has that massimo does not cover (a script of its own that guards a shipped asset, say) goes in `guard.extraChecks` in `massimo.config.json` as `{ "name": "...", "run": "..." }`; `check.mjs` runs each through a shell from the repo root after its own. Run it locally until it passes.
-5. **CI.** Detect the CI system (`.github/workflows`, `.gitlab-ci.yml`, `.circleci`, others). For GitHub Actions, copy `<plugin>/templates/design-system-check.yml` to `.github/workflows/design-system.yml` and adjust the Node version and install command to match the repo's other workflows. For anything else, add an equivalent job and show the user. Do not push; tell the user the workflow runs on their next PR.
+5. **CI.** Detect the CI system (`.github/workflows`, `.gitlab-ci.yml`, `.circleci`, others). For GitHub Actions, copy `<plugin>/templates/design-system-check.yml` to `.github/workflows/design-system.yml` and adjust the Node version and install command to match the repo's other workflows. For anything else, add an equivalent job and show the user. Do not push; tell the user the workflow runs on their next PR. A repo that went through adopt already has the shadow job (`design-system-shadow.yml`); see the next section.
 6. **README.** `node <project>/scripts/docs.mjs` writes `<project>/README.md`: the token set with each semantic token's meaning and the contrast pairs, how to change tokens, each component by tier with its `ds:use-when` and props, what `ds:check` enforces, the Figma mirror's state, and how to start a design. That part sits between `massimo:docs` markers and is regenerated; write the rest around it with the user: how to run and add stories, how to update the audit baseline when a raw value is deliberate, and who decides what (from `product.md` → Team). `docs.mjs --check` joins `ds:check`, so the README cannot fall behind. Link it from the repo's main README with one line if the user agrees.
 7. **End.** `state.mjs set guard done --note "rules on <n> primitives, ds:check in <CI>"`. Next step: Figma mirror if planned, otherwise the project is complete and `/massimo:ux` takes over for new design work.
+
+## From the shadow job to the required check
+
+During adopt, `ds:check` runs in `.github/workflows/design-system-shadow.yml`: pull requests only, allowed to fail, and not required, so it can never block a merge while massimo and the repo's own tools still disagree. Once every class it checks is proven in the adopt ledger (`adopt.mjs status`) and the shadow job has passed for as long as the user chose to soak it:
+
+1. Install `design-system-check.yml` as step 5 says, and remove the shadow workflow in the same commit, so the checks do not run twice.
+2. Tell the user that a workflow alone blocks nothing: making it required is a branch protection setting they change in the repository's settings on GitHub (Settings, then Branches or Rulesets, then require status checks to pass, and pick the job `ds-check`). The job's name shows there only after it has run once on a pull request. Never change repository settings yourself.
+3. Until the old setup is retired, the repo's own check may run beside it as a `guard.extraChecks` entry, so nothing is unguarded in between.
 
 ## When a check fails later
 

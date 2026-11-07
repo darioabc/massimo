@@ -122,14 +122,32 @@ test('init --update-scripts vendors adopt, leaves the old state.json as it was, 
   assert.match(show.stdout, /\*\*Next phase:\*\* Map the component graph/)
 })
 
-test('the start skill offers adopt when detect reports something adoptable, and Resume routes it to adopt.mjs until its skill ships', () => {
+test('the start skill offers adopt when detect reports something adoptable, and Hand over and Resume route it to the adopt skill', () => {
   const skill = read(SCRIPTS, '..', 'skills', 'start', 'SKILL.md')
   assert.match(skill, /If detect reports `adoptable`/)
   assert.match(skill, /Recommend massimo's native story lane only when there is nothing to adopt/)
-  assert.match(skill, /node <project>\/scripts\/adopt\.mjs`: `scan`, `plan`, `config`/)
-  assert.doesNotMatch(skill, /invoke the phase skill: `adopt`/)
-  assert.match(skill, /The adopt phase has no skill yet: run `node <project>\/scripts\/adopt\.mjs status`/)
+  assert.match(skill, /When the user chose adopt, the next phase is adopt: invoke `\/massimo:adopt`/)
+  assert.match(skill, /invoke the phase skill: `adopt` \(when the adopt phase is to do or in progress/)
+  assert.doesNotMatch(skill, /has no skill yet|until the adopt skill ships/i)
   assert.match(skill, /graph\.taxonomy\.rules/)
+  const adopt = read(SCRIPTS, '..', 'skills', 'adopt', 'SKILL.md')
+  assert.match(adopt, /^---\nname: adopt\n/)
+  for (const step of ['Scan', 'Plan', 'Configure', 'Shadow', 'Prove', 'Cut over', 'Retire']) assert.match(adopt, new RegExp(`\\n\\d\\. \\*\\*${step}\\.\\*\\*`), step)
+  assert.match(adopt, /Adopt-Batch: <id>/)
+  assert.match(adopt, /"minScripts": "0\.3\.0"/)
+  assert.match(adopt, /<plugin>\/templates\/design-system-shadow\.yml/)
+})
+
+test('the shadow workflow runs on pull requests only, never blocks, and runs check.mjs', () => {
+  const yml = read(SCRIPTS, '..', 'templates', 'design-system-shadow.yml')
+  assert.match(yml, /\non:\n {2}pull_request:\n\njobs:/)
+  assert.doesNotMatch(yml, /\n {2}push:/)
+  assert.match(yml, /name: Design system \(shadow\)\n/)
+  assert.match(yml, /\n {4}continue-on-error: true\n/)
+  assert.match(yml, /run: node <project>\/scripts\/check\.mjs\n/)
+  const guard = read(SCRIPTS, '..', 'skills', 'guard', 'SKILL.md')
+  assert.match(guard, /## From the shadow job to the required check/)
+  assert.match(guard, /branch protection setting they change/)
 })
 
 test('plan on a repo with nothing to adopt leaves the phase, the next step and STATUS.md as they were', () => {
