@@ -129,11 +129,13 @@ test('migrate refuses while the vendored scripts are older than it', () => {
 
 test('golden: every output built from a 2025.10 set with composites', () => {
   const doc = JSON.parse(read(join(import.meta.dirname ?? new URL('.', import.meta.url).pathname, 'golden', 'composites', 'tokens.json')))
-  const t = withTokens(doc)
+  const config = JSON.parse(read(join(import.meta.dirname ?? new URL('.', import.meta.url).pathname, 'fixtures', 'app', 'massimo.config.json')))
+  const t = withTokens(doc, { outputs: [...config.tokens.outputs, { format: 'designmd', path: 'DESIGN.md' }] })
   try {
     const r = run('tokens', t, ['build'])
     assert.equal(r.status, 0, r.stderr)
     const all = outputs(t)
+    all['DESIGN.md'] = body(read(t.root, 'DESIGN.md'))
     for (const [name, text] of Object.entries(all)) assert.equal(text, golden(`composites/${name}`, text) ?? text, name)
   } finally {
     t.cleanup()
