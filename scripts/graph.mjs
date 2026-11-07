@@ -3,24 +3,23 @@
 // contains) and graph.json (the same facts for tools).
 //
 // Every node records what it composes, who composes it, which story covers it,
-// which packages, tokens and DaisyUI parts it leans on, the `ds:` rules it
+// which packages, tokens and class-library parts it leans on, the `ds:` rules it
 // declares in its own header, and the ticket ids found in the file. Nothing is
 // authored by hand, and the output is deterministic (sorted, no timestamps),
 // so `--check` is a byte comparison a CI job can run.
 //
 // Usage:
-//   node design-system/scripts/graph.mjs            write graph.md and graph.json
-//   node design-system/scripts/graph.mjs --check    regenerate in memory, exit 1 if stale
+//   node <project>/scripts/graph.mjs            write graph.md and graph.json
+//   node <project>/scripts/graph.mjs --check    regenerate in memory, exit 1 if stale
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
-import { fail, loadConfig, parseArgs, readJson, rel } from './lib/project.mjs'
+import { fail, loadConfig, parseArgs, readJson, rel, scriptCommand } from './lib/project.mjs'
 import {
-  DAISY_COLOR_NAMES,
-  DAISY_ROOTS,
+  classLibraries,
   componentName,
   createResolver,
   extractExports,
@@ -32,20 +31,7 @@ import {
   stringLiterals,
   stripComments,
 } from './lib/source.mjs'
-
-const DAISY_SET = new Set(DAISY_ROOTS)
-const DAISY_BY_LENGTH = [...DAISY_ROOTS].sort((a, b) => b.length - a.length || compare(a, b))
-
-// Tailwind utilities that share a prefix with a DaisyUI root (`select-none`,
-// `list-disc`, `table-fixed`...) and must not read as the component.
-const TAILWIND_COLLISIONS = [
-  /^select-(?:none|text|all|auto)$/,
-  /^list-(?:none|disc|decimal|inside|outside|image-.*|\[.*)$/,
-  /^table-(?!zebra$|xs$|sm$|md$|lg$|xl$|pin-rows$|pin-cols$)/,
-  /^filter-/,
-  /^mask-(?!squircle|heart|hexagon|decagon|pentagon|diamond|square|circle|parallelogram|star|triangle|half)/,
-  /^tab-\d/,
-]
+import { natural, truthy } from './lib/text.mjs'
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
 const STORY_EXTS = /\.(?:tsx?|jsx?|mjs|vue|svelte|astro|mdx?)$/
@@ -61,24 +47,15 @@ const UNRESOLVED_MD = 30
 const lower = (s) => s.toLowerCase()
 const byName = (a, b) => compare(lower(a), lower(b)) || compare(a, b)
 
-// Numeric-aware order so FIU-9 sorts before FIU-10.
-function natural(a, b) {
-  const pa = a.split(/(\d+)/)
-  const pb = b.split(/(\d+)/)
-  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
-    if (pa[i] === pb[i]) continue
-    if (i % 2 === 1) return Number(pa[i]) - Number(pb[i])
-    return compare(pa[i], pb[i])
-  }
-  return pa.length - pb.length
-}
-
 const sortedUnique = (iterable, cmp = compare) => [...new Set(iterable)].sort(cmp)
 
-function daisyRootOf(token, classy) {
-  if (DAISY_SET.has(token)) return classy ? token : null
-  for (const root of DAISY_BY_LENGTH) {
-    if (token.startsWith(`${root}-`)) return TAILWIND_COLLISIONS.some((re) => re.test(token)) ? null : root
+// The component root a class token names in a class library (`btn-primary`
+// -> `btn`), or null. A bare root counts only where the string is plainly a
+// class list; a utility the library lists as not a root never counts.
+function rootOf(lib, token, classy) {
+  if (lib.rootSet.has(token)) return classy ? token : null
+  for (const root of lib.byLength) {
+    if (token.startsWith(`${root}-`)) return lib.notRoots.some((re) => re.test(token)) ? null : root
   }
   return null
 }
@@ -152,7 +129,7 @@ function tokenGroup(name) {
 
 // Everything the graph needs, computed from source. Pure apart from reads:
 // returns { json, markdown, warnings } so --check and tests can reuse it.
-export function buildGraph(root, config) {
+export function buildGraph(root, config, command = "graph.mjs") {
   const warnings = []
   const all = walk(root, { ignore: config.ignore })
   const storyGlob = compileGlobs(config.stories.include)
@@ -272,10 +249,14 @@ export function buildGraph(root, config) {
   for (const f of styleFiles) {
     customProps.push(...parseCustomProperties(readFileSync(join(root, f), 'utf8'), f))
   }
-  const hasDaisy = config.styling.includes('daisyui')
+  const libraries = classLibraries(config).map((lib) => ({
+    ...lib,
+    rootSet: new Set(lib.roots),
+    byLength: [...lib.roots].sort((a, b) => b.length - a.length || compare(a, b)),
+  }))
   const colorNames = sortedUnique([
     ...customProps.map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
-    ...(hasDaisy ? DAISY_COLOR_NAMES : []),
+    ...libraries.flatMap((lib) => lib.colors),
   ])
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const colorRe = colorNames.length
@@ -290,7 +271,7 @@ export function buildGraph(root, config) {
   const nodes = nodeFiles.map((file) => {
     const source = readFileSync(join(root, file), 'utf8')
     const code = stripComments(source, file)
-    const daisy = new Set()
+    const classes = Object.fromEntries(libraries.map((lib) => [lib.id, new Set()]))
     const tokens = new Set()
     for (const { text, start } of stringLiterals(code, file)) {
       if (isProse(text)) continue
@@ -300,9 +281,9 @@ export function buildGraph(root, config) {
       // plainly a class list; `btn-primary`-style tokens always count.
       const classy = CLASS_CONTEXT.test(code.slice(Math.max(0, start - 48), start)) || words.some(CLASS_LIKE.test, CLASS_LIKE)
       for (const token of words) {
-        if (hasDaisy) {
-          const component = daisyRootOf(token, classy)
-          if (component) daisy.add(component)
+        for (const lib of libraries) {
+          const component = rootOf(lib, token, classy)
+          if (component) classes[lib.id].add(component)
         }
         const m = colorRe?.exec(token)
         if (m) tokens.add(m[1])
@@ -337,7 +318,11 @@ export function buildGraph(root, config) {
       composedBy: sortedAreas,
       usage: importersOf.get(file).size,
       packages: sortedUnique(packages.get(file)),
-      style: { daisy: sortedUnique(daisy), tokens: sortedUnique(tokens), cssVars: sortedUnique(cssVars) },
+      style: {
+        classes: Object.fromEntries(Object.entries(classes).filter(([, set]) => set.size > 0).map(([id, set]) => [id, sortedUnique(set)])),
+        tokens: sortedUnique(tokens),
+        cssVars: sortedUnique(cssVars),
+      },
       rules,
       decisions,
     }
@@ -392,7 +377,7 @@ export function buildGraph(root, config) {
     unresolved: unresolvedMap,
     faults: faults.sort((a, b) => compare(a.file, b.file) || compare(a.key, b.key)),
   }
-  return { json, markdown: renderMarkdown(json, rulesNodes), warnings }
+  return { json, markdown: renderMarkdown(json, rulesNodes, command), warnings }
 }
 
 const code = (s) => `\`${s}\``
@@ -453,7 +438,7 @@ function renderNode(node, nameByFile) {
   lines.push(`- composed by: ${areas.length > 0 ? areas.join(' · ') : 'none'}`)
   if (node.packages.length > 0) lines.push(`- packages: ${node.packages.join(', ')}`)
   const style = []
-  if (node.style.daisy.length > 0) style.push(`daisyui ${node.style.daisy.join(', ')}`)
+  for (const [id, roots] of Object.entries(node.style.classes)) style.push(`${id} ${roots.join(', ')}`)
   if (node.style.tokens.length > 0) style.push(`tokens ${node.style.tokens.join(', ')}`)
   if (node.style.cssVars.length > 0) style.push(`vars ${node.style.cssVars.join(', ')}`)
   if (style.length > 0) lines.push(`- style: ${style.join(' · ')}`)
@@ -464,15 +449,15 @@ function renderNode(node, nameByFile) {
   return lines.join('\n')
 }
 
-function renderMarkdown(json, rulesNodes) {
+function renderMarkdown(json, rulesNodes, command) {
   const { summary, tokens, storyQueue, nodes, unresolved, faults } = json
   const nameByFile = new Map(nodes.map((n) => [n.file, n.name]))
   const out = []
   out.push('# Design-system graph', '')
-  out.push('<!-- GENERATED by massimo graph. Do not edit by hand. Regenerate: node design-system/scripts/graph.mjs -->', '')
+  out.push(`<!-- Generated by massimo graph. Do not edit by hand. Regenerate: ${command} -->`, '')
   out.push('How to read a node:', '')
   out.push('1. `composes` lists the graph nodes the file imports; `composed by` lists who imports it, grouped by area with counts. Stories and tests are not counted. Long lists end in `+N more`; `graph.json` has them all.')
-  out.push('2. `style` lists the DaisyUI component roots, theme colour tokens and custom properties (`var(--x)`) the file references.')
+  out.push('2. `style` lists the component classes of a class library such as DaisyUI, the theme colour tokens and the custom properties (`var(--x)`) the file references.')
   out.push('3. `decisions` are the ticket ids found in the file; open the ticket or the file header for the why.')
   out.push('4. `rules` are declared in the file itself as comment lines: `ds:group Tier / Group`, `ds:parents`, `ds:children`, `ds:never`, `ds:use-when`. `ds:no-story <reason>` marks a component that has no story on purpose. A value may wrap onto the comment lines after it.', '')
 
@@ -535,13 +520,12 @@ function renderMarkdown(json, rulesNodes) {
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const BOOLEAN_FLAGS = new Set(['check'])
-const truthy = (v) => v === true || v === 'true'
 
 function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { flags } = parseArgs(argv)
   const { root, config, projectDir } = loadConfig(flags)
-  const { json, markdown, warnings } = buildGraph(root, config)
+  const { json, markdown, warnings } = buildGraph(root, config, scriptCommand(root, projectDir, 'graph'))
   if (json.faults.length > 0 && !truthy(flags.check)) {
     process.stderr.write(`massimo graph: ${json.faults.length} header ${json.faults.length === 1 ? 'fault' : 'faults'}; see "Header faults" in graph.md\n`)
   }
@@ -568,7 +552,7 @@ function main() {
       else if (readFileSync(path, 'utf8') !== text) bad.push(`${shown(name)} (stale)`)
     }
     if (bad.length > 0) {
-      process.stderr.write(`massimo graph: out of date: ${bad.join(', ')}. Run: node design-system/scripts/graph.mjs\n`)
+      process.stderr.write(`massimo graph: out of date: ${bad.join(', ')}. Run: ${scriptCommand(root, projectDir, 'graph')}\n`)
       process.exit(1)
     }
     process.stdout.write(`massimo graph: up to date (${stats})\n`)

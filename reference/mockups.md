@@ -5,7 +5,7 @@ How the `ideator` writes a round of directions, and how the `ux` skill shows the
 ## Layout
 
 ```text
-design-system/explorations/<topic>/
+<project>/explorations/<topic>/
 ├── brief.md            topic brief and round log (owned by the ux skill)
 ├── round-1/
 │   ├── Main.html       the lead direction
@@ -39,7 +39,7 @@ One whole surface per file. Self-contained apart from the kit:
 
 Rules:
 
-1. **Link the kit.** `../../../kit/kit.css` resolves to `design-system/kit/kit.css`, the product's real tokens as CSS custom properties. If it does not exist yet, run `node design-system/scripts/tokens.mjs kit` first.
+1. **Link the kit.** `../../../kit/kit.css` resolves to `<project>/kit/kit.css`, the product's real tokens as CSS custom properties. If it does not exist yet, run `node <project>/scripts/tokens.mjs kit` first.
 2. **Use the tokens.** Write `var(--color-…)`, `var(--spacing-…)` and friends, not literal values. This is what lets the translator map a mockup back to the system instead of transcribing hex.
 3. **New values are labelled.** When a direction needs something the system lacks, define it in the file's `<style>` as a custom property with a `--new-` prefix and a one-line comment on its intent: `--new-color-highlight: #fff4d6; /* soft callout fill for promo rows */`. The translator formalises or maps it.
 4. **Real content.** Use the real record the orchestrator passed, verbatim.
@@ -55,7 +55,7 @@ Rules:
 {
   "round": 1,
   "framing": "Make the order summary scannable on mobile without hiding fees",
-  "baseline": "design-system/explorations/checkout-summary/round-1/Main.html",
+  "baseline": "<project>/explorations/checkout-summary/round-1/Main.html",
   "directions": [
     {
       "file": "Main.html",
@@ -77,8 +77,8 @@ Rules:
 
 The `ux` skill (never a worker) shows the round:
 
-1. `node design-system/scripts/canvas.mjs design-system/explorations/<topic>` builds `index.html`: rounds newest first, each direction in a scaled frame with its title, rationale and scope, earlier rounds marked with their verdict.
-2. Serve the project folder: `node design-system/scripts/serve.mjs` (default port 4700). Run it in the background.
+1. `node <project>/scripts/canvas.mjs <project>/explorations/<topic>` builds `index.html`: rounds newest first, each direction in a scaled frame with its title, rationale and scope, earlier rounds marked with their verdict.
+2. Serve the project folder: `node <project>/scripts/serve.mjs` (default port 4700). Run it in the background.
 3. Show it with whatever the host offers, in this order:
    - a browser pane or preview tool → open `http://localhost:4700/explorations/<topic>/`;
    - an artifact or page-publishing tool → build a single file with `canvas.mjs … --inline` and publish `index.inline.html` (it inlines the kit and every direction);

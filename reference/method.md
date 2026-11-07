@@ -13,7 +13,7 @@ The `ux` skill orchestrates in the user's session. Reviews, ideation, translatio
 
 ## Product grounding
 
-`design-system/product.md` is the grounding every dispatch carries, distilled to a short capsule:
+`<project>/product.md` is the grounding every dispatch carries, distilled to a short capsule:
 
 - **Users.** Who they are, what they are trying to get done, which products they use daily.
 - **The bar.** Two or three reference products the surface should look credible beside.

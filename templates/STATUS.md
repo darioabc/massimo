@@ -11,7 +11,7 @@ Project just set up. Nothing has been changed in the codebase yet.
 
 ## Next step
 
-Map the component graph with `/massimo:graph`.
+Choose the phases with `/massimo:start`. It writes the first one here.
 
 ## Open questions
 

@@ -7,7 +7,7 @@ description: Set up a native story lane in this repo — component stories rende
 
 A story is a page that renders one component's real states with real content, through the same build and CSS pipeline that ships the product. What renders in the lane is what renders in production. Stories ground everything visual that follows: baselines for the ux loop, before/after screenshots for tidy batches, the translator's render, the Figma mirror's source.
 
-Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol.
+Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol. `<project>` is the project folder: `projectDir` in `massimo.config.json`, `design-system` by default.
 
 ## The lane contract
 
@@ -34,7 +34,7 @@ Whatever the framework, the lane has the same five properties:
 5. **Prove it.**
    - Start the lane in the background. Prefer the host's dev-server/preview tool if it has one (create its launch config entry named `stories`); otherwise run `npm run ds:stories` in the background.
    - Load `/stories` and the example story; check the console for errors.
-   - Screenshot it: `node design-system/scripts/shoot.mjs --url <url> --out design-system/shots/stories/<slug>.png` (exit 3 means no Playwright: use the host's browser screenshot tool).
+   - Screenshot it: `node <project>/scripts/shoot.mjs --url <url> --out <project>/shots/stories/<slug>.png` (exit 3 means no Playwright: use the host's browser screenshot tool).
    - **Leak check:** run the production build and confirm no story route, chunk or marker made it into the output (the recipe names the exact check). This is required, not optional.
    - Show the user the screenshot and the index.
 6. **Agree the coverage target.** Read the graph's story queue. Recommend: every component used by three or more files, plus all primitives (buttons, inputs, typography, layout). Record the target as a decision, e.g. "story the top 30 by usage".
@@ -42,7 +42,7 @@ Whatever the framework, the lane has the same five properties:
    - plugin root path, repo root, the recipe path, the lane's URL;
    - the components' files, their graph nodes (composes, used by), and two real call sites to copy realistic props from;
    - the real-content sources from `product.md`;
-   - the screenshot folder `design-system/shots/stories/`.
+   - the screenshot folder `<project>/shots/stories/`.
    The agent writes stories only (never edits components), renders and screenshots them, and returns story paths, screenshot paths and fidelity gaps.
 8. **Review each batch.** Look at every screenshot. Bounce stories that invent props a component lacks, show lorem ipsum, or omit states the component clearly has. Show the user a compact batch summary with the screenshots; designers will spot what is wrong fastest.
 9. **Re-run the graph** (`graph.mjs`) so story coverage updates. `state.mjs set stories in_progress --note "<n>/<target> storied"` after each batch, so a stop at any point resumes cleanly.
@@ -53,4 +53,4 @@ Whatever the framework, the lane has the same five properties:
 - Stories never change component code. If a component cannot be rendered in isolation without a refactor, write the closest faithful story and list the gap; the user decides whether the refactor becomes work of its own.
 - Mock data and handlers, never the component's own markup.
 - Keep each story file next to its component or in the lane's stories folder, as the recipe says; be consistent.
-- Do not commit screenshots (they live in the gitignored `shots/`).
+- Story screenshots are not committed: they live in the gitignored `shots/stories/`. Only a screenshot that a committed file links to goes in `shots/kept/`.

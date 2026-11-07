@@ -4,9 +4,11 @@ Massimo keeps its working state inside the repo it is improving, so a designer o
 
 ## Files
 
+`<project>` in every skill and agent is the project folder: `projectDir` in `massimo.config.json`, `design-system` unless the repo already uses a folder of that name for something else (then `.massimo`). Read each path written as `<project>/…` from there.
+
 ```text
 massimo.config.json            where things are: framework, component globs, style files, story lane, token outputs
-design-system/                 (config.projectDir; the default)
+<project>/                     the project folder (config.projectDir)
 ├── STATUS.md                  the hand-off between sessions: where we are, next step, open questions
 ├── state.json                 machine-readable phase and exploration state (edit only through state.mjs)
 ├── product.md                 product grounding: users, reference products, brand feel, a11y bar, scope, real-content sources
@@ -20,11 +22,14 @@ design-system/                 (config.projectDir; the default)
 ├── handoffs/<topic>.md        translate specs ready to build
 ├── tidy/backlog.md            the tidy batches, their status and results
 ├── figma/                     mirror.json (Figma ids ↔ tokens/components), drift.md
-├── shots/                     screenshots (gitignored; regenerate any time)
+├── shots/                     screenshots (gitignored; regenerate any time), except shots/kept/
+│   └── kept/<topic>/          screenshots a handoff, brief or baseline links to (committed)
 └── scripts/                   vendored massimo scripts, so CI and teammates without the plugin can run them
 ```
 
-Paths in `massimo.config.json` are repo-relative. `design-system/` is committed; `shots/` is gitignored by `design-system/.gitignore`.
+Paths in `massimo.config.json` are repo-relative. `<project>/` is committed. `shots/` is gitignored by `<project>/.gitignore`, apart from `shots/kept/`: a screenshot that a committed file links to is copied there, so a teammate who opens the handoff sees it.
+
+Config keys beyond the paths: `tokens.darkSelector`, `tokens.darkMedia`, `tokens.defaultMode` and `tokens.selectors` (how the app switches theme), `graph.extraKeys` (a repo's own `ds:` header keys), `graph.classLibraries` (extra class-based component libraries, see the graph skill), and `ticketPattern`: a regular expression for the repo's ticket ids (`"PROJ-\\d+"`). When it is set, the graph lists the ticket ids each component file mentions, so a reader can find the why behind a component.
 
 ## Phases
 
@@ -37,14 +42,14 @@ Paths in `massimo.config.json` are repo-relative. `design-system/` is committed;
 | `stories` | `stories` | the native story lane runs and the agreed set of components has baseline stories |
 | `tokens` | `tokens` | tokens.json exists, builds into the repo's styling, and the user approved each group |
 | `tidy` | `tidy` | the tidy backlog is cleared, or the user parked what is left |
-| `guard` | `guard` | `ds:` rules on the primitives, `ds:check` in CI, design-system/README.md written |
+| `guard` | `guard` | `ds:` rules on the primitives, `ds:check` in CI, <project>/README.md written |
 | `figma` | `figma` | optional; tokens and primitives mirrored, mirror.json recorded |
 
 Status values: `todo`, `in_progress`, `done`, `skipped`. A user can skip any phase at setup or later. The `ux` loop is not a phase: it runs whenever there is a surface to design, and its topics live in `state.json` → `explorations`.
 
 ## Scripts
 
-Before setup, run scripts from the plugin: `node <plugin-root>/scripts/<name>.mjs`. After setup, run the vendored copy: `node design-system/scripts/<name>.mjs`. They are the same files; `init.mjs --update-scripts` refreshes the vendored copy when the plugin is newer.
+Before setup, run scripts from the plugin: `node <plugin-root>/scripts/<name>.mjs`. After setup, run the vendored copy: `node <project>/scripts/<name>.mjs`. They are the same files; `init.mjs --update-scripts` refreshes the vendored copy when the plugin is newer.
 
 The plugin root is two directories above a skill's base directory (`<plugin-root>/skills/<skill>/`). Agents receive it in their dispatch prompt.
 
@@ -55,10 +60,11 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 | `state.mjs` | `show`, `next`, `set`, `decide`, `explore`, `render` |
 | `graph.mjs` | writes graph.md/json; `--check` for CI |
 | `audit.mjs` | raw-value audit; `--baseline` (first time), `--lower` (after a fix) and `--check` (CI) ratchet per offender |
-| `tokens.mjs` | `extract`, `build`, `kit`, `check`, `preview` |
+| `tokens.mjs` | `extract`, `build`, `kit`, `check`, `preview`, `hash` |
 | `canvas.mjs` | builds an exploration's side-by-side canvas page |
 | `serve.mjs` | zero-dependency static server for the project folder |
-| `shoot.mjs` | screenshots and pixel diffs through Playwright, when the repo has it |
+| `shoot.mjs` | screenshots, page snapshots (`--dom`) and pixel diffs through Playwright, when the repo has it |
+| `agent-guard.mjs` | the plugin's PreToolUse hook: massimo's reviewers write nothing, and its ideator writes only inside `<project>/explorations/` |
 
 ## Session protocol
 
@@ -66,13 +72,13 @@ Every skill follows this, so any session can be the next one.
 
 **Begin.**
 
-1. Run `node design-system/scripts/state.mjs show`. Read `design-system/STATUS.md`. Read `product.md` when the work touches design judgement.
+1. Run `node <project>/scripts/state.mjs show`. Read `<project>/STATUS.md`. Read `product.md` when the work touches design judgement.
 2. Read the last ten lines of `decisions.md` when the phase builds on earlier choices.
 3. If `STATUS.md` → Open questions holds something this phase needs, ask it before working.
 
 **During.**
 
-- Record each decision the user makes: `node design-system/scripts/state.mjs decide "<decision>" --why "<reason>" --phase <id>`. A decision is a choice someone could later ask "why?" about: a token value, a merge, a skipped component, a picked direction.
+- Record each decision the user makes: `node <project>/scripts/state.mjs decide "<decision>" --why "<reason>" --phase <id>`. A decision is a choice someone could later ask "why?" about: a token value, a merge, a skipped component, a picked direction.
 - Mark phase progress as it moves: `state.mjs set <phase> in_progress --note "<short progress, e.g. 18/40 primitives storied>"`.
 
 **End** (including when the user stops mid-phase).

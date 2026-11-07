@@ -12,4 +12,4 @@ Whatever you choose:
 - Put the flag check in config or routing, never inside the story pages alone (a page that 404s at runtime still ships).
 - Add `ds:stories` and `ds:stories:build` scripts, and fill `massimo.config.json` → `stories` (`include`, `devCommand`, `url`, `storyUrl` with `{slug}`, `port`).
 - Write the leak check for the stack: build production, then prove no story route or `data-story-state` marker is in the output.
-- Record the mechanism and why in `decisions.md`, and add a short "how the lane works" note to `design-system/README.md` in the guard phase.
+- Record the mechanism and why in `decisions.md`, and add a short "how the lane works" note to `<project>/README.md` in the guard phase.

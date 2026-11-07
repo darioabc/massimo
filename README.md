@@ -84,11 +84,11 @@ design-system/
   scripts/               zero-dependency Node scripts, vendored so CI and teammates without the plugin can run them
 ```
 
-Everything is plain Markdown, JSON and HTML, committed with your code. `npm run ds:serve` opens the folder in a browser: the project's status first, with the graph, audits, handoffs and token preview one click away.
+Everything is plain Markdown, JSON and HTML, committed with your code. `npm run ds:serve` (or `node design-system/scripts/serve.mjs` in a repo with no `package.json`) opens the folder in a browser: the project's status first, with the graph, audits, handoffs and token preview one click away.
 
 ## Supported stacks
 
-Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, DaisyUI themes, SCSS and TypeScript.
+Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript and JSON. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
 
 ## Principles
 
@@ -101,7 +101,7 @@ The name is an homage to Massimo Vignelli, whose work treated design as a discip
 
 ## Made by
 
-[Dario Codipietro](https://dariocodipietro.co.uk/massimo/). I also make [Fiuto](https://fiuto.ai/?utm_source=massimo&utm_medium=readme&utm_campaign=massimo): once massimo has helped you pick a direction, Fiuto tests it with real people, writing the study, running it, and turning what happened into findings.
+[Dario Codipietro](https://dariocodipietro.co.uk). I also make [Fiuto](https://fiuto.ai/?utm_source=massimo&utm_medium=readme&utm_campaign=massimo): once massimo has helped you pick a direction, Fiuto tests it with real people, writing the study, running it, and turning what happened into findings.
 
 ## License
 

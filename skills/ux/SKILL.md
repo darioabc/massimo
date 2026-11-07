@@ -13,14 +13,14 @@ review+build:  target → baseline gate → reviewer + visual-reviewer → synth
 ideate:        problem → discovery + market scan → ideator rounds ⇄ user → pick → translator → fidelity gate → handoff
 ```
 
-Plugin root: two directories above this skill's base directory (`<plugin>`). Read `<plugin>/reference/method.md` (the method) and `<plugin>/reference/mockups.md` (files, canvas, showing rounds) before the first dispatch. Follow `<plugin>/reference/project.md` → Session protocol.
+Plugin root: two directories above this skill's base directory (`<plugin>`). Read `<plugin>/reference/method.md` (the method) and `<plugin>/reference/mockups.md` (files, canvas, showing rounds) before the first dispatch. Follow `<plugin>/reference/project.md` → Session protocol. `<project>` is the project folder: `projectDir` in `massimo.config.json`, `design-system` by default.
 
 ## Startup
 
-1. **Project.** If there is no `massimo.config.json`, the loop has nowhere to keep its state: offer `/massimo:start` (a quick setup that can skip every other phase). Read `design-system/product.md`; if it is mostly placeholders, ask the three questions that matter most for this topic (users, the bar, scope) and write the answers in.
-2. **Topic.** Slug the topic from the argument or the user's words (`checkout-summary`). If `design-system/explorations/<topic>/brief.md` exists, this is a resume: read the brief, the latest `round-N/round.json`, and its verdict, tell the user where the loop stands in two lines, and continue from that step. Otherwise create the folder and `brief.md` (shape below) and run `state.mjs explore <topic> --arc <arc> --target "<surface>" --status framing`.
+1. **Project.** If there is no `massimo.config.json`, the loop has nowhere to keep its state: offer `/massimo:start` (a quick setup that can skip every other phase). Read `<project>/product.md`; if it is mostly placeholders, ask the three questions that matter most for this topic (users, the bar, scope) and write the answers in.
+2. **Topic.** Slug the topic from the argument or the user's words (`checkout-summary`). If `<project>/explorations/<topic>/brief.md` exists, this is a resume: read the brief, the latest `round-N/round.json`, and its verdict, tell the user where the loop stands in two lines, and continue from that step. Otherwise create the folder and `brief.md` (shape below) and run `state.mjs explore <topic> --arc <arc> --target "<surface>" --status framing`.
 3. **Arc.** An existing surface (route, screen, component, flow) → review+build. Nothing exists yet → ideate. Two surfaces share a name → ask one short question.
-4. **Kit.** Make sure `design-system/kit/kit.css` exists (`node design-system/scripts/tokens.mjs kit`), so mockups render in the product's real tokens.
+4. **Kit.** Make sure `<project>/kit/kit.css` exists (`node <project>/scripts/tokens.mjs kit`), so mockups render in the product's real tokens.
 5. **Capsule.** Distil `product.md` into a capsule of eight lines at most (users, the bar, brand feel, scope, accessibility bar, viewports, real-content source) and write it into the brief. Every dispatch carries it.
 
 ## Dispatch
@@ -44,7 +44,7 @@ Reviewers can run in parallel. Everything else is sequential. If the host has no
    - Fail → dispatch `massimo:baseline` with the surface's source files and the real-content source. It returns a story path, screenshots and the real content, or says plainly it could not reach real content. If it could not, tell the user before round 1.
    - No story lane at all → screenshot the live page from the dev server instead, and say the baseline is a page screenshot.
    Record the baseline in the brief.
-2. **Reviews.** Dispatch `massimo:reviewer` and `massimo:visual-reviewer` together on the baseline (story URL and screenshots, source files).
+2. **Reviews.** `state.mjs explore <topic> --status reviewing`. The reviewers have no browser, so capture what they review first: a screenshot of each viewport and state the baseline shows (`shoot.mjs --url <story url> --out <project>/shots/kept/<topic>/baseline/<viewport>-<state>.png --width <w> --dom <same name>.txt`, or the host's browser tool, saving the page's accessibility tree or HTML as the text file). Dispatch `massimo:reviewer` and `massimo:visual-reviewer` together with those files, the story URL and the source files.
 3. **Synthesis.** Pool, sort, merge and write one judgement in the shape from method.md. Put it in the brief. Show the user only the synthesis, never raw reports.
 4. **Round 1.** Dispatch `massimo:ideator` in review mode with the synthesis, the market notes from the reviewer, the baseline screenshot and story path, the real content, and `round: 1`, writing to `<topic>/round-1/`.
 5. **Loop.** See below.
@@ -63,18 +63,18 @@ Reviewers can run in parallel. Everything else is sequential. If the host has no
 
 After every ideator return:
 
-1. **Drift check** (round 2 onwards). Compare each returned direction with the baseline file named in `round.json`. If anything outside the briefed axis changed (chrome dropped, columns or data altered, invented statuses), send that direction back to a fresh ideator with the drift named. Never show drifted mockups.
-2. **Show it.** `node design-system/scripts/canvas.mjs design-system/explorations/<topic>` and present it as mockups.md → Showing a round says (browser pane on `serve.mjs`, or a published single page with `--inline`, or inline HTML). One canvas URL for the whole loop.
+1. **Render and drift check.** The ideator has no browser, so open each returned direction yourself (served by `serve.mjs`, or `shoot.mjs`) and send back one that renders broken: overflow, the kit missing, unreadable contrast. From round 2, also compare each direction with the baseline file named in `round.json`. If anything outside the briefed axis changed (chrome dropped, columns or data altered, invented statuses), send that direction back to a fresh ideator with the drift named. Never show broken or drifted mockups.
+2. **Show it.** `node <project>/scripts/canvas.mjs <project>/explorations/<topic>` and present it as mockups.md → Showing a round says (browser pane on `serve.mjs`, or a published single page with `--inline`, or inline HTML). One canvas URL for the whole loop.
 3. **Synthesis**, short: verdict, recommended direction, why each direction matters, the trade-off.
 4. **Ask for a decision** in plain words: lock one, use one as a seed for another round, none of these (another round), or stop for now. Use the host's question tool when available, recommendation first.
-5. **Record.** Write the verdict into `round-N/round.json` (`decision`, `pick`, `feedback`), a line in the brief's Rounds log, `state.mjs explore <topic> --round N --status <awaiting-pick|ideating|translating|parked>`, and `state.mjs decide` for a lock. Re-run canvas.mjs so the page shows the verdict.
+5. **Record.** Write the verdict into `round-N/round.json` (`decision`, `pick`, `feedback`), a line in the brief's Rounds log, `state.mjs explore <topic> --round N --status <awaiting-pick|ideating|translating|parked>` (on a lock, also `--pick round-N/<File>.html`), and `state.mjs decide` for a lock. Re-run canvas.mjs so the page shows the verdict.
 6. **Next round** on seed or none: dispatch a fresh ideator with round N+1, the user's feedback, rejected directions, the seed if any, and the **canonical baseline's file path** (the seed's file when the user seeded; otherwise the round-1 most faithful direction). Three fresh directions by default. Do not repeat discovery or reviews unless the problem changed.
 7. **Stop** → mark the exploration `parked` with a note on where to pick up; the brief already holds everything.
 
 ## Translate, fidelity gate, handoff
 
-1. **Translate.** Dispatch `massimo:translator` with the picked direction's file path (it reads the file itself), its rationale and scope, the round history in brief, the target surface, and the story lane details. It renders the full picked surface as a story from real components and tokens, screenshots it, and writes `design-system/handoffs/<topic>.md` (element map: map / edit / new, files to touch, build route).
-2. **Fidelity gate.** Dispatch `massimo:visual-reviewer` in fidelity mode with the picked mockup file and the translator's screenshots. Severity 3 or above → re-dispatch the translator once to amend, then review again. Still drifting → the user decides (accept, translate again, or reopen ideation). Severity 2 or below → build notes in the handoff. A copy-only pick with nothing to render skips the gate; say so.
+1. **Translate.** Dispatch `massimo:translator` with the picked direction's file path (it reads the file itself), its rationale and scope, the round history in brief, the target surface, and the story lane details. It renders the full picked surface as a story from real components and tokens, screenshots it, and writes `<project>/handoffs/<topic>.md` (element map: map / edit / new, files to touch, build route).
+2. **Fidelity gate.** `state.mjs explore <topic> --status fidelity`, then dispatch `massimo:visual-reviewer` in fidelity mode with the picked mockup file and the translator's screenshots. Severity 3 or above → re-dispatch the translator once to amend, then review again. Still drifting → the user decides (accept, translate again, or reopen ideation). Severity 2 or below → build notes in the handoff. A copy-only pick with nothing to render skips the gate; say so.
 3. **Handoff.** Show the user the story render beside the approved mockup, and the handoff summary: what maps to existing components, what edits a shared primitive (with its blast radius from the graph), what is new. `state.mjs explore <topic> --status handed-off`.
 4. **Build, if asked.** The handoff is the plan. Offer to implement it now in this session (wire the story-proven components into the real route, on a branch, with the repo's checks), or leave it for a developer. A new reusable component or token goes back through the graph and tokens skills' rules. After a build, `state.mjs explore <topic> --status built`.
 

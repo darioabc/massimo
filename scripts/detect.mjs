@@ -4,11 +4,12 @@
 // aliases, scripts, and a suggested massimo.config.json. The start skill
 // shows this to the user to confirm before anything is written.
 //
-//   detect.mjs [--root <dir>] [--pretty]
+//   detect.mjs [--root <dir>]
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { compare } from './lib/glob.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson } from './lib/project.mjs'
 
 const { flags } = parseArgs()
@@ -128,7 +129,7 @@ function componentDirs() {
     if (!m) continue
     counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
   }
-  return [...counts.entries()].map(([dir, count]) => ({ dir, count })).sort((a, b) => b.count - a.count || a.dir.localeCompare(b.dir))
+  return [...counts.entries()].map(([dir, count]) => ({ dir, count })).sort((a, b) => b.count - a.count || compare(a.dir, b.dir))
 }
 
 const styleFileStats = files
@@ -149,7 +150,7 @@ const styleFileStats = files
 function styleFiles() {
   return styleFileStats
     .filter((s) => s.customProps >= 5 || s.theme)
-    .sort((a, b) => Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || a.file.localeCompare(b.file))
+    .sort((a, b) => Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || compare(a.file, b.file))
     .map(({ file, customProps, theme }) => ({ file, customProps, theme }))
 }
 
@@ -209,7 +210,7 @@ const ext = extByFramework[framework] ?? '{tsx,jsx}'
 const topDirs = dirs.slice(0, 3).map((d) => d.dir)
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
 
-// A repo may already own a design-system/ folder (a package, docs); only
+// A repo may already own a folder named design-system (a package, docs); only
 // reuse the name when it is ours.
 const projectDir = existsSync(join(root, 'design-system')) && !existsSync(join(root, 'design-system', 'state.json')) ? '.massimo' : 'design-system'
 
@@ -231,7 +232,11 @@ const suggestedConfig = {
     source: `${projectDir}/tokens/tokens.json`,
     styleFiles: styles.slice(0, 3).map((s) => s.file),
   },
-  audit: DEFAULTS.audit,
+  // The audit reads the same tree as the consumers, so a repo with no src/ is still audited.
+  audit: {
+    include: [`${srcRoot === '.' ? '' : 'src/'}**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}`],
+    exclude: DEFAULTS.audit.exclude.map((g) => (srcRoot === '.' ? g.replace(/^src\//, '') : g)),
+  },
 }
 
 const result = {
@@ -253,4 +258,4 @@ const result = {
   suggestedConfig,
 }
 
-process.stdout.write(`${JSON.stringify(result, null, flags.pretty === false ? 0 : 2)}\n`)
+process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)

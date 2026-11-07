@@ -7,7 +7,7 @@ description: Tidy the codebase onto the design system in small, user-approved ba
 
 Drift comes back unless the clean-up is visible and reversible. So tidy works in batches the user can see: what changes, where, and what it looks like before and after. Each accepted batch is its own commit; a rejected one is discarded with nothing else touched.
 
-Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol and `<plugin>/reference/canon.md`.
+Plugin root: two directories above this skill's base directory. Follow `<plugin>/reference/project.md` → Session protocol and `<plugin>/reference/canon.md`. `<project>` is the project folder: `projectDir` in `massimo.config.json`, `design-system` by default.
 
 ## Before starting
 
@@ -18,8 +18,8 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 ## Run
 
 1. **Begin.** `state.mjs set tidy in_progress`.
-2. **Audit and baseline.** `node design-system/scripts/audit.mjs --baseline` (only if `audits/baseline.json` does not exist yet). The baseline is the ratchet, per offender (a file and the value it uses): from here no offender may rise and no new one may appear (the guard phase puts this in CI).
-3. **Build the backlog** in `design-system/tidy/backlog.md`, one batch per line, ordered safest first:
+2. **Audit and baseline.** `node <project>/scripts/audit.mjs --baseline` (only if `audits/baseline.json` does not exist yet). The baseline is the ratchet, per offender (a file and the value it uses): from here no offender may rise and no new one may appear (the guard phase puts this in CI).
+3. **Build the backlog** in `<project>/tidy/backlog.md`, one batch per line, ordered safest first:
    1. **Exact matches**: raw values identical to a token's value → the token. No visual change expected.
    2. **Arbitrary values**: Tailwind `p-[6px]`-style values on the scale → the scale class.
    3. **Near matches**: values in a colour or size cluster whose representative is a token → the token. Small visible change; needs the user's eye.
@@ -29,7 +29,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
    Each line: id, kind, scope (files, count), expected visual change (none / small / visible), status (todo, applied, accepted, rejected, parked). Batch size: about 20 files or one component family, so the diff stays reviewable.
 4. **Per batch:**
    1. Show the user the batch: what, where, how many, expected visual change, and two sample before/after lines. Ask to go ahead (designers decide near matches and merges; developers decide APIs and deletions).
-   2. Find the affected stories: components in the batch plus everything that composes them (graph `composedBy`), capped at the ten most-used. Screenshot them: `shoot.mjs` into `design-system/shots/tidy/<batch>/before/`.
+   2. Find the affected stories: components in the batch plus everything that composes them (graph `composedBy`), capped at the ten most-used. Screenshot them: `shoot.mjs` into `<project>/shots/tidy/<batch>/before/`.
    3. Apply. For mechanical batches (1, 2, 3), dispatch the `tidy-worker` agent with the batch line, the exact value→token map, the file list, and the rules below; several workers in parallel only when their file lists do not overlap. Do merges (4) yourself or with one worker, since they need judgement.
    4. Build the app (and typecheck/lint if the repo has them). Fix what the batch broke.
    5. Screenshot the same stories into `after/` and diff each pair (`shoot.mjs --diff`). Show the user the changed-pixel percentages and the diff images for anything above 0.1%.
