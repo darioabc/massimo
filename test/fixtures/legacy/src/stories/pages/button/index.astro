@@ -1,0 +1,9 @@
+---
+import Button from '../../../components/Button.astro'
+import StoryFrame from '../../StoryFrame.astro'
+import StoryState from '../../StoryState.astro'
+---
+<StoryFrame title="Button">
+  <StoryState label="Solid" note="The default."><Button /></StoryState>
+  <StoryState label="Quiet"><Button tone="quiet" /></StoryState>
+</StoryFrame>

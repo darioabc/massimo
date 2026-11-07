@@ -1,0 +1,9 @@
+---
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import StoryFrame from './StoryFrame.astro'
+import { stories } from './manifest'
+
+const placement = readFileSync(join(process.cwd(), 'docs/system/index.md'), 'utf8')
+---
+<StoryFrame title="Stories">{stories.length} {placement.length}</StoryFrame>

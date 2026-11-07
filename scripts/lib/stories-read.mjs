@@ -4,7 +4,7 @@
 // built from more than its literal, is reported as not statically readable,
 // never guessed.
 
-import { parseArrayAt } from './jsobject.mjs'
+import { parseArrayAt, parseObjectAt } from './jsobject.mjs'
 import { stripComments } from './source.mjs'
 
 // The fields a manifest entry may carry, beyond any of the lane's own:
@@ -287,5 +287,217 @@ export function slugFiles(pattern, files) {
     const m = re.exec(f)
     if (m && !out.has(m[1])) out.set(m[1], f)
   }
+  return out
+}
+
+// ── Story files of other tools ──────────────────────────────────────────────
+
+const IDENT = /^[A-Za-z_$][\w$]*/
+const META_LISTS = ['includeStories', 'excludeStories']
+const escapeName = (name) => name.replace(/\$/g, '\\$')
+
+// A string literal at the start of `s` (quotes, or a template without `${}`),
+// as its value; null when what is there is not one.
+function literalString(s) {
+  const quoted = /^\s*(["'])((?:\\.|(?!\1)[^\\\n])*)\1/.exec(s)
+  if (quoted) return quoted[2].replace(/\\(.)/g, '$1')
+  const template = /^\s*`((?:\\.|[^`\\$]|\$(?!\{))*)`/.exec(s)
+  return template ? template[1].replace(/\\(.)/g, '$1') : null
+}
+
+// The module each local import name comes from, as a Map.
+function importBindings(code) {
+  const out = new Map()
+  for (const m of code.matchAll(/(?<![\w$.])import\s+(?:type\s+)?([\w$*\s{},]+?)\s*\bfrom\s*(['"])([^'"\n]+)\2/g)) {
+    const head = m[1].replace(/\{[\s\S]*\}/, '').replace(/,\s*$/, '').trim()
+    const ns = /^\*\s*as\s+([\w$]+)/.exec(head)
+    if (ns) out.set(ns[1], m[3])
+    else if (head) out.set(head, m[3])
+    for (const item of /\{([\s\S]*)\}/.exec(m[1])?.[1].split(',') ?? []) {
+      const local = item.replace(/^\s*type\s+/, '').split(/\s+as\s+/).pop().trim()
+      if (local) out.set(local, m[3])
+    }
+  }
+  return out
+}
+
+// The object a CSF file default-exports: an inline literal, or the const it
+// names. null when there is no default export, { expr } when it is not a
+// literal.
+function csfDefault(text, code) {
+  const m = /(?<![\w$.])export\s+default\s+\(?\s*/.exec(code)
+  const named = /(?<![\w$.])export\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/.exec(code)
+  if (!m && !named) return null
+  const after = m ? m.index + m[0].length : -1
+  if (m && code[after] === '{') return parseObjectAt(text, after)
+  const name = m ? IDENT.exec(code.slice(after))?.[0] : named[1]
+  if (!name) return { expr: code.slice(after).split('\n')[0].trim() }
+  const decl = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(name)}\\s*(?::[^=;]*)?=\\s*\\(?\\s*`).exec(code)
+  if (decl && code[decl.index + decl[0].length] === '{') return parseObjectAt(text, decl.index + decl[0].length)
+  return { expr: name }
+}
+
+// The names a module exports beyond its default, in file order, as
+// { name, local, at, from }: `local` is the name inside the module, and
+// `from` the module a re-export comes from. `stars` lists the modules an
+// `export * from` passes on whole.
+function namedExports(code) {
+  const found = []
+  const add = (name, local, at, from = null) => {
+    if (name && name !== 'default' && !found.some((f) => f.name === name)) found.push({ name, local, at, from })
+  }
+  for (const m of code.matchAll(/(?<![\w$.])export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|var|function\*?)\s+([A-Za-z_$][\w$]*)/g)) add(m[1], m[1], m.index)
+  for (const m of code.matchAll(/(?<![\w$.])export\s*\{([^}]*)\}\s*(?:from\s*(['"])([^'"\n]+)\2)?/g)) {
+    for (const part of m[1].split(',')) {
+      if (/^\s*type\s/.test(part)) continue
+      const [local, name = local] = part.split(/\s+as\s+/).map((s) => s.trim())
+      add(name, local, m.index, m[3] ?? null)
+    }
+  }
+  const stars = [...code.matchAll(/(?<![\w$.])export\s*\*\s*(?:as\s+[\w$]+\s*)?from\s*(['"])([^'"\n]+)\1/g)].map((m) => m[2])
+  return { found: found.sort((a, b) => a.at - b.at), stars }
+}
+
+// A CSF file (Component Story Format: Storybook's, which Ladle reads too)
+// read as text. The default export gives the title, the component and the
+// rest of the meta; every named export is a story, with its storyName (or a
+// CSF3 object's `name`) and whether it sets args or argTypes. Returns
+//   { title, component, meta, stories, args, argTypes, unreadable }
+// where `component` is { name, from } (the identifier and the module it is
+// imported from), `meta` holds the default export's other literal fields,
+// `stories` is [{ export, storyName, args, argTypes }] in file order, and
+// `unreadable` lists what was left out as { story, field, detail }, `story`
+// being null for the default export or the whole file. A title left out is
+// null: Storybook then takes it from the path.
+export function readCsf(text, file = 'x.stories.tsx') {
+  const code = stripComments(text, file)
+  const out = { title: null, component: null, meta: {}, stories: [], args: false, argTypes: false, unreadable: [] }
+  const skip = (story, field, detail) => out.unreadable.push({ story, field, detail })
+  if (/(?<![\w$.])storiesOf\s*\(/.test(code)) {
+    skip(null, null, 'it uses storiesOf(), which adds its stories at run time')
+    return out
+  }
+  const meta = csfDefault(text, code)
+  let only = null
+  let except = null
+  if (meta === null) skip(null, null, 'it has no default export, so it is not a CSF file')
+  else if (isSkipped(meta)) skip(null, null, `its default export is ${meta.expr ?? meta.spread}, not an object literal`)
+  else {
+    if (meta.__spreads) skip(null, '...', `the default export spreads ${meta.__spreads.join(', ')} into it`)
+    for (const [key, value] of Object.entries(meta)) {
+      if (key === 'args' || key === 'argTypes') out[key] = true
+      else if (key === 'title') {
+        if (typeof value === 'string') out.title = value
+        else skip(null, 'title', 'title is not statically readable')
+      } else if (key === 'component') {
+        const name = isObject(value) && /^[A-Za-z_$][\w$.]*$/.test(value.expr ?? '') ? value.expr : null
+        if (name) out.component = { name, from: importBindings(code).get(name.split('.')[0]) ?? null }
+        else skip(null, 'component', 'component is not statically readable')
+      } else if (META_LISTS.includes(key)) {
+        if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+          if (key === 'includeStories') only = value
+          else except = value
+        } else skip(null, key, `${key} is not a list of names, so every named export is listed`)
+      } else if (unreadableIn(value)) skip(null, key, `${key} is not statically readable`)
+      else out.meta[key] = value
+    }
+  }
+  const { found, stars } = namedExports(code)
+  for (const from of stars) skip(null, null, `it passes on every export of ${from}, which are not listed`)
+  const assigned = (name, prop) => new RegExp(`(?<![\\w$.])${escapeName(name)}\\.${prop}\\s*=\\s*`).exec(code)
+  for (const { name, local, from } of found) {
+    if (name === '__namedExportsOrder' || (only && !only.includes(name)) || except?.includes(name)) continue
+    const story = { export: name, storyName: null, args: false, argTypes: false }
+    if (from) {
+      skip(name, null, `${name} is re-exported from ${from}`)
+      out.stories.push(story)
+      continue
+    }
+    // A CSF3 story is an object literal: its name, args and argTypes are keys.
+    const value = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(local)}\\s*(?::[^=;]*)?=\\s*`).exec(code)
+    const objectAt = value ? value.index + value[0].length : -1
+    const object = objectAt !== -1 && code[objectAt] === '{' ? parseObjectAt(text, objectAt) : null
+    if (object) {
+      for (const key of ['name', 'storyName']) {
+        if (object[key] === undefined) continue
+        if (typeof object[key] === 'string') story.storyName = object[key]
+        else skip(name, key, `${key} is not statically readable`)
+      }
+      story.args = 'args' in object
+      story.argTypes = 'argTypes' in object
+    }
+    // CSF2 and Ladle set them on the export after it.
+    const storyName = assigned(local, 'storyName')
+    if (storyName) {
+      const s = literalString(code.slice(storyName.index + storyName[0].length))
+      if (s === null) skip(name, 'storyName', 'storyName is not statically readable')
+      else story.storyName = s
+    }
+    story.args ||= Boolean(assigned(local, 'args'))
+    story.argTypes ||= Boolean(assigned(local, 'argTypes'))
+    out.args ||= story.args
+    out.argTypes ||= story.argTypes
+    out.stories.push(story)
+  }
+  return out
+}
+
+// Where the tag whose attributes start at `i` ends, as { selfClosing }, past
+// quoted values and `{...}` expressions; null when it never closes.
+function tagEnd(src, i) {
+  for (; i < src.length; i++) {
+    const c = src[i]
+    if (c === '"' || c === "'") i = skipQuoted(src, i)
+    else if (c === '{') {
+      const close = closeBrace(src, i)
+      if (close === -1) return null
+      i = close
+    } else if (c === '>') return { selfClosing: src[i - 1] === '/' }
+  }
+  return null
+}
+
+// A Histoire story file (`*.story.vue`, `*.story.svelte`) read as text: each
+// <Story> with its title and the titles of the <Variant>s inside it
+// (`Hst.Story` and `Hst.Variant` in Svelte). A bound title (`:title`, or
+// `title={...}` that is not a literal) is not statically readable; a missing
+// one is null, since Histoire then names it. Returns
+//   { stories: [{ title, variants: [title] }], unreadable: [{ story, field, detail }] }
+export function readHistoire(text) {
+  const template = templateOf(text)
+  const out = { stories: [], unreadable: [] }
+  const titleOf = (attrs, story, what) => {
+    const bound = attrs[':title'] !== undefined || attrs['v-bind:title'] !== undefined
+    const t = attrs.title
+    if (!bound && (t === undefined || t === true)) return null
+    if (!bound && typeof t === 'string') return t
+    out.unreadable.push({ story, field: what.startsWith('variant') ? 'variant' : 'title', detail: `the title of ${what} is not statically readable` })
+    return null
+  }
+  const open = []
+  let loose = 0
+  for (const m of template.matchAll(/<(\/?)((?:Hst\.)?(?:Story|Variant))(?=[\s/>])/g)) {
+    const kind = m[2].replace(/^Hst\./, '')
+    if (m[1]) {
+      if (kind === 'Story') open.pop()
+      continue
+    }
+    const at = m.index + m[0].length
+    const attrs = readAttributes(template, at)
+    const end = tagEnd(template, at)
+    if (!attrs || !end) continue
+    if (kind === 'Story') {
+      const index = out.stories.length
+      out.stories.push({ title: titleOf(attrs, index, `story ${index + 1}`), variants: [] })
+      if (!end.selfClosing) open.push(index)
+    } else if (open.length === 0) {
+      loose++
+    } else {
+      const index = open[open.length - 1]
+      const story = out.stories[index]
+      story.variants.push(titleOf(attrs, index, `variant ${story.variants.length + 1} of story ${index + 1}`))
+    }
+  }
+  if (loose > 0) out.unreadable.push({ story: null, field: 'variant', detail: `${loose} ${loose === 1 ? 'variant sits' : 'variants sit'} outside any <Story>` })
   return out
 }

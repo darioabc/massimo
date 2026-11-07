@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { compare } from './lib/glob.mjs'
+import { adoptableSummary } from './lib/inventory.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson } from './lib/project.mjs'
 
 const { flags } = parseArgs()
@@ -361,6 +362,19 @@ const suggestedConfig = {
   },
 }
 
+// What `adopt.mjs scan` would find: a lane or story tool, ds: keys beyond the
+// built-in ones, the repo's own graph, ratchet or token inventory, a
+// DESIGN.md. Only listed when there is something, so the report of a repo
+// with nothing to adopt is as it was.
+let existingConfig = null
+try {
+  existingConfig = readJson(join(root, CONFIG_FILE), null)
+} catch {
+  // an unreadable config: the project folder detect would choose stands in
+}
+const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
+const adoptable = adoptableSummary(root, files.filter((f) => !f.startsWith(ownDir)), { tools: stories.tools, lane })
+
 const result = {
   root,
   name: pkg.name ?? null,
@@ -379,6 +393,7 @@ const result = {
   styleFiles: styles.slice(0, 10),
   aliases: suggestedConfig.aliases,
   suggestedConfig,
+  ...(adoptable.length > 0 ? { adoptable } : {}),
 }
 
 process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)

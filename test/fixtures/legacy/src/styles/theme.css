@@ -1,0 +1,14 @@
+/* The theme: every colour and size the components read. */
+:root {
+  --brand: #0f766e;
+  --ink: #1a1c1e;
+  --ground: #faf8f4;
+  --space-2: 0.5rem;
+  --space-4: 1rem;
+  --radius: 6px;
+}
+
+html.dark {
+  --ink: #f4f1ea;
+  --ground: #16181a;
+}

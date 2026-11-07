@@ -68,7 +68,8 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 
 | script | does |
 |---|---|
-| `detect.mjs` | reads the repo and prints the stack as JSON, with a suggested config |
+| `detect.mjs` | reads the repo and prints the stack as JSON, with a suggested config, and `adoptable` when the repo has a setup of its own to adopt |
+| `adopt.mjs` | `scan`: what the repo already has (story tools and lanes, a census of its `ds:` keys, its own graph, ratchet, token files, DESIGN.md and the script that writes them) and who depends on each; read-only, printed before init and written to `<project>/adopt/inventory.json` and `inventory.md` after |
 | `init.mjs` | writes config, project folder, templates, vendored scripts, npm scripts; never overwrites |
 | `state.mjs` | `show`, `next`, `set`, `decide`, `explore`, `render` |
 | `graph.mjs` | writes graph.md/json; `--check` for CI |
