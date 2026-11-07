@@ -27,6 +27,12 @@
 - Sorting no longer depends on the locale, dead code is gone, and the scripts share one set of text helpers (`scripts/lib/text.mjs`).
 - The homepage in the manifests points at the README on GitHub.
 
+### Added
+
+- Readers for every place an existing repo keeps design values (`scripts/lib/readers.mjs`): CSS custom properties, now with `light-dark()` split into light and dark and RGB or HSL channel triplets (`236 229 209`, `210 40% 98%`) typed as colours that keep their channels as CSS; a Tailwind 3 config (`theme` and `theme.extend`, `DEFAULT` as `$root`, `rgb(var(--x) / <alpha-value>)` as a reference, font-size tuples as type steps); a CSS-in-JS or JS theme object (MUI, Chakra, Stitches, vanilla-extract and plain exports); Tokens Studio files; and Figma variables exported as JSON, from the REST API or from `read-library.js`. JavaScript is read as text by a small object-literal reader and never run, so a config reads without its packages installed; anything computed or spread is named in a note instead of guessed.
+- The colour parser knows all 148 CSS named colours (24 before), computes `color-mix()` in sRGB, linear sRGB, OKLab and OKLCH, and reads `light-dark()`.
+- The audit counts an inventory of the families a token set needs beyond its findings: line heights, letter spacing, font weights, shadows, borders, durations, easings, z-index and opacity, from CSS, JS style objects and Tailwind classes. It also says what each colour cluster is used for (background, text, border, fill, shadow). Neither joins the ratchet, so existing baselines do not move.
+
 ### Changed
 
 - Tokens are written in the W3C Design Tokens format 2025.10. A resolver document (`tokens/tokens.resolver.json`, `"version": "2025.10"`) ties `base.tokens.json` to one file per theme (`theme/dark.tokens.json`); colours are colour objects in their own colour space, sizes and durations are `{ value, unit }`, typography, shadow, border, transition, gradient and stroke style are composites, and every token has an explicit or inherited `$type`, never a guess. massimo reads `$root`, `$extends`, `$ref` and `$deprecated`, keeps other tools' `$extensions`, and checks every value against its type. Each file it writes carries `$extensions.massimo.format: 2`, and a newer format or resolver version is refused with "update massimo". A `tokens.json` from before 0.2.0 still builds exactly as before.

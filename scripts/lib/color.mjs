@@ -7,31 +7,40 @@
 
 const clamp01 = (n) => Math.min(1, Math.max(0, n))
 
-const NAMED = {
-  black: '#000000',
-  white: '#ffffff',
-  transparent: '#00000000',
-  red: '#ff0000',
-  green: '#008000',
-  blue: '#0000ff',
-  yellow: '#ffff00',
-  orange: '#ffa500',
-  purple: '#800080',
-  pink: '#ffc0cb',
-  gray: '#808080',
-  grey: '#808080',
-  silver: '#c0c0c0',
-  navy: '#000080',
-  teal: '#008080',
-  cyan: '#00ffff',
-  aqua: '#00ffff',
-  magenta: '#ff00ff',
-  fuchsia: '#ff00ff',
-  lime: '#00ff00',
-  maroon: '#800000',
-  olive: '#808000',
-  brown: '#a52a2a',
-}
+// The 148 named colours of CSS Color 4, plus transparent.
+const NAMED = Object.fromEntries(
+  (
+    'aliceblue:f0f8ff antiquewhite:faebd7 aqua:00ffff aquamarine:7fffd4 azure:f0ffff beige:f5f5dc bisque:ffe4c4 black:000000 ' +
+    'blanchedalmond:ffebcd blue:0000ff blueviolet:8a2be2 brown:a52a2a burlywood:deb887 cadetblue:5f9ea0 chartreuse:7fff00 ' +
+    'chocolate:d2691e coral:ff7f50 cornflowerblue:6495ed cornsilk:fff8dc crimson:dc143c cyan:00ffff darkblue:00008b ' +
+    'darkcyan:008b8b darkgoldenrod:b8860b darkgray:a9a9a9 darkgreen:006400 darkgrey:a9a9a9 darkkhaki:bdb76b ' +
+    'darkmagenta:8b008b darkolivegreen:556b2f darkorange:ff8c00 darkorchid:9932cc darkred:8b0000 darksalmon:e9967a ' +
+    'darkseagreen:8fbc8f darkslateblue:483d8b darkslategray:2f4f4f darkslategrey:2f4f4f darkturquoise:00ced1 ' +
+    'darkviolet:9400d3 deeppink:ff1493 deepskyblue:00bfff dimgray:696969 dimgrey:696969 dodgerblue:1e90ff ' +
+    'firebrick:b22222 floralwhite:fffaf0 forestgreen:228b22 fuchsia:ff00ff gainsboro:dcdcdc ghostwhite:f8f8ff gold:ffd700 ' +
+    'goldenrod:daa520 gray:808080 green:008000 greenyellow:adff2f grey:808080 honeydew:f0fff0 hotpink:ff69b4 ' +
+    'indianred:cd5c5c indigo:4b0082 ivory:fffff0 khaki:f0e68c lavender:e6e6fa lavenderblush:fff0f5 lawngreen:7cfc00 ' +
+    'lemonchiffon:fffacd lightblue:add8e6 lightcoral:f08080 lightcyan:e0ffff lightgoldenrodyellow:fafad2 lightgray:d3d3d3 ' +
+    'lightgreen:90ee90 lightgrey:d3d3d3 lightpink:ffb6c1 lightsalmon:ffa07a lightseagreen:20b2aa lightskyblue:87cefa ' +
+    'lightslategray:778899 lightslategrey:778899 lightsteelblue:b0c4de lightyellow:ffffe0 lime:00ff00 limegreen:32cd32 ' +
+    'linen:faf0e6 magenta:ff00ff maroon:800000 mediumaquamarine:66cdaa mediumblue:0000cd mediumorchid:ba55d3 ' +
+    'mediumpurple:9370db mediumseagreen:3cb371 mediumslateblue:7b68ee mediumspringgreen:00fa9a mediumturquoise:48d1cc ' +
+    'mediumvioletred:c71585 midnightblue:191970 mintcream:f5fffa mistyrose:ffe4e1 moccasin:ffe4b5 navajowhite:ffdead ' +
+    'navy:000080 oldlace:fdf5e6 olive:808000 olivedrab:6b8e23 orange:ffa500 orangered:ff4500 orchid:da70d6 ' +
+    'palegoldenrod:eee8aa palegreen:98fb98 paleturquoise:afeeee palevioletred:db7093 papayawhip:ffefd5 peachpuff:ffdab9 ' +
+    'peru:cd853f pink:ffc0cb plum:dda0dd powderblue:b0e0e6 purple:800080 rebeccapurple:663399 red:ff0000 ' +
+    'rosybrown:bc8f8f royalblue:4169e1 saddlebrown:8b4513 salmon:fa8072 sandybrown:f4a460 seagreen:2e8b57 ' +
+    'seashell:fff5ee sienna:a0522d silver:c0c0c0 skyblue:87ceeb slateblue:6a5acd slategray:708090 slategrey:708090 ' +
+    'snow:fffafa springgreen:00ff7f steelblue:4682b4 tan:d2b48c teal:008080 thistle:d8bfd8 tomato:ff6347 ' +
+    'turquoise:40e0d0 violet:ee82ee wheat:f5deb3 white:ffffff whitesmoke:f5f5f5 yellow:ffff00 yellowgreen:9acd32 ' +
+    'transparent:00000000'
+  )
+    .split(' ')
+    .map((pair) => {
+      const [name, hex] = pair.split(':')
+      return [name, `#${hex}`]
+    }),
+)
 
 // sRGB transfer functions.
 const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
@@ -338,17 +347,103 @@ export function colorFromCss(input) {
 // sRGB `{ r, g, b, a }` of a DTCG colour object, for contrast and Figma.
 export const colorToSrgb = (v) => parseColor(colorCss(v))
 
+// Split on commas outside brackets.
+function splitArgs(text) {
+  const out = []
+  let depth = 0
+  let cur = ''
+  for (const c of text) {
+    if (c === '(') depth++
+    else if (c === ')') depth--
+    if (c === ',' && depth === 0) {
+      out.push(cur.trim())
+      cur = ''
+    } else {
+      cur += c
+    }
+  }
+  out.push(cur.trim())
+  return out
+}
+
+// color-mix(in <space>, a [p%], b [p%]), per CSS Color 5: percentages
+// normalised to sum to 1 (a sum under 100% scales the alpha down), mixed with
+// premultiplied alpha in sRGB, linear sRGB, OKLab or OKLCH (shorter hue).
+// Other spaces, and any var(), give null.
+function colorMix(space, args) {
+  if (args.length !== 2) return null
+  const parts = args.map((arg) => {
+    const m = /^(?:(\d*\.?\d+)%\s+)?([\s\S]*?)(?:\s+(\d*\.?\d+)%)?$/.exec(arg)
+    if (!m) return null
+    const color = parseColor(m[2])
+    return color ? { color, p: m[1] ?? m[3] } : null
+  })
+  if (parts.some((p) => !p)) return null
+  let [p1, p2] = parts.map((p) => (p.p === undefined ? null : Number(p.p) / 100))
+  if (p1 === null && p2 === null) p1 = p2 = 0.5
+  else if (p1 === null) p1 = 1 - p2
+  else if (p2 === null) p2 = 1 - p1
+  const sum = p1 + p2
+  if (sum <= 0) return null
+  const scale = sum < 1 ? sum : 1
+  ;[p1, p2] = [p1 / sum, p2 / sum]
+  const [c1, c2] = parts.map((p) => p.color)
+  const into = {
+    srgb: (c) => [c.r, c.g, c.b],
+    'srgb-linear': (c) => [toLinear(c.r), toLinear(c.g), toLinear(c.b)],
+    oklab: (c) => Object.values(toOklab(c)),
+    oklch: (c) => {
+      const { L, a, b } = toOklab(c)
+      return [L, Math.hypot(a, b), ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360]
+    },
+  }[space]
+  if (!into) return null
+  const [x, y] = [into(c1), into(c2)]
+  if (space === 'oklch') {
+    // Shorter hue; an achromatic colour takes the other's hue.
+    if (x[1] < 1e-4) x[2] = y[2]
+    if (y[1] < 1e-4) y[2] = x[2]
+    const d = y[2] - x[2]
+    if (d > 180) x[2] += 360
+    else if (d < -180) y[2] += 360
+  }
+  const a = c1.a * p1 + c2.a * p2
+  const mixed = x.map((v, i) => (a === 0 ? 0 : (v * c1.a * p1 + y[i] * c2.a * p2) / a))
+  const alpha = a * scale
+  if (space === 'srgb') return { r: clamp01(mixed[0]), g: clamp01(mixed[1]), b: clamp01(mixed[2]), a: clamp01(alpha) }
+  if (space === 'srgb-linear') return rgbaFromLinear(mixed[0], mixed[1], mixed[2], alpha)
+  if (space === 'oklab') return oklabToRgb(mixed[0], mixed[1], mixed[2], alpha)
+  const rad = (mixed[2] * Math.PI) / 180
+  return oklabToRgb(mixed[0], mixed[1] * Math.cos(rad), mixed[1] * Math.sin(rad), alpha)
+}
+
 // Parse a CSS colour string to sRGB `{ r, g, b, a }` (each 0-1), or null when
 // it is not a colour this module understands (var(), currentColor, calc()...).
+// light-dark() gives its light colour; colorModes() gives both.
 export function parseColor(input) {
   if (typeof input !== 'string') return null
   const str = input.trim().toLowerCase()
   if (!str) return null
   if (str[0] === '#') return parseHex(str)
   if (NAMED[str]) return parseHex(NAMED[str])
+  const mix = /^color-mix\(\s*in\s+([a-z-]+)(?:\s+(?:shorter|longer|increasing|decreasing)\s+hue)?\s*,([\s\S]*)\)$/.exec(str)
+  if (mix) return colorMix(mix[1], splitArgs(mix[2]))
+  const ld = /^light-dark\(([\s\S]*)\)$/.exec(str)
+  if (ld) {
+    const [light, dark] = splitArgs(ld[1])
+    return dark === undefined ? null : parseColor(light)
+  }
   const m = /^(rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(\s*([\s\S]*?)\s*\)$/.exec(str)
   if (!m) return null
   return parseFunctional(m[1], m[2])
+}
+
+// A light-dark() colour's two sides as CSS text, { light, dark }, or null.
+export function colorModes(input) {
+  const ld = /^\s*light-dark\(([\s\S]*)\)\s*$/i.exec(String(input))
+  if (!ld) return null
+  const [light, dark] = splitArgs(ld[1])
+  return dark === undefined ? null : { light, dark }
 }
 
 // OKLab { L, a, b } of an sRGB colour (alpha ignored).
