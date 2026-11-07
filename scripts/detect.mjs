@@ -129,37 +129,67 @@ function detectStoryTools() {
 }
 
 // A story lane the repo already built (massimo's shape, or its own): routes
-// that exist only when an env flag is set, and a stories folder with a
-// manifest or an index. Scaffolding a recipe over it would overwrite it.
+// that exist only when an env flag is set (or a separate stories config),
+// and a stories folder with a manifest or an index. Scaffolding a recipe
+// over it would overwrite it. The folder is the one the gate names; with
+// several candidates and none named, no lane is guessed.
+const LANE_INDEX = /(?:^|\/)stories\/(?:index|Gallery|StoriesIndex|main|\+page|page(?:\.story)?)\.[a-z]+$/
+const LANE_MANIFEST = /(?:^|\/)stories\/manifest\.(?:[cm]?[jt]s|json)$/
+const NOT_A_LANE = /^(?:docs|content|public|dist|build|out|coverage|\.storybook|\.ladle)\//
+const readText = (f) => {
+  try {
+    return readFileSync(join(root, f), 'utf8')
+  } catch {
+    return ''
+  }
+}
+
 function gatedLane() {
   const scripts = Object.entries(pkg.scripts ?? {})
-  const gated = scripts.filter(([, cmd]) => /\bSTORIES=(?:1|true)\b/.test(String(cmd)))
+  const gated = scripts.filter(([, cmd]) => /\bSTORIES=(?:1|true)\b/.test(String(cmd)) || /--config\s+\S*stories\S*\.config\./.test(String(cmd)))
   const configs = files.filter((f) => /^(?:astro|nuxt|vite|next|svelte)\.config\.[cm]?[jt]s$/.test(f) || /^vite\.[\w-]*stories[\w-]*\.config\.[cm]?[jt]s$/.test(f))
-  const configGate = configs.find((f) => {
-    try {
-      return /process\.env\.STORIES\b/.test(readFileSync(join(root, f), 'utf8'))
-    } catch {
-      return false
-    }
-  })
+  // A config and the local files it imports (a lane integration lives in one).
+  const withImports = (f) => {
+    const text = readText(f)
+    return [text, ...[...text.matchAll(/from\s+['"](\.{1,2}\/[^'"]+)['"]/g)].map((m) => readText(join(f, '..', m[1])))]
+  }
+  const configGate = configs.find((f) => /stories/.test(f.split('/').pop()) || withImports(f).some((t) => /process\.env\.STORIES\b/.test(t)))
   if (gated.length === 0 && !configGate) return null
-  const manifest = files.find((f) => /(?:^|\/)stories\/manifest\.(?:[cm]?[jt]s|json)$/.test(f))
-  const index = files.find((f) => /(?:^|\/)stories\/(?:index|Gallery)\.[a-z]+$/.test(f))
-  if (!manifest && !index) return null
-  const dir = (manifest ?? index).replace(/\/[^/]+$/, '')
+  // What the gate names: its scripts, and its config with what that imports.
+  const gateText = [...gated.map(([, cmd]) => cmd), ...(configGate ? [configGate] : configs).flatMap(withImports)]
+  const named = (dir) => gateText.some((t) => t.includes(dir))
+  const dirOf = (f) => f.replace(/\/[^/]+$/, '')
+  const candidates = [...new Set(files.filter((f) => (LANE_INDEX.test(f) || LANE_MANIFEST.test(f)) && !NOT_A_LANE.test(f)).map(dirOf))].sort(compare)
+  const chosen = candidates.filter(named)
+  const dir = chosen.length >= 1 ? chosen[0] : candidates.length === 1 ? candidates[0] : null
+  if (!dir) return candidates.length > 1 ? { dir: null, candidates } : null
+  const manifest = files.find((f) => LANE_MANIFEST.test(f) && (dirOf(f) === dir || named(dirOf(f)))) ?? null
+  const index = files.find((f) => LANE_INDEX.test(f) && dirOf(f) === dir) ?? null
   const pages = files.filter((f) => f.startsWith(`${dir}/pages/`) && COMPONENT_EXT.test(f))
-  const dev = gated.find(([, cmd]) => /\b(?:dev|serve)\b/.test(String(cmd))) ?? gated[0]
-  const port = Number(String(dev?.[1] ?? '').match(/--port[ =](\d+)/)?.[1]) || null
+  // The dev script, never a build: dev, start or serve first.
+  const notDev = /\b(?:build|generate|export|test|check|preview|deploy|lint)\b/
+  const ranked = gated.filter(([name, cmd]) => !notDev.test(name) && !notDev.test(String(cmd)))
+  const dev = ranked.find(([name, cmd]) => /\b(?:dev|start|serve)\b/.test(`${name} ${cmd}`)) ?? ranked[0] ?? null
   return {
     dir,
-    manifest: manifest ?? null,
-    index: index ?? null,
+    manifest,
+    index,
     gate: configGate ?? (gated.length ? 'package.json scripts' : null),
     devScript: dev?.[0] ?? null,
-    port,
+    port: dev ? portOf(String(dev[1])) : null,
     pages: pages.length,
     files: files.filter((f) => f.startsWith(`${dir}/`)).length,
   }
+}
+
+// The port a dev command serves on: --port, -p or a PORT= prefix, through one
+// `npm run` hop; else the framework's default.
+function portOf(cmd, hops = 0) {
+  const m = cmd.match(/--port[ =](\d+)/) ?? cmd.match(/(?:^|\s)-p[ =]?(\d+)/) ?? cmd.match(/\bPORT=(\d+)/)
+  if (m) return Number(m[1])
+  const hop = /\b(?:npm run|pnpm(?: run)?|yarn(?: run)?|bun run)\s+([\w:.-]+)/.exec(cmd)
+  if (hop && hops < 1 && pkg.scripts?.[hop[1]]) return portOf(String(pkg.scripts[hop[1]]), hops + 1)
+  return frameworkPort()
 }
 
 // Folders whose files look like components, ranked by how many they hold.
@@ -250,6 +280,11 @@ function devPort() {
   const dev = String(pkg.scripts?.dev ?? '')
   const m = dev.match(/--port[ =](\d+)/) ?? dev.match(/-p (\d+)/)
   if (m) return Number(m[1])
+  return frameworkPort()
+}
+
+// The port a framework's dev server uses when none is given.
+function frameworkPort() {
   const framework = detectFramework()
   if (framework.startsWith('next') || framework === 'nuxt' || framework === 'react-router') return 3000
   if (framework === 'astro') return 4321
@@ -270,6 +305,7 @@ const styling = detectStyling()
 const dirs = componentDirs()
 const styles = styleFiles()
 const stories = detectStoryTools()
+const lane = stories.lane?.dir ? stories.lane : null
 const extByFramework = {
   'vite-vue': 'vue',
   nuxt: 'vue',
@@ -299,13 +335,16 @@ const suggestedConfig = {
   aliases: aliases(),
   // An existing gated lane is the lane: its pages are the stories, and its own
   // dev script and port run it.
-  stories: stories.lane
+  // A lane's pages are its stories; without a pages folder, its stories are
+  // the *.story.* files the recipes keep beside components, never the lane's
+  // own frames and wrappers.
+  stories: lane
     ? {
         ...DEFAULTS.stories,
-        include: [`${stories.lane.dir}/${stories.lane.pages > 0 ? 'pages/' : ''}**/*.{astro,tsx,jsx,vue,svelte,ts}`],
-        devCommand: stories.lane.devScript ? `npm run ${stories.lane.devScript}` : null,
-        port: stories.lane.port ?? DEFAULTS.stories.port,
-        url: stories.lane.port ? `http://localhost:${stories.lane.port}/stories` : null,
+        include: lane.pages > 0 ? [`${lane.dir}/pages/**/*.{astro,tsx,jsx,vue,svelte,ts}`] : [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`],
+        devCommand: lane.devScript ? `npm run ${lane.devScript}` : null,
+        port: lane.port ?? DEFAULTS.stories.port,
+        url: lane.port ? `http://localhost:${lane.port}/stories` : null,
       }
     : { ...DEFAULTS.stories, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
   tokens: {
@@ -317,7 +356,8 @@ const suggestedConfig = {
   // The audit reads the same tree as the consumers, so a repo with no src/ is still audited.
   audit: {
     include: [`${srcRoot === '.' ? '' : 'src/'}**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}`],
-    exclude: DEFAULTS.audit.exclude.map((g) => (srcRoot === '.' ? g.replace(/^src\//, '') : g)),
+    // A lane stages components with fixture values on purpose: not drift.
+    exclude: [...DEFAULTS.audit.exclude.map((g) => (srcRoot === '.' ? g.replace(/^src\//, '') : g)), ...(lane && !DEFAULTS.audit.exclude.includes(`${lane.dir}/**`) ? [`${lane.dir}/**`] : [])],
   },
 }
 
