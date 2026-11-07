@@ -11,7 +11,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, r
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export const CONFIG_FILE = 'massimo.config.json'
-export const SCRIPTS_VERSION = '0.1.1'
+export const SCRIPTS_VERSION = '0.2.0'
 
 export const DEFAULTS = {
   version: 1,

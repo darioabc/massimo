@@ -30,10 +30,10 @@ The target: a screenshot of each viewport and state with its DOM or accessibilit
 ```markdown
 ## reviewer findings: <surface>
 
-Market scan: <product A, product B[, C]> — <the pattern they share>. Sources: <urls>
+Market scan: <product A, product B[, C]>: <the pattern they share>. Sources: <urls>
 Coverage: <viewports and states reviewed>
 
-### Finding 1 — severity N
+### Finding 1: severity N
 - lens: market | content | interaction | accessibility
 - problem: <specific, for whom>
 - evidence: <the pattern missed or the concrete failure>

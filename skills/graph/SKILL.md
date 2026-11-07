@@ -1,6 +1,6 @@
 ---
 name: graph
-description: Generate and keep current the design-system graph for this repo — every component, what it composes and what uses it, its story, the tokens and CSS variables it leans on, and the ds rules a primitive declares — as <project>/graph.md and graph.json. Use for the graph phase of a massimo project, after component changes, or when someone asks what components exist, where one is used, or which ones to story first.
+description: Generate and keep current the design-system graph for this repo (every component, what it composes and what uses it, its props and states, its story, the tokens and CSS variables it leans on, and the ds rules a primitive declares) as <project>/graph.md and graph.json. Use for the graph phase of a massimo project, after component changes, or when someone asks what components exist, where one is used, or which ones to story first.
 ---
 
 # massimo: graph

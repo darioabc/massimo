@@ -94,7 +94,7 @@ After every ideator return:
 ## Baseline
 ## Review synthesis
 ## Rounds
-- Round 1 (<date>): <directions>. Verdict: <decision> — "<feedback>"
+- Round 1 (<date>): <directions>. Verdict: <decision>, "<feedback>"
 ## Pick
 ## Handoff
 ```

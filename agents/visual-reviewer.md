@@ -33,7 +33,7 @@ Compare across the same lenses and name the concrete delta (this gap is one spac
 
 Coverage: <viewports and states>
 
-### Finding 1 — severity N
+### Finding 1: severity N
 - lens: visual-craft
 - where: <viewport + state + element>
 - problem: <specific craft problem, or the drift delta in fidelity mode>

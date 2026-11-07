@@ -28,6 +28,10 @@ test('the project folder is never hard-coded in skills, agents, references or sc
   for (const f of [...docs, ...scripts]) assert.ok(!text(f).includes('design-system/'), f)
 })
 
+test('no em dashes in the docs, the skills or anything a script writes', () => {
+  for (const f of [...docs, ...scripts, 'README.md', 'CHANGELOG.md']) assert.ok(!text(f).includes('\u2014'), f)
+})
+
 test('no private leftovers', () => {
   for (const f of [...docs, ...scripts, ...files('test/fixtures', /./)]) {
     assert.ok(!/fiuto|FIU-/i.test(text(f)), f)

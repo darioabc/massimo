@@ -1,6 +1,6 @@
 ---
 name: tokens
-description: Audit the repo's styling for raw colours, sizes, spacing and fonts, then define design tokens with the user — primitives, semantic tokens, light and dark — in one W3C DTCG source that builds into the repo's own styling (CSS variables, Tailwind 4 or 3, SCSS, TS) and into Figma variables. Use for the tokens phase of a massimo project, or when the user asks about design tokens, the colour palette, the type scale or the spacing scale.
+description: Audit the repo's styling for raw colours, sizes, spacing and fonts, then define design tokens with the user (primitives, semantic tokens, light and dark) in one W3C Design Tokens 2025.10 source that builds into the repo's own styling (CSS variables, Tailwind 4 or 3, SCSS, TS) and into Figma variables. Use for the tokens phase of a massimo project, or when the user asks about design tokens, the colour palette, the type scale or the spacing scale.
 ---
 
 # massimo: tokens

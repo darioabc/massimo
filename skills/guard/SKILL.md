@@ -1,6 +1,6 @@
 ---
 name: guard
-description: Lock in the design system so it does not drift back — ds rules on the primitives (where each belongs, what it may contain, what never to do), a single ds:check script for CI (graph current, no new raw values, tokens built, contrast), and a short design-system README for the team. Use for the guard phase of a massimo project, or when the user wants design-system checks in CI or usage rules documented.
+description: Lock in the design system so it does not drift back: ds rules on the primitives (where each belongs, what it may contain, what never to do), a single ds:check script for CI (graph current, no new raw values, tokens built, contrast), and a short design-system README for the team. Use for the guard phase of a massimo project, or when the user wants design-system checks in CI or usage rules documented.
 ---
 
 # massimo: guard

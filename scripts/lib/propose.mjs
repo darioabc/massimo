@@ -262,9 +262,10 @@ function proposeColors(existing, audit, report, outliers, minCount) {
         const t = out.find((x) => key(x.path) === key(path))
         t.contrast = { on: key(bg.path), use: 'text' }
       }
+      // Borders are not paired: WCAG 1.4.11 asks 3:1 only of a border that
+      // identifies a control, and most dividers are decorative.
       for (const { path } of semantic.border ?? []) {
-        const t = out.find((x) => key(x.path) === key(path))
-        t.contrast = { on: key(bg.path), use: 'ui' }
+        noteOn(report, key(path), `contrast not checked; if this border identifies a control, pair it with { "on": "${key(bg.path)}", "use": "ui" }`)
       }
     }
   }

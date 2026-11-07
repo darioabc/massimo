@@ -419,7 +419,7 @@ function renderIndex(nodes) {
     out.push(`**${key}**`, '')
     for (const n of buckets.get(key).nodes) {
       const story = n.stories.length > 0 ? 'story ✓' : n.noStory !== null ? 'no-story' : 'story ✗'
-      out.push(`- ${n.name} — ${story} · used by ${n.usage}`)
+      out.push(`- ${n.name}: ${story} · used by ${n.usage}`)
     }
     out.push('')
   }

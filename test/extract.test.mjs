@@ -50,7 +50,8 @@ test('a repo with raw values and no tokens: ramps, semantics, contrast, scales, 
     assert.match(base.color.bg.default.$description, /^Background\. Used \d+× as a background, most in src\/app\.css\.$/)
     assert.equal(base.color.text.default.$value, '{color.neutral.950}')
     assert.deepEqual(base.color.text.default.$extensions.massimo.contrast, { on: 'color.bg.default', use: 'text' })
-    assert.deepEqual(base.color.border.default.$extensions.massimo.contrast, { on: 'color.bg.default', use: 'ui' })
+    assert.equal(base.color.border.default.$extensions?.massimo?.contrast, undefined) // a divider is not held to 3:1
+    assert.match(report, /\| `color\.border\.default` .*contrast not checked; if this border identifies a control/)
     // Scales: spacing on the grid, radius, type sizes named around the body size.
     assert.deepEqual(Object.keys(base.spacing).filter((k) => !k.startsWith('$')).sort(), ['2', '3', '4'])
     assert.deepEqual(base.radius.sm.$value, { value: 0.5, unit: 'rem' })
