@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { checkValue, expandDocument, flattenFormat, looksLegacy } from '../scripts/lib/dtcg.mjs'
+import { checkValue, expandDocument, flattenFormat, looksLegacy, writeTokenSet } from '../scripts/lib/dtcg.mjs'
 import { read, readJson, run, scratch, withTokens } from './helpers.mjs'
 
 const MARK = { $extensions: { massimo: { format: 2 } } }
@@ -176,4 +176,10 @@ test('contrast pairs: WCAG 2.2 minimums by use, reported per theme', () => {
   } finally {
     t.cleanup()
   }
+})
+
+test('the writer refuses a name that is both a token and a group, rather than lose one', () => {
+  const t = (path) => ({ path, name: path.join('.'), type: 'color', value: '#000000', modes: {}, cssModes: {}, css: null, cssVar: `--${path.join('-')}`, description: '' })
+  assert.throws(() => writeTokenSet({ tokens: [t(['color', 'neutral']), t(['color', 'neutral', '950'])] }), /color\.neutral is a token and also the group of color\.neutral\.950/)
+  assert.ok(writeTokenSet({ tokens: [t(['color', 'neutral', '$root']), t(['color', 'neutral', '950'])] })['base.tokens.json'])
 })
