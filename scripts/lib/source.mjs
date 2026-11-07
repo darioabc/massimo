@@ -675,26 +675,47 @@ export const DAISY_COLOR_NAMES = [
 export const isAlias = (v) => typeof v === 'string' && /^\{[^{}]+\}$/.test(v.trim())
 export const aliasPath = (v) => v.trim().slice(1, -1).trim()
 
+// A custom property name: `--` and then letters, digits, `_` or `-`.
+export const CSS_VAR_NAME = /^--[\p{L}\p{N}_-]+$/u
+
+// The CSS variable a token path maps to: segments joined by `-`, with anything
+// a custom property name cannot hold turned into `-`.
+export const cssVarFor = (path) => `--${path.join('-').replace(/[^\p{L}\p{N}_-]+/gu, '-')}`
+
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+
 // Flatten a DTCG document into tokens, in source order:
 // `{ path, name, type, value, description, modes, cssVar, on, contrast, collection }`.
 // `$type` is inherited from the enclosing group; `$extensions.massimo` carries
 // modes, a cssVar override, a contrast pair (`on`, `contrast`) and a Figma
-// collection override.
-export function flattenDtcg(doc) {
+// collection override. Pass `problems` (an array) to collect what is wrong
+// with the document, each as `{ level, path, message }`; a name with `{`, `}`
+// or `.` is left out, since no reference could reach it.
+export function flattenDtcg(doc, problems = null) {
   const out = []
+  const report = (path, message) => problems?.push({ level: 'error', path: path.join('.') || '(root)', message })
   const visit = (node, path, inheritedType) => {
-    if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+    if (!isObject(node)) return
     const type = node.$type ?? inheritedType
     if ('$value' in node) {
-      const ext = node.$extensions?.massimo ?? {}
+      const children = Object.keys(node).filter((k) => !k.startsWith('$'))
+      if (children.length > 0) report(path, `has a $value and child tokens (${children.join(', ')}); a token cannot also be a group`)
+      const ext = isObject(node.$extensions?.massimo) ? node.$extensions.massimo : {}
+      let cssVar = cssVarFor(path)
+      if (ext.cssVar !== undefined) {
+        if (typeof ext.cssVar === 'string' && CSS_VAR_NAME.test(ext.cssVar)) cssVar = ext.cssVar
+        else report(path, `$extensions.massimo.cssVar ${JSON.stringify(ext.cssVar)} is not a CSS custom property name (--letters-digits-dashes)`)
+      }
+      if (ext.modes !== undefined && !isObject(ext.modes)) report(path, '$extensions.massimo.modes must be an object of mode name to value')
+      if (ext.contrast !== undefined && typeof ext.contrast !== 'number') report(path, '$extensions.massimo.contrast must be a number, such as 4.5')
       out.push({
         path,
         name: path.join('.'),
         type: type ?? null,
         value: node.$value,
         description: typeof node.$description === 'string' ? node.$description : '',
-        modes: ext.modes && typeof ext.modes === 'object' ? ext.modes : {},
-        cssVar: typeof ext.cssVar === 'string' ? ext.cssVar : `--${path.join('-')}`,
+        modes: isObject(ext.modes) ? ext.modes : {},
+        cssVar,
         on: typeof ext.on === 'string' ? ext.on : null,
         contrast: typeof ext.contrast === 'number' ? ext.contrast : 4.5,
         collection: typeof ext.collection === 'string' ? ext.collection : null,
@@ -702,7 +723,12 @@ export function flattenDtcg(doc) {
       return
     }
     for (const [key, child] of Object.entries(node)) {
-      if (!key.startsWith('$')) visit(child, [...path, key], type)
+      if (key.startsWith('$')) continue
+      if (/[{}.]/.test(key)) {
+        report([...path, key], 'a token or group name cannot contain {, } or .')
+        continue
+      }
+      visit(child, [...path, key], type)
     }
   }
   visit(doc, [], undefined)

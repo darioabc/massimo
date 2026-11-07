@@ -28,18 +28,18 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
    {
      "fileKey": "…",
      "syncedAt": "2026-10-28",
-     "tokensHash": "<sha256 of tokens.json>",
+     "tokensHash": "<from tokens.mjs hash>",
      "variables": { "color.bg.default": "VariableID:…" },
      "components": { "src/components/Button.tsx": { "nodeId": "…", "name": "Button", "variants": ["variant", "size", "state"] } }
    }
    ```
-   Compute the hash with `node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync('design-system/tokens/tokens.json')).digest('hex'))"`.
+   Get the hash with `node design-system/scripts/tokens.mjs hash`. It hashes the tokens as canonical JSON, so reformatting the file is not drift.
 7. **Code Connect (optional).** If the user's Figma plan supports it and they want it, link each mirrored component to its code file with the `figma-code-connect` skill, so Dev Mode shows the real import.
 8. **End.** `state.mjs set figma done --note "<n> variables, <m> components mirrored"`.
 
 ## Drift check (any time later)
 
-Run when the user asks, or when `tokens.json` no longer matches `mirror.json`'s `tokensHash`.
+Run when the user asks, or when `tokens.mjs check` reports `figma mirror behind` (the tokens changed since `mirror.json` was recorded).
 
 1. Read the Figma variables (`get_variable_defs`, or a read-only `use_figma` script) and the mirrored components' properties.
 2. Compare with `tokens.json` (values per mode, names, aliases) and the components' current props and stories.

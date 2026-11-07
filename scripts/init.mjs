@@ -70,7 +70,9 @@ for (const name of ['STATUS.md', 'product.md', 'decisions.md']) {
   }
   write(join(projectDir, name), readFileSync(src, 'utf8').replaceAll('{{projectDir}}', projectRel))
 }
-write(join(projectDir, '.gitignore'), '# Screenshots are cheap to regenerate and heavy to keep.\nshots/\n')
+write(join(projectDir, '.gitignore'), '# Screenshots are cheap to regenerate and heavy to keep.\nshots/\n# Left by a run that stopped mid-write.\n*.lock\n*.tmp\n')
+// Two branches that both log a decision merge by keeping both lines.
+write(join(projectDir, '.gitattributes'), 'decisions.md merge=union\n')
 for (const dir of ['explorations', 'handoffs', 'audits', 'tokens', 'kit']) {
   if (!dry) mkdirSync(join(projectDir, dir), { recursive: true })
 }

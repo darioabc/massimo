@@ -27,11 +27,22 @@ const rounds = readdirSync(topicDir)
   .filter((d) => /^round-\d+$/.test(d) && existsSync(join(topicDir, d, 'round.json')))
   .map((d) => {
     const meta = JSON.parse(readFileSync(join(topicDir, d, 'round.json'), 'utf8'))
-    return { dir: d, n: Number(d.slice(6)), ...meta }
+    // The folder decides which round this is; round.json cannot point elsewhere.
+    return { ...meta, dir: d, n: Number(d.slice(6)), directions: directionsOf(d, meta.directions) }
   })
   .sort((a, b) => b.n - a.n)
 
 if (!rounds.length) fail(`no round-N/round.json under ${topicDir}`)
+
+// A direction's file must be an .html file inside its own round folder; anything
+// else (a path out of the folder, a missing file) is left off the canvas.
+function directionsOf(dir, list) {
+  return (Array.isArray(list) ? list : []).filter((d) => {
+    const ok = typeof d?.file === 'string' && basename(d.file) === d.file && /\.html?$/i.test(d.file) && existsSync(join(topicDir, dir, d.file))
+    if (!ok) process.stderr.write(`canvas: skipped a direction in ${dir}/round.json: ${JSON.stringify(d?.file)} is not an .html file in that folder\n`)
+    return ok
+  })
+}
 
 // The kit sits at <projectDir>/kit/kit.css, three levels above a round.
 const kitPath = resolve(topicDir, '..', '..', 'kit', 'kit.css')
@@ -46,9 +57,10 @@ const esc = (s) =>
 
 function frameSrc(round, file, inline) {
   if (!inline) return `src="${esc(`${round.dir}/${file}`)}"`
+  // A function, so a $& or $' in the kit stays text instead of a replacement pattern.
   const html = readFileSync(join(topicDir, round.dir, file), 'utf8').replace(
     /<link[^>]+href=["'](?:\.\.\/)+kit\/kit\.css["'][^>]*>/,
-    `<style>${kit}</style>`,
+    () => `<style>${kit.replace(/<\//g, '<\\/')}</style>`,
   )
   return `srcdoc="${esc(html)}"`
 }
@@ -60,17 +72,23 @@ function verdictBadge(round) {
   return `<span class="badge ${esc(v.decision)}">${esc(label)}${v.pick ? `: ${esc(v.pick)}` : ''}</span>${v.feedback ? `<p class="feedback">${esc(v.feedback)}</p>` : ''}`
 }
 
+// Frames are sandboxed. By default a mockup runs no script and keeps its
+// origin, so the canvas can flip its theme. A direction marked `scripts: true`
+// runs its script in an opaque origin instead, out of the theme switch's reach;
+// the two are never granted together, which would undo the sandbox.
+const sandboxOf = (d) => (d.scripts === true ? 'allow-scripts' : 'allow-same-origin')
+
 function direction(round, d, inline) {
   const width = Number(d.width) || 1280
   const height = Number(d.height) || 800
   const picked = round.verdict?.pick === d.file
   return `
       <figure class="direction${picked ? ' picked' : ''}" style="--w:${width};--h:${height}">
-        <div class="frame"><iframe title="${esc(d.title)}" loading="lazy" width="${width}" height="${height}" ${frameSrc(round, d.file, inline)}></iframe></div>
+        <div class="frame"><iframe title="${esc(d.title)}" loading="lazy" sandbox="${sandboxOf(d)}" width="${width}" height="${height}" ${frameSrc(round, d.file, inline)}></iframe></div>
         <figcaption>
           <h3>${esc(d.title)}${picked ? ' <span class="badge lock">picked</span>' : ''}</h3>
           ${d.rationale ? `<p>${esc(d.rationale)}</p>` : ''}
-          <p class="meta">${[d.scope && `scope: ${esc(d.scope)}`, d.changed && `changed: ${esc(d.changed)}`, `${width}×${height}`].filter(Boolean).join(' · ')}${inline ? '' : ` · <a href="${esc(`${round.dir}/${d.file}`)}" target="_blank" rel="noopener">open full size</a>`}</p>
+          <p class="meta">${[d.scope && `scope: ${esc(d.scope)}`, d.changed && `changed: ${esc(d.changed)}`, `${width}×${height}`, d.scripts === true && 'interactive, theme switch off'].filter(Boolean).join(' · ')}${inline ? '' : ` · <a href="${esc(`${round.dir}/${d.file}`)}" target="_blank" rel="noopener">open full size</a>`}</p>
         </figcaption>
       </figure>`
 }

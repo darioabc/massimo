@@ -7,7 +7,7 @@
 // run them, and a vendored script must not drag a dependency tree with it.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export const CONFIG_FILE = 'massimo.config.json'
@@ -128,9 +128,25 @@ export function deepMerge(base, over) {
   return out
 }
 
+// JSONC to JSON: comments go, and so do trailing commas (legal in tsconfig and
+// jsonc), but only outside strings, so a value like "a,}" is left alone.
 export function stripJsonComments(text) {
   let out = ''
   let inString = false
+  // The next offset that is not whitespace or a comment.
+  const skip = (j) => {
+    for (;;) {
+      while (j < text.length && /\s/.test(text[j])) j++
+      if (text[j] === '/' && text[j + 1] === '/') {
+        while (j < text.length && text[j] !== '\n') j++
+      } else if (text[j] === '/' && text[j + 1] === '*') {
+        const k = text.indexOf('*/', j + 2)
+        j = k === -1 ? text.length : k + 2
+      } else {
+        return j
+      }
+    }
+  }
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
     const n = text[i + 1]
@@ -150,12 +166,14 @@ export function stripJsonComments(text) {
       i += 2
       while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++
       i++
+    } else if (c === ',') {
+      const j = skip(i + 1)
+      if (text[j] !== '}' && text[j] !== ']') out += c
     } else {
       out += c
     }
   }
-  // Trailing commas are legal in tsconfig and jsonc.
-  return out.replace(/,(\s*[}\]])/g, '$1')
+  return out
 }
 
 export function readJson(path, fallback = null) {
@@ -191,6 +209,58 @@ export function today() {
   const d = new Date()
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// ISO 8601 timestamp. MASSIMO_NOW pins it, and MASSIMO_TODAY alone pins midnight of that day.
+export function now() {
+  if (process.env.MASSIMO_NOW) return process.env.MASSIMO_NOW
+  if (process.env.MASSIMO_TODAY) return `${process.env.MASSIMO_TODAY}T00:00:00.000Z`
+  return new Date().toISOString()
+}
+
+// Write through a temporary file and rename it into place, so a reader never
+// sees half a file and a crash mid-write leaves the old one whole.
+export function writeFileAtomic(path, text) {
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, text)
+  try {
+    renameSync(tmp, path)
+  } catch (err) {
+    rmSync(tmp, { force: true })
+    throw err
+  }
+}
+
+// Run `fn` while holding `<path>.lock`, so two sessions updating one file take
+// turns instead of losing each other's change. A lock older than 30 seconds
+// is left by a run that died, and is taken over.
+export function withLock(path, fn, { timeoutMs = 10000 } = {}) {
+  const lock = `${path}.lock`
+  const started = Date.now()
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  for (;;) {
+    try {
+      closeSync(openSync(lock, 'wx'))
+      break
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > 30000) {
+          rmSync(lock, { force: true })
+          continue
+        }
+      } catch {
+        continue // the holder just let go
+      }
+      if (Date.now() - started > timeoutMs) throw new Error(`${lock} is held by another massimo run; delete it if no run is going`)
+      Atomics.wait(pause, 0, 0, 50)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    rmSync(lock, { force: true })
+  }
 }
 
 export function fail(message, code = 1) {

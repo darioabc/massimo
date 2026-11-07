@@ -19,8 +19,8 @@ import {
   phaseMeta,
   progressMarkdown,
   renderStatus,
-  saveState,
   setPhase,
+  updateState,
   upsertExploration,
 } from './lib/state.mjs'
 
@@ -54,12 +54,10 @@ switch (command) {
     const [phase, status] = rest
     if (!phase || !status) fail('usage: state.mjs set <phase> <status> [--note "…"]')
     try {
-      setPhase(state, phase, status, str(flags.note))
+      updateState(projectDir, (s) => setPhase(s, phase, status, str(flags.note)))
     } catch (e) {
       fail(e.message)
     }
-    saveState(projectDir, state)
-    renderStatus(projectDir, state)
     process.stdout.write(`${phase}: ${status}${flags.note ? ` (${flags.note})` : ''}\n`)
     break
   }
@@ -74,16 +72,16 @@ switch (command) {
     const [topic] = rest
     if (!topic || !/^[a-z0-9][a-z0-9-]*$/.test(topic)) fail('usage: state.mjs explore <kebab-case-topic> [--arc …] [--round N] [--status …] [--pick …]')
     try {
-      const item = upsertExploration(state, topic, {
-        arc: str(flags.arc),
-        target: str(flags.target),
-        round: str(flags.round),
-        status: str(flags.status),
-        pick: str(flags.pick),
-        note: str(flags.note),
-      })
-      saveState(projectDir, state)
-      renderStatus(projectDir, state)
+      const { result: item } = updateState(projectDir, (s) =>
+        upsertExploration(s, topic, {
+          arc: str(flags.arc),
+          target: str(flags.target),
+          round: str(flags.round),
+          status: str(flags.status),
+          pick: str(flags.pick),
+          note: str(flags.note),
+        }),
+      )
       process.stdout.write(`${JSON.stringify(item)}\n`)
     } catch (e) {
       fail(e.message)

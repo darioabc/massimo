@@ -210,7 +210,8 @@ test('an alias cycle fails with the chain named', () => {
   try {
     const r = run('tokens', t, ['build'])
     assert.equal(r.status, 1)
-    assert.match(r.stderr, /Alias cycle: color\.a -> color\.b -> color\.c -> color\.a/)
+    assert.match(r.stderr, /error: color\.a: alias cycle: color\.a -> color\.b -> color\.c -> color\.a/)
+    assert.equal(r.stderr.match(/alias cycle/g).length, 1) // reported once, not once per token in the loop
     assert.ok(!existsSync(join(t.root, 'src', 'styles', 'tokens.generated.css')))
   } finally {
     t.cleanup()

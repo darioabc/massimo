@@ -15,8 +15,10 @@
 //   node design-system/scripts/tokens.mjs kit        write kit/kit.css only
 //   node design-system/scripts/tokens.mjs check      rebuild in memory; exit 1 if stale (contrast failures too with --strict)
 //   node design-system/scripts/tokens.mjs preview    write tokens/preview.html
+//   node design-system/scripts/tokens.mjs hash       print the tokens' hash, as the Figma mirror records it
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -66,7 +68,11 @@ function inferType(value, group = '') {
 
 // ── Values to CSS and to Figma ──────────────────────────────────────────────
 
-const quoteFamily = (name) => (/^[\w-]+$/.test(name) || GENERIC_FAMILY.test(name) ? name : `"${name}"`)
+// A family name as CSS: bare when it is one identifier, quoted (and escaped) otherwise.
+const quoteFamily = (name) => {
+  if (/^[\w-]+$/.test(name) || GENERIC_FAMILY.test(name) || /^(["']).*\1$/.test(name)) return name
+  return `"${name.replace(/["\\]/g, (c) => `\\${c}`)}"`
+}
 
 // DTCG fontWeight keywords, as the numbers CSS needs.
 const FONT_WEIGHTS = {
@@ -188,18 +194,72 @@ function cssText(type, v, ref = (alias) => alias) {
 
 const MODE_NAME = /^[a-z][a-z0-9-]*$/i
 
-function buildModel(tokens, config) {
+// Everything wrong with a token set, as `{ level, path, message }`. Reading
+// collects every problem instead of stopping at the first, so one run shows
+// every fix; a build with any error throws them all at once.
+export class TokenProblems extends Error {
+  constructor(problems) {
+    const errors = problems.filter((p) => p.level === 'error')
+    super(`${errors.length} ${errors.length === 1 ? 'problem' : 'problems'} in the tokens:\n${errors.map((p) => `  error: ${p.path}: ${p.message}`).join('\n')}`)
+    this.problems = problems
+  }
+}
+
+// Why a string cannot go into a CSS declaration as it is, or null when it can.
+// Values reach stylesheets, `<style>` blocks and HTML attributes, so a `;`, a
+// brace, an angle bracket or an unclosed quote could end the declaration.
+function unsafeCss(s) {
+  if (/[;{}<>\\\u0000-\u001f\u007f]/.test(s)) return 'has a character a CSS value cannot hold here (; { } < > \\ or a control character)'
+  if (s.includes('/*') || s.includes('*/')) return 'has a CSS comment marker'
+  let depth = 0
+  let quote = null
+  for (const c of s) {
+    if (quote) {
+      if (c === quote) quote = null
+    } else if (c === '"' || c === "'") quote = c
+    else if (c === '(') depth++
+    else if (c === ')' && --depth < 0) return 'has a ) with no ('
+  }
+  if (quote) return 'has a quote that is never closed'
+  if (depth > 0) return 'has a ( that is never closed'
+  return null
+}
+
+// Every literal string inside a value, as [where, text]; references are skipped.
+function* stringLeaves(v, where = '') {
+  if (typeof v === 'string') {
+    if (!isAlias(v)) yield [where, v]
+  } else if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) yield* stringLeaves(v[i], where ? `${where}[${i}]` : `[${i}]`)
+  } else if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v)) yield* stringLeaves(x, where ? `${where}.${k}` : k)
+  }
+}
+
+function buildModel(tokens, config, problems = []) {
+  // A cycle is found once from each token in it; it is one problem.
+  const cycleKey = (message) => (message.startsWith('alias cycle: ') ? [...new Set(message.slice(13).split(' -> '))].sort().join(' ') : null)
+  const report = (path, message, level = 'error') => {
+    const key = cycleKey(message)
+    const seen = problems.some((p) => (key ? cycleKey(p.message) === key : p.message === message && p.path === path))
+    if (!seen) problems.push({ level, path, message })
+  }
   const byName = new Map(tokens.map((t) => [t.name, t]))
-  const defaultMode = config.tokens.defaultMode ?? 'light'
-  if (!MODE_NAME.test(defaultMode)) throw new Error(`tokens.defaultMode "${defaultMode}" must be a plain name such as light`)
+  let defaultMode = config.tokens.defaultMode ?? 'light'
+  if (!MODE_NAME.test(defaultMode)) {
+    report('tokens.defaultMode', `"${defaultMode}" must be a plain name such as light`)
+    defaultMode = 'light'
+  }
   const modeNames = new Set()
   for (const t of tokens) {
     for (const m of Object.keys(t.modes)) {
       if (m === 'default' || m === defaultMode) {
-        throw new Error(`${t.name}: "${m}" is the default mode; put its value in $value, not in $extensions.massimo.modes`)
+        report(t.name, `"${m}" is the default mode; put its value in $value, not in $extensions.massimo.modes`)
+      } else if (!MODE_NAME.test(m)) {
+        report(t.name, `mode "${m}" must be a plain name such as dark`)
+      } else {
+        modeNames.add(m)
       }
-      if (!MODE_NAME.test(m)) throw new Error(`${t.name}: mode "${m}" must be a plain name such as dark`)
-      modeNames.add(m)
     }
   }
   const modes = ['default', ...[...modeNames].sort((a, b) => (a === 'dark' ? -1 : b === 'dark' ? 1 : compare(a, b)))]
@@ -210,7 +270,7 @@ function buildModel(tokens, config) {
     const v = raw(t, mode)
     if (!isAlias(v)) return null
     const next = byName.get(aliasPath(v))
-    if (!next) throw new Error(`${t.name}: alias ${v} points at a token that does not exist`)
+    if (!next) throw new Error(`alias ${v} points at a token that does not exist`)
     return next
   }
   const resolved = (t, mode, chain = []) => {
@@ -218,7 +278,7 @@ function buildModel(tokens, config) {
     if (!next) return raw(t, mode)
     const seen = [...chain, t.name]
     if (seen.includes(next.name)) {
-      throw new Error(`Alias cycle: ${[...seen.slice(seen.indexOf(next.name)), next.name].join(' -> ')}`)
+      throw new Error(`alias cycle: ${[...seen.slice(seen.indexOf(next.name)), next.name].join(' -> ')}`)
     }
     return resolved(next, mode, seen)
   }
@@ -230,30 +290,55 @@ function buildModel(tokens, config) {
   }
   const model = { tokens, byName, modes, defaultMode, modeLabel, raw, target, resolved, typeOf }
 
-  // Fail early, naming the token: every token in every mode must resolve, a
-  // reference inside a composite must point at a token, every value must be
-  // one CSS can write, a contrast pair must point at a real token, and no two
-  // tokens may claim the same CSS variable.
+  // Check every token, naming it: every mode must resolve, a reference inside
+  // a composite must point at a token, every string must be safe in CSS and
+  // every value one CSS can write, a contrast pair must point at a real token,
+  // and no two tokens may claim the same CSS variable.
   const owner = new Map()
   for (const t of tokens) {
+    let ok = true
     for (const mode of modes) {
-      resolved(t, mode)
-      for (const ref of nestedRefs(raw(t, mode))) {
-        if (!byName.has(aliasPath(ref))) throw new Error(`${t.name}: reference ${ref} points at a token that does not exist`)
+      try {
+        resolved(t, mode)
+      } catch (err) {
+        report(t.name, err.message)
+        ok = false
+        continue
       }
+      for (const ref of nestedRefs(raw(t, mode))) {
+        if (byName.has(aliasPath(ref))) continue
+        report(t.name, `reference ${ref} points at a token that does not exist`)
+        ok = false
+      }
+      for (const [where, text] of stringLeaves(raw(t, mode))) {
+        const why = unsafeCss(text)
+        if (!why) continue
+        report(t.name, `${where ? `${where} ` : ''}${JSON.stringify(text)} ${why}`)
+        ok = false
+      }
+      if (!ok) continue
       try {
         declarations(model, t, mode, false)
       } catch (err) {
-        throw new Error(`${t.name}: ${err.message}`)
+        report(t.name, err.message)
+        ok = false
       }
     }
-    if (t.on && !byName.has(t.on)) throw new Error(`${t.name}: "on" points at ${t.on}, which is not a token`)
+    if (t.on && !byName.has(t.on)) report(t.name, `"on" points at ${t.on}, which is not a token`)
+    if (!ok) continue
     for (const name of cssNames(model, t)) {
       const other = owner.get(name)
-      if (other) throw new Error(`${other} and ${t.name} both map to the CSS variable ${name}; give one of them its own $extensions.massimo.cssVar`)
-      owner.set(name, t.name)
+      if (other) report(t.name, `${other} and ${t.name} both map to the CSS variable ${name}; give one of them its own $extensions.massimo.cssVar`)
+      else owner.set(name, t.name)
+    }
+    const v = resolved(t, 'default')
+    const type = typeOf(t)
+    if ((type === 'strokeStyle' && v && typeof v === 'object') || (type === 'border' && v?.style && typeof v.style === 'object')) {
+      report(t.name, 'CSS has no dash pattern for borders, so the CSS outputs use dashed', 'warning')
     }
   }
+  if (problems.some((p) => p.level === 'error')) throw new TokenProblems(problems)
+  model.problems = problems
   return model
 }
 
@@ -370,14 +455,22 @@ function extractDraft(root, config, all = null) {
   return { doc, files, count: entries.size }
 }
 
+// The token set, with the problems found reading it (passed on to buildModel).
 function loadTokens(root, config, { draftOk = false, all = null } = {}) {
   const path = join(root, config.tokens.source)
+  const problems = []
   if (existsSync(path)) {
-    return { tokens: flattenDtcg(readJson(path)), origin: 'tokens.json', files: [config.tokens.source] }
+    let doc
+    try {
+      doc = readJson(path)
+    } catch (err) {
+      throw new Error(`${config.tokens.source} is not valid JSON: ${err.message}`)
+    }
+    return { tokens: flattenDtcg(doc, problems), problems, origin: 'tokens.json', files: [config.tokens.source] }
   }
   if (!draftOk) return null
   const draft = extractDraft(root, config, all)
-  return { tokens: flattenDtcg(draft.doc), origin: 'draft', files: draft.files }
+  return { tokens: flattenDtcg(draft.doc, problems), problems, origin: 'draft', files: draft.files }
 }
 
 // ── Output formats ──────────────────────────────────────────────────────────
@@ -437,7 +530,7 @@ function buildCss(model, config) {
     if (t.path[0] !== group) {
       group = t.path[0]
       if (root.length > 0) root.push('')
-      root.push(`/* ${group} */`)
+      root.push(`/* ${group.replace(/\*\//g, '* /')} */`)
     }
     for (const [name, text] of declarations(model, t, 'default', true)) root.push(`${name}: ${text};`)
   }
@@ -788,7 +881,7 @@ function buildPreview(model, origin, files, kit, config) {
 <title>Design tokens preview</title>
 <!-- ${HEADER} -->
 <style>
-${kit.trim()}
+${kit.trim().replace(/<\//g, '<\\/')}
 ${PREVIEW_CSS.trim()}
 </style>
 </head>
@@ -815,11 +908,45 @@ ${sections.join('\n')}
 `
 }
 
+// ── The tokens' hash, for the Figma mirror ─────────────────────────────────
+
+// JSON with keys sorted at every level and no whitespace, so the same tokens
+// give the same text however the file is formatted.
+export function canonicalJson(v) {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v)
+}
+
+const sha256 = (text) => createHash('sha256').update(text).digest('hex')
+
+function tokensHash(root, config) {
+  return sha256(canonicalJson(readJson(join(root, config.tokens.source))))
+}
+
+// Whether figma/mirror.json was recorded from the tokens as they are now. A
+// mirror made before 0.2.0 hashed the file's bytes, which still counts.
+function figmaMirror(root, projectDir, config) {
+  const path = join(projectDir, 'figma', 'mirror.json')
+  if (!existsSync(path)) return null
+  const mirror = readJson(path)
+  if (typeof mirror?.tokensHash !== 'string') return null
+  const source = join(root, config.tokens.source)
+  const current = mirror.tokensHash === tokensHash(root, config) || mirror.tokensHash === sha256(readFileSync(source))
+  return { current, syncedAt: mirror.syncedAt ?? 'an unknown date' }
+}
+
+const warnAll = (model) => {
+  for (const p of model.problems.filter((x) => x.level === 'warning')) process.stderr.write(`massimo: warn: ${p.path}: ${p.message}\n`)
+}
+
 // ── Orchestration ───────────────────────────────────────────────────────────
 
 // Every file `build` writes, as { path (absolute), text }. Throws on a bad token set.
 function buildOutputs(root, projectDir, config, tokens) {
-  const model = buildModel(tokens.tokens, config)
+  const model = buildModel(tokens.tokens, config, tokens.problems)
   const out = []
   for (const output of config.tokens.outputs ?? []) {
     if (!FORMATS.includes(output.format)) {
@@ -847,7 +974,7 @@ function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { _: positionals, flags } = parseArgs(argv)
   const mode = positionals[0]
-  const MODES = ['extract', 'build', 'kit', 'check', 'preview']
+  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash']
   if (!MODES.includes(mode)) fail(`usage: tokens.mjs <${MODES.join('|')}> [--strict]`, 2)
   const { root, config, projectDir } = loadConfig(flags)
   const shown = (abs) => {
@@ -876,15 +1003,22 @@ function main() {
   }
   if (tokens.tokens.length === 0) fail(`${tokens.origin === 'draft' ? 'the style files define' : config.tokens.source + ' defines'} no tokens`)
 
+  if (mode === 'hash') {
+    process.stdout.write(`${tokensHash(root, config)}\n`)
+    return
+  }
+
   if (mode === 'build') {
-    const { files } = buildOutputs(root, projectDir, config, tokens)
+    const { model, files } = buildOutputs(root, projectDir, config, tokens)
+    warnAll(model)
     for (const f of files) writeText(f.path, f.text)
     process.stdout.write(`massimo tokens build: ${tokens.tokens.length} tokens; wrote ${files.map((f) => shown(f.path)).join(', ')}\n`)
     return
   }
 
   if (mode === 'kit') {
-    const model = buildModel(tokens.tokens, config)
+    const model = buildModel(tokens.tokens, config, tokens.problems)
+    warnAll(model)
     const path = join(projectDir, 'kit', 'kit.css')
     writeText(path, buildKit(model, tokens.origin, tokens.files, config))
     process.stdout.write(`massimo tokens kit: ${tokens.tokens.length} tokens from ${tokens.origin}; wrote ${shown(path)}\n`)
@@ -892,7 +1026,8 @@ function main() {
   }
 
   if (mode === 'preview') {
-    const model = buildModel(tokens.tokens, config)
+    const model = buildModel(tokens.tokens, config, tokens.problems)
+    warnAll(model)
     const kit = buildKit(model, tokens.origin, tokens.files, config)
     const path = join(projectDir, 'tokens', 'preview.html')
     writeText(path, buildPreview(model, tokens.origin, tokens.files, kit, config))
@@ -902,14 +1037,21 @@ function main() {
 
   // check
   const { model, files } = buildOutputs(root, projectDir, config, tokens)
+  warnAll(model)
   const stale = files.filter((f) => !existsSync(f.path) || readFileSync(f.path, 'utf8') !== f.text)
   const failures = contrastChecks(model).filter((c) => !c.pass)
   const strict = truthy(flags.strict)
+  // The Figma library is a mirror, so drift is reported, never failed on.
+  const mirror = tokens.origin === 'tokens.json' ? figmaMirror(root, projectDir, config) : null
+  if (mirror && !mirror.current) {
+    process.stderr.write(`  figma: the mirror was synced on ${mirror.syncedAt} from other tokens; run the figma skill's drift check\n`)
+  }
   for (const f of stale) process.stderr.write(`  stale: ${shown(f.path)}${existsSync(f.path) ? '' : ' (missing)'}\n`)
   for (const c of failures) {
     process.stderr.write(`  ${strict ? 'fail' : 'warn'}: ${c.token} on ${c.on} (${c.mode}) is ${c.ratio.toFixed(2)}:1, needs ${c.needs}:1\n`)
   }
   const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}`]
+  if (mirror) parts.push(mirror.current ? 'figma mirror current' : 'figma mirror behind')
   if (stale.length > 0) {
     process.stdout.write(`massimo tokens check: out of date (${parts.join(', ')}). Run: node design-system/scripts/tokens.mjs build\n`)
     process.exit(1)
