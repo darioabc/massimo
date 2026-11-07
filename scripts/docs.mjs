@@ -15,7 +15,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readTokenSource } from './lib/dtcg.mjs'
-import { fail, loadConfig, parseArgs, readJson, rel, scriptCommand, writeFileAtomic } from './lib/project.mjs'
+import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder, writeFileAtomic } from './lib/project.mjs'
 import { isAlias } from './lib/source.mjs'
 import { truthy } from './lib/text.mjs'
 
@@ -71,6 +71,7 @@ export function docsBlock({ root, config, projectDir }) {
 
   // Components.
   const graph = readJson(join(projectDir, 'graph.json'), null)
+  refuseNewer('graph', graph?.version, 'graph.json')
   lines.push('## Components', '')
   if (!graph) {
     lines.push(`No component graph yet. Generate it with ${run('graph', 'ds:graph')}.`, '')
@@ -123,6 +124,7 @@ export function withBlock(current, block, title) {
 function main() {
   const { flags } = parseArgs()
   const { root, config, projectDir } = loadConfig(flags)
+  warnIfVendoredOlder(projectDir, import.meta.url)
   const path = join(projectDir, 'README.md')
   const current = existsSync(path) ? readFileSync(path, 'utf8') : null
   const pkg = readJson(join(root, 'package.json'), {}) ?? {}

@@ -9,6 +9,7 @@
 import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const CONFIG_FILE = 'massimo.config.json'
 export const SCRIPTS_VERSION = '0.2.0'
@@ -191,11 +192,51 @@ export function readJson(path, fallback = null) {
 
 // Load the config for a repo. Flags: --root <dir>, --config <file>,
 // --project-dir <dir> (overrides config.projectDir, used by tests and dry runs).
+// Version strings compared part by part: 0.2.10 is newer than 0.2.9.
+const versionParts = (v) => String(v).split('.').map((n) => Number.parseInt(n, 10) || 0)
+export function olderThan(a, b) {
+  const [x, y] = [versionParts(a), versionParts(b)]
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0)
+  return false
+}
+
+// The version of the scripts vendored in a project: null when there are
+// none, `unknown` when the file holds no version.
+export function vendoredVersion(projectDir) {
+  const p = join(projectDir, 'scripts', 'lib', 'project.mjs')
+  if (!existsSync(p)) return null
+  return readFileSync(p, 'utf8').match(/SCRIPTS_VERSION = '([^']+)'/)?.[1] ?? 'unknown'
+}
+
+// The newest format of each file this version reads. A file in a newer one
+// was written by a newer massimo, and reading it as an older one would guess.
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 1 }
+export function refuseNewer(kind, version, where) {
+  if (typeof version === 'number' && version > FORMATS_READ[kind]) {
+    fail(`${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: update massimo (init.mjs --update-scripts)`)
+  }
+}
+
+// Run from the plugin rather than the project's vendored copy, a script
+// says when that copy is older, since CI and teammates run the copy.
+export function warnIfVendoredOlder(projectDir, scriptUrl) {
+  const here = dirname(fileURLToPath(scriptUrl))
+  if (resolve(here) === resolve(join(projectDir, 'scripts'))) return
+  const vendored = vendoredVersion(projectDir)
+  if (vendored && olderThan(vendored, SCRIPTS_VERSION)) {
+    process.stderr.write(`massimo: warn: the project's vendored scripts are ${vendored}, older than this ${SCRIPTS_VERSION}; run init.mjs --update-scripts so CI reads what this writes\n`)
+  }
+}
+
 export function loadConfig(flags = {}) {
   const root = flags.root ? resolve(flags.root) : findRoot()
   const configPath = flags.config ? resolve(flags.config) : join(root, CONFIG_FILE)
   const exists = existsSync(configPath)
   const raw = exists ? readJson(configPath, {}) : {}
+  refuseNewer('config', raw?.version, CONFIG_FILE)
+  if (typeof raw?.minScripts === 'string' && olderThan(SCRIPTS_VERSION, raw.minScripts)) {
+    fail(`${CONFIG_FILE} needs massimo scripts ${raw.minScripts} or later, and these are ${SCRIPTS_VERSION}: update massimo (init.mjs --update-scripts)`)
+  }
   const config = deepMerge(structuredClone(DEFAULTS), raw)
   const projectDirFlag = flags['project-dir']
   const projectDir = projectDirFlag
