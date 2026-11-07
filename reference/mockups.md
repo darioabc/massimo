@@ -46,7 +46,7 @@ Rules:
 5. **Fixed frame.** Size the root to the target viewport (`width: 1280px` for desktop, `375px` for mobile) and record it in `round.json`. The canvas scales frames to fit.
 6. **Both themes when the product has both.** Respect `data-theme` through the kit's tokens; do not hard-code one theme's colours.
 7. **Fonts.** Use the kit's font tokens. If the product loads web fonts, add the same `<link>` the product uses.
-8. **Static is fine.** Show states side by side (default, hover, empty, error) inside the frame rather than scripting interactions. A small script is allowed when an interaction is the point of the direction.
+8. **Static is fine.** Show states side by side (default, hover, empty, error) inside the frame rather than scripting interactions. A small script is allowed when an interaction is the point of the direction: set `"scripts": true` on that direction in `round.json`. The canvas frames every mockup in a sandbox, and only a direction marked this way runs its script, in a frame the theme switch cannot reach.
 9. **No app chrome you were not asked for.** Reproduce the real surrounding chrome when the baseline has it; do not invent navigation, toolbars or browser frames.
 
 ## round.json

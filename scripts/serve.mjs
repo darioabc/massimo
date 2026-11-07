@@ -9,14 +9,14 @@
 //
 // --dir defaults to the project folder. Tries the next ten ports if busy.
 
-import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { escapeHtml, markdownPage, renderMarkdown } from './lib/markdown.mjs'
 import { loadConfig, parseArgs } from './lib/project.mjs'
 
 const { flags } = parseArgs()
-const dir = flags.dir ? resolve(flags.dir) : loadConfig(flags).projectDir
+const dir = realpathSync(flags.dir ? resolve(flags.dir) : loadConfig(flags).projectDir)
 const host = flags.host ?? '127.0.0.1'
 const firstPort = Number(flags.port ?? 4700)
 
@@ -56,7 +56,7 @@ function sendHtml(res, html) {
 function listing(target, pathname) {
   const entries = readdirSync(target, { withFileTypes: true })
     .filter((e) => !e.name.startsWith('.'))
-    .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+    .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   const items = entries
     .map((e) => {
       const isDir = e.isDirectory()
@@ -69,10 +69,32 @@ function listing(target, pathname) {
   return markdownPage({ title: pathname, body, trail: trail(pathname) })
 }
 
+const inside = (p) => p === dir || p.startsWith(dir + sep)
+
+// A request that cannot be served gets an error page, never a crash: a bad
+// URL is a 400, and any other failure a 500 that leaves the server running.
 const server = createServer((req, res) => {
-  const url = new URL(req.url, 'http://x')
-  const path = normalize(join(dir, decodeURIComponent(url.pathname)))
-  if (path !== dir && !path.startsWith(dir + sep)) {
+  try {
+    handle(req, res)
+  } catch (err) {
+    if (res.headersSent) res.end()
+    else res.writeHead(500, { 'content-type': 'text/plain' }).end(`error: ${err.message}`)
+  }
+})
+
+function handle(req, res) {
+  let url
+  let path
+  try {
+    url = new URL(req.url, 'http://x')
+    path = normalize(join(dir, decodeURIComponent(url.pathname)))
+  } catch {
+    res.writeHead(400, { 'content-type': 'text/plain' }).end('bad request')
+    return
+  }
+  // Checked twice: the path as asked for, and where it really leads once
+  // symlinks are followed, so a link inside the folder cannot serve a file outside it.
+  if (!inside(path) || (existsSync(path) && !inside(realpathSync(path)))) {
     res.writeHead(403).end('forbidden')
     return
   }
@@ -99,9 +121,13 @@ const server = createServer((req, res) => {
     sendHtml(res, markdownPage({ title, body: renderMarkdown(text), trail: trail(url.pathname), raw: `${url.pathname}?raw` }))
     return
   }
+  if (!inside(realpathSync(target))) {
+    res.writeHead(403).end('forbidden')
+    return
+  }
   res.writeHead(200, { 'content-type': TYPES[extname(target).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-store' })
   createReadStream(target).pipe(res)
-})
+}
 
 let port = firstPort
 server.on('error', (e) => {
@@ -114,6 +140,6 @@ server.on('error', (e) => {
   }
 })
 server.on('listening', () => {
-  process.stdout.write(`massimo: serving ${dir} at http://localhost:${port}/\n`)
+  process.stdout.write(`massimo: serving ${dir} at http://localhost:${server.address().port}/\n`)
 })
 server.listen(port, host)

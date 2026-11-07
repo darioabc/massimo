@@ -2,9 +2,9 @@
 // in STATUS.md, and the decision log. state.mjs is the CLI over this; the
 // SessionStart hook reads it to tell a new session where the project stands.
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { SCRIPTS_VERSION, today } from './project.mjs'
+import { SCRIPTS_VERSION, now, today, withLock, writeFileAtomic } from './project.mjs'
 
 export const PHASES = [
   { id: 'setup', title: 'Set up the project', skill: 'start' },
@@ -40,8 +40,8 @@ export function emptyState() {
   return {
     version: 1,
     massimo: SCRIPTS_VERSION,
-    createdAt: today(),
-    updatedAt: today(),
+    createdAt: now(),
+    updatedAt: now(),
     phases: PHASES.map((p) => ({ id: p.id, status: 'todo', note: '', updatedAt: null })),
     explorations: [],
   }
@@ -64,9 +64,22 @@ export function loadState(projectDir) {
 }
 
 export function saveState(projectDir, state) {
-  state.updatedAt = today()
+  state.updatedAt = now()
   state.massimo = SCRIPTS_VERSION
-  writeFileSync(statePath(projectDir), `${JSON.stringify(state, null, 2)}\n`)
+  writeFileAtomic(statePath(projectDir), `${JSON.stringify(state, null, 2)}\n`)
+}
+
+// Load, change and save state.json under a lock, so two sessions updating the
+// project at once both keep their change. `change` gets the loaded state.
+export function updateState(projectDir, change) {
+  return withLock(statePath(projectDir), () => {
+    const state = loadState(projectDir)
+    if (!state) throw new Error('no state.json to update')
+    const result = change(state)
+    saveState(projectDir, state)
+    renderStatus(projectDir, state)
+    return { state, result }
+  })
 }
 
 export function phaseMeta(id) {
@@ -83,7 +96,7 @@ export function setPhase(state, id, status, note) {
   const phase = state.phases.find((p) => p.id === id)
   phase.status = status
   if (note !== undefined) phase.note = note
-  phase.updatedAt = today()
+  phase.updatedAt = now()
   return phase
 }
 
@@ -99,13 +112,13 @@ export function upsertExploration(state, topic, fields) {
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) item[k] = k === 'round' ? Number(v) : v
   }
-  item.updatedAt = today()
-  state.explorations.sort((a, b) => a.topic.localeCompare(b.topic))
+  item.updatedAt = now()
+  state.explorations.sort((a, b) => (a.topic < b.topic ? -1 : a.topic > b.topic ? 1 : 0))
   return item
 }
 
 export function progressMarkdown(state) {
-  const lines = [`_Generated from state.json by state.mjs on ${state.updatedAt}. Do not edit this block by hand._`, '']
+  const lines = [`_Generated from state.json by state.mjs on ${String(state.updatedAt).slice(0, 10)}. Do not edit this block by hand._`, '']
   lines.push('| Phase | Status | Progress | Run |', '|---|---|---|---|')
   for (const p of state.phases) {
     const meta = phaseMeta(p.id)
@@ -145,7 +158,7 @@ export function renderStatus(projectDir, state) {
     const firstSection = text.indexOf('\n## ')
     next = firstSection === -1 ? `${text.trimEnd()}\n\n${block}\n` : `${text.slice(0, firstSection)}\n${block}\n${text.slice(firstSection)}`
   }
-  if (next !== text) writeFileSync(path, next)
+  if (next !== text) writeFileAtomic(path, next)
   return true
 }
 
@@ -157,10 +170,25 @@ export function appendDecision(projectDir, { text, why, phase, by }) {
   let line = `${parts.join(' · ')} · ${sentence(text)}`
   if (why) line += ` Why: ${sentence(why)}`
   if (by) line += ` (${by.trim()})`
-  if (!existsSync(path)) writeFileSync(path, '# Decisions\n\nAppend-only. Newest at the bottom.\n\n')
-  const current = readFileSync(path, 'utf8')
-  appendFileSync(path, `${current.endsWith('\n') ? '' : '\n'}${line}\n`)
+  withLock(path, () => {
+    if (!existsSync(path)) writeFileSync(path, '# Decisions\n\nAppend-only. Newest at the bottom.\n\n')
+    appendFileSync(path, `${endsWithNewline(path) ? '' : '\n'}${line}\n`)
+  })
   return line
+}
+
+// Whether a file's last byte is a newline, read without loading the file.
+function endsWithNewline(path) {
+  const size = statSync(path).size
+  if (size === 0) return true
+  const fd = openSync(path, 'r')
+  try {
+    const byte = Buffer.alloc(1)
+    readSync(fd, byte, 0, 1, size - 1)
+    return byte[0] === 10
+  } finally {
+    closeSync(fd)
+  }
 }
 
 // One compact paragraph for the SessionStart hook: enough for a fresh
