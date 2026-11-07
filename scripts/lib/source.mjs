@@ -614,7 +614,7 @@ export function parseCssBlocks(css, file = 'x.css') {
 const unquote = (s) => s.replace(/^['"]|['"]$/g, '')
 
 // A selector list split at its top-level commas (`:is(a, b)` stays whole).
-function selectorMembers(selector) {
+export function selectorMembers(selector) {
   const out = []
   let depth = 0
   let cur = ''
@@ -688,7 +688,7 @@ function classifyCompound(compound) {
 // compound in it is one (`[data-theme="dark"] body`, `html.dark`); a member
 // that reaches into the page (`html.dark .band-block`, `.dark .card`) is a
 // component's scope, whatever theme it names.
-function classifyMember(member) {
+export function classifyMember(member) {
   const parts = compounds(member).map(classifyCompound)
   if (parts.length === 0 || parts.some((p) => p.kind === 'other')) return { mode: 'default', scope: 'local' }
   const theme = parts.filter((p) => p.kind === 'theme').pop()
@@ -701,7 +701,7 @@ function classifyMember(member) {
 // (@layer, or a media query of only `screen` or `all`), or `condition` (a
 // width, a motion preference, @supports, @container: an override). A colour
 // scheme together with another feature is a condition in that scheme.
-function atRuleKind(header) {
+export function atRuleKind(header) {
   if (/^@layer\b/i.test(header)) return { kind: 'transparent' }
   if (!/^@media\b/i.test(header)) return { kind: 'condition' }
   const query = header.replace(/^@media\s*/i, '')

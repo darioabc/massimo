@@ -18,12 +18,18 @@
 //   node <project>/scripts/tokens.mjs hash       print the tokens' hash, as the Figma mirror records it
 //   node <project>/scripts/tokens.mjs migrate    convert a tokens.json from before 0.2.0 to 2025.10 [--to legacy] [--force]
 //   node <project>/scripts/tokens.mjs figma      --record <export.json> [--file-key K] | --drift <export.json>
+//   node <project>/scripts/tokens.mjs mirror     write the token set as a mirror of the style files (tokens.mirror); --check to compare
 // Shared flags: --root <dir> --config <file> --project-dir <dir>, and --source <file>
 // to read another token set (a draft) for preview, kit, check or hash.
+//
+// With tokens.mirror on, the style files are the source instead: `mirror`
+// writes the token set from them, keeping each CSS name, theme and scope, and
+// every other command reads that set. `check` then also fails when the mirror
+// is behind the CSS, and `build` never writes over a file it mirrors.
 
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { colorCss, contrastRatio, parseColor, toHex } from './lib/color.mjs'
 import { DESIGN_MD, designMd } from './lib/designmd.mjs'
@@ -49,6 +55,7 @@ import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
 import { FAMILIES, propose } from './lib/propose.mjs'
 import { fromTokensStudio, isTokensStudio, readCss, readFigmaExport, readJsonFile, readTailwindConfig, readThemeObject } from './lib/readers.mjs'
+import { sheetDeclarations, themePlacer } from './lib/sheets.mjs'
 import { escapeHtml, truthy } from './lib/text.mjs'
 
 // The line every generated file opens with; set in main(), once the paths are known.
@@ -1483,13 +1490,157 @@ function migrate({ root, config, projectDir, configPath, flags, shown }) {
   )
 }
 
+// ── The mirror: the style files as the token set ───────────────────────────
+
+const IMPORTANT = /\s*!important$/i
+
+// The style files the config names, with their text.
+const styleSheets = (root, config) => expandGlobs(root, config.tokens.styleFiles, [], config.ignore).map((file) => ({ file, css: readFileSync(join(root, file), 'utf8') }))
+
+// Where the mirror lives: the folder of tokens.source, which names its
+// resolver document.
+function mirrorDir(root, config) {
+  const source = config.tokens.source
+  if (!source.endsWith('.resolver.json')) throw new Error(`the mirror is a resolver document, and tokens.source is ${source}; point it at a .resolver.json file, or leave it unset`)
+  return dirname(join(root, source))
+}
+
+// The token set the style files make, as the files writeTokenSet writes by
+// path in the mirror's folder, with notes on what is not kept as written.
+// A property with a value on the root is a token; its themes come from the
+// config's selectors, its values under any other selector go to
+// `$extensions.massimo.scopes`, and the comment before it is its
+// description. A property set only in a theme or inside scopes has no
+// default to give a token, so the base file keeps it by name with its values.
+function mirrorSet(root, config, projectDir) {
+  const sheets = styleSheets(root, config)
+  if (sheets.length === 0) throw new Error(`tokens.styleFiles names no file to mirror (${config.tokens.styleFiles.join(', ') || 'it is empty'})`)
+  const { declarations: found } = sheetDeclarations(sheets, config)
+  const notes = []
+  const props = new Map()
+  let tailwind = 0
+  for (const d of found) {
+    if (d.name.startsWith('--tw-')) {
+      tailwind++
+      continue
+    }
+    const p = props.get(d.name) ?? { modes: {}, scopes: {}, all: {}, comment: '', rootComment: '' }
+    const value = d.value.replace(IMPORTANT, '')
+    if (value !== d.value) notes.push(`${d.name} under ${d.key} is !important, which a token cannot hold; the mirror keeps the value without it`)
+    if (d.mode === 'default') p.default = value
+    else if (d.mode) p.modes[d.mode] = value
+    else p.scopes[d.key] = value
+    p.all[d.key] = value
+    if (!p.comment && d.comment) p.comment = d.comment
+    if (d.mode === 'default' && !p.rootComment && d.comment) p.rootComment = d.comment
+    props.set(d.name, p)
+  }
+  if (tailwind > 0) notes.push(`${tailwind} declarations of Tailwind's own --tw-* properties are not mirrored`)
+  const { looksLikeTheme } = themePlacer(config)
+  const flagged = new Set()
+  for (const d of found) {
+    const mode = d.mode ? null : looksLikeTheme(d.member, d.conditions)
+    if (!mode || flagged.has(d.key)) continue
+    flagged.add(d.key)
+    notes.push(`${d.key} looks like the ${mode === 'default' ? 'default' : mode} theme, but tokens.darkSelector and tokens.selectors do not name it, so its values are kept as a scope`)
+  }
+  const scoped = {}
+  for (const [name, p] of props) {
+    if (p.default === undefined) scoped[name] = { ...(p.comment ? { description: p.comment } : {}), scopes: p.all }
+  }
+  // The root and theme values, read by readCss as extract reads them.
+  const byFile = new Map()
+  for (const d of found) {
+    if (!d.mode || props.get(d.name)?.default === undefined) continue
+    byFile.set(d.file, [...(byFile.get(d.file) ?? []), { name: d.name, value: d.value.replace(IMPORTANT, ''), mode: d.mode, scope: d.mode === 'default' ? 'root' : 'selector', selector: d.key }])
+  }
+  const read = readCss(root, sheets.map((s) => s.file), (css, file) => byFile.get(file) ?? [])
+  notes.push(...read.notes)
+  for (const t of read.tokens) t.description = props.get(t.cssVar).rootComment || props.get(t.cssVar).comment
+  const { tokens, losses, defaultMode } = draftFrom(read.tokens, config)
+  for (const l of losses) notes.push(`${l.token} (${l.kind}): ${l.detail}`)
+  // Every value the CSS output would write differently (a family's quotes,
+  // a number's form) keeps the text the author wrote, so the mirror builds
+  // back to the same declarations.
+  const model = buildModel(tokens, config, [], { defaultMode })
+  for (const t of tokens) {
+    const p = props.get(t.cssVar)
+    if (!t.cssOnly) {
+      for (const mode of ['default', ...Object.keys(t.modes)]) {
+        const want = mode === 'default' ? p.default : p.modes[mode]
+        if (want === undefined || declarations(model, t, mode, true)[0][1] === want) continue
+        if (mode === 'default') t.css = want
+        else t.cssModes = { ...t.cssModes, [mode]: want }
+      }
+    }
+    if (Object.keys(p.scopes).length > 0) t.scopes = p.scopes
+  }
+  buildModel(tokens, config, [], { defaultMode })
+  const from = sheets.map((s) => s.file)
+  const files = writeTokenSet({
+    tokens,
+    defaultMode,
+    name: 'Design tokens',
+    description: `A mirror of the custom properties in ${from.join(', ')}, written by massimo tokens mirror. Do not edit it by hand: change the CSS, then run ${scriptCommand(root, projectDir, 'tokens', 'mirror')}.`,
+    mirror: { from, ...(Object.keys(scoped).length > 0 ? { scoped } : {}) },
+  })
+  const resolverName = basename(config.tokens.source)
+  const named = Object.fromEntries(Object.entries(files).map(([path, text]) => [path === 'tokens.resolver.json' ? resolverName : path, text]))
+  return { files: named, notes, from, count: tokens.length, withScopes: tokens.filter((t) => t.scopes).length, scoped: Object.keys(scoped).length }
+}
+
+// Whether the mirror may write where it would: never over a token set that
+// is not a mirror, or one a newer massimo wrote.
+function guardMirror(dir, resolverName, shown) {
+  const base = join(dir, 'base.tokens.json')
+  const doc = existsSync(base) ? readJson(base) : null
+  const format = doc ? formatOf(doc) : null
+  if (format !== null && format > FORMAT_VERSION) fail(`${shown(base)} was written by a newer massimo (format ${format}; this one reads ${FORMAT_VERSION}). Update massimo.`)
+  if (doc ? !doc.$extensions?.massimo?.mirror : existsSync(join(dir, resolverName))) {
+    fail(`${shown(doc ? base : join(dir, resolverName))} holds a token set that is not a mirror of the style files, and the mirror never writes over one. Move it, or turn tokens.mirror off.`)
+  }
+}
+
+// The mirror files as they should be, and which of them are not.
+function mirrorState(root, config, projectDir) {
+  const dir = mirrorDir(root, config)
+  const set = mirrorSet(root, config, projectDir)
+  const files = Object.entries(set.files).map(([name, text]) => ({ path: join(dir, name), text }))
+  return { ...set, dir, files, stale: files.filter((f) => !existsSync(f.path) || readFileSync(f.path, 'utf8') !== f.text) }
+}
+
+// Outputs that would write over a style file the mirror reads as the source.
+const overSources = (root, config) => {
+  if (!config.tokens.mirror) return []
+  const sources = new Set(expandGlobs(root, config.tokens.styleFiles, [], config.ignore))
+  return (config.tokens.outputs ?? []).filter((o) => sources.has(rel(root, join(root, o.path))))
+}
+
+function mirrorCommand({ root, config, projectDir, flags, shown }) {
+  if (!config.tokens.mirror) fail('tokens.mirror is off. Set it to true in massimo.config.json first: the style files then stay the source, and the token set becomes their checked mirror.')
+  const state = mirrorState(root, config, projectDir)
+  guardMirror(state.dir, basename(config.tokens.source), shown)
+  if (truthy(flags.check)) {
+    for (const f of state.stale) process.stderr.write(`  stale: ${shown(f.path)}${existsSync(f.path) ? '' : ' (missing)'}\n`)
+    if (state.stale.length > 0) {
+      process.stdout.write(`massimo tokens mirror: behind the style files (${state.stale.length} of ${state.files.length} files). Run: ${scriptCommand(root, projectDir, 'tokens', 'mirror')}\n`)
+      process.exit(1)
+    }
+    process.stdout.write(`massimo tokens mirror: up to date with ${state.from.join(', ')} (${state.count} tokens)\n`)
+    return
+  }
+  for (const f of state.files) writeText(f.path, f.text)
+  for (const n of state.notes) process.stderr.write(`  note: ${n}\n`)
+  process.stdout.write(`massimo tokens mirror: ${state.count} tokens from ${state.from.join(', ')}, ${state.withScopes} with values in scopes, ${state.scoped} set only in themes or scopes; wrote ${state.files.map((f) => shown(f.path)).join(', ')}\n`)
+}
+
 const BOOLEAN_FLAGS = new Set(['strict', 'force'])
 
 function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { _: positionals, flags } = parseArgs(argv)
   const mode = positionals[0]
-  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash', 'migrate', 'figma']
+  const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash', 'migrate', 'figma', 'mirror']
   if (!MODES.includes(mode)) fail(`usage: tokens.mjs <${MODES.join('|')}> [--strict]`, 2)
   const { root, config, projectDir, configPath } = loadConfig(flags)
   warnIfVendoredOlder(projectDir, import.meta.url)
@@ -1504,6 +1655,9 @@ function main() {
   }
 
   if (mode === 'migrate') return migrate({ root, config, projectDir, configPath, flags, shown })
+  if (mode === 'mirror') return mirrorCommand({ root, config, projectDir, flags, shown })
+  const over = ['build', 'check'].includes(mode) ? overSources(root, config) : []
+  if (over.length > 0) fail(`tokens.outputs writes ${over.map((o) => o.path).join(', ')}, which tokens.mirror reads as the source, and the build never writes over a file it mirrors. Point that output at another file.`)
 
   if (mode === 'extract') {
     // What the sources define, then the code's own values for the gaps.
@@ -1529,7 +1683,9 @@ function main() {
 
   const tokens = loadTokens(root, config, { draftOk: mode === 'kit' || mode === 'preview' })
   if (!tokens) {
-    const message = `no tokens at ${config.tokens.source}. Run \`tokens.mjs extract\`, review the draft in tokens/draft/, then move it into tokens/.`
+    const message = config.tokens.mirror
+      ? `no mirror of the style files at ${config.tokens.source} yet. Run: ${scriptCommand(root, projectDir, 'tokens', 'mirror')}`
+      : `no tokens at ${config.tokens.source}. Run \`tokens.mjs extract\`, review the draft in tokens/draft/, then move it into tokens/.`
     if (mode === 'check') {
       process.stderr.write(`massimo tokens: ${message}\n`)
       process.exit(2)
@@ -1551,6 +1707,9 @@ function main() {
   if (mode === 'build') {
     const { model, files } = buildOutputs(root, projectDir, config, tokens)
     warnAll(model)
+    if (config.tokens.mirror && mirrorState(root, config, projectDir).stale.length > 0) {
+      process.stderr.write(`massimo: warn: the mirror is behind the style files, so this build is from the CSS as it was; run ${scriptCommand(root, projectDir, 'tokens', 'mirror')} first\n`)
+    }
     for (const f of files) writeText(f.path, f.text)
     process.stdout.write(`massimo tokens build: ${tokens.tokens.length} tokens; wrote ${files.map((f) => shown(f.path)).join(', ')}\n`)
     return
@@ -1581,6 +1740,9 @@ function main() {
   warnAll(model)
   // A draft read with --source has no outputs of its own: only its contrast is checked.
   const stale = typeof flags.source === 'string' ? [] : files.filter((f) => !existsSync(f.path) || readFileSync(f.path, 'utf8') !== f.text)
+  // With tokens.mirror on, the mirror itself is checked against the style files too.
+  const behind = config.tokens.mirror && typeof flags.source !== 'string' ? mirrorState(root, config, projectDir).stale : []
+  for (const f of behind) process.stderr.write(`  behind the style files: ${shown(f.path)}${existsSync(f.path) ? '' : ' (missing)'}\n`)
   const failures = contrastChecks(model).filter((c) => !c.pass)
   const strict = truthy(flags.strict)
   // The Figma library is a mirror, so drift is reported, never failed on.
@@ -1594,8 +1756,11 @@ function main() {
   }
   const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}`]
   if (mirror) parts.push(mirror.current ? 'figma mirror current' : 'figma mirror behind')
-  if (stale.length > 0) {
-    process.stdout.write(`massimo tokens check: out of date (${parts.join(', ')}). Run: ${scriptCommand(root, projectDir, 'tokens', 'build')}\n`)
+  if (config.tokens.mirror && typeof flags.source !== 'string') parts.push(behind.length > 0 ? 'mirror behind the style files' : 'mirror current')
+  if (stale.length > 0 || behind.length > 0) {
+    // A mirror brought up to date can change every output, so build follows it.
+    const fixes = [...(behind.length > 0 ? ['mirror'] : []), 'build'].map((m) => scriptCommand(root, projectDir, 'tokens', m))
+    process.stdout.write(`massimo tokens check: out of date (${parts.join(', ')}). Run: ${fixes.join(', then ')}\n`)
     process.exit(1)
   }
   if (failures.length > 0 && strict) {

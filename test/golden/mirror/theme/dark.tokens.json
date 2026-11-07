@@ -1,0 +1,92 @@
+{
+  "$description": "What changes in the dark context.",
+  "color": {
+    "$type": "color",
+    "accent": {
+      "$value": "{color.accent-300}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-accent",
+          "css": "rgb(var(--accent-300))"
+        }
+      }
+    },
+    "focus": {
+      "$value": "{color.accent-300}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-focus",
+          "css": "rgb(var(--accent-300))"
+        }
+      }
+    },
+    "ground": {
+      "$value": "{color.ink-950}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-ground",
+          "css": "rgb(var(--ink-950))"
+        }
+      }
+    },
+    "line": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.949,
+          0.9412,
+          0.9216
+        ],
+        "hex": "#f2f0eb",
+        "alpha": 0.16
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-line",
+          "css": "rgb(var(--cream-50) / 0.16)"
+        }
+      }
+    },
+    "surface": {
+      "$value": "{color.ink-900}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-surface",
+          "css": "rgb(var(--ink-900))"
+        }
+      }
+    },
+    "text": {
+      "$value": "{color.cream-50}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-text",
+          "css": "rgb(var(--cream-50))"
+        }
+      }
+    },
+    "text-muted": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.949,
+          0.9412,
+          0.9216
+        ],
+        "hex": "#f2f0eb",
+        "alpha": 0.62
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-text-muted",
+          "css": "rgb(var(--cream-50) / 0.62)"
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2
+    }
+  }
+}

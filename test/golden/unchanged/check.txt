@@ -1,0 +1,2 @@
+massimo tokens check: up to date (11 tokens, 0 stale, 1 contrast failure)
+  warn: light: color.fg.muted on color.bg.default is 4.48:1, needs 4.5:1

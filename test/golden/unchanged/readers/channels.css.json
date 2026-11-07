@@ -1,0 +1,79 @@
+{
+  "tokens": [
+    {
+      "path": [
+        "color",
+        "background"
+      ],
+      "type": "color",
+      "value": "hsl(210 40% 98%)",
+      "modes": {},
+      "css": "210 40% 98%",
+      "cssVar": "--background",
+      "description": "",
+      "source": "channels.css"
+    },
+    {
+      "path": [
+        "color",
+        "brand"
+      ],
+      "type": null,
+      "value": "#0f766e",
+      "modes": {},
+      "css": null,
+      "cssVar": "--brand",
+      "description": "",
+      "source": "channels.css"
+    },
+    {
+      "path": [
+        "color",
+        "rgb-base-100"
+      ],
+      "type": "color",
+      "value": "rgb(236 229 209)",
+      "modes": {
+        "dark": "rgb(20 18 16)"
+      },
+      "css": "236 229 209",
+      "cssVar": "--rgb-base-100",
+      "description": "",
+      "source": "channels.css",
+      "cssModes": {
+        "dark": "20 18 16"
+      }
+    },
+    {
+      "path": [
+        "color",
+        "rgb-base-content"
+      ],
+      "type": "color",
+      "value": "rgb(34 30 26)",
+      "modes": {},
+      "css": "34 30 26",
+      "cssVar": "--rgb-base-content",
+      "description": "",
+      "source": "channels.css"
+    },
+    {
+      "path": [
+        "color",
+        "surface"
+      ],
+      "type": null,
+      "value": "#ffffff",
+      "modes": {
+        "dark": "#111111"
+      },
+      "css": null,
+      "cssVar": "--surface",
+      "description": "",
+      "source": "channels.css"
+    }
+  ],
+  "notes": [],
+  "typeSteps": [],
+  "count": 5
+}

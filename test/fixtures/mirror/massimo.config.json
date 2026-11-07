@@ -1,0 +1,11 @@
+{
+  "framework": "astro",
+  "styling": ["css"],
+  "tokens": {
+    "styleFiles": ["src/styles/theme.css"],
+    "darkSelector": "html.dark",
+    "darkMedia": false,
+    "mirror": true,
+    "outputs": [{ "format": "css", "path": "src/styles/built.css" }]
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "tokens": [
+    {
+      "path": [
+        "color",
+        "text"
+      ],
+      "type": null,
+      "value": "#111111",
+      "modes": {
+        "dark": "#eeeeee"
+      },
+      "css": null,
+      "cssVar": "--c-text",
+      "description": "",
+      "source": "scopes.css"
+    },
+    {
+      "path": [
+        "spacing",
+        "base"
+      ],
+      "type": null,
+      "value": "4rem",
+      "modes": {},
+      "css": null,
+      "cssVar": "--gap",
+      "description": "",
+      "source": "scopes.css"
+    }
+  ],
+  "notes": [
+    "--c-text is also set inside .band-block, html.dark .band-block; its token holds the page's value",
+    "--gap is also set under @media (max-width: 60rem) :root; its token holds the value outside that, and massimo's outputs do not write the override"
+  ],
+  "typeSteps": [],
+  "count": 2
+}

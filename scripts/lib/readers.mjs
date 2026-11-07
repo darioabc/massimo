@@ -44,7 +44,7 @@ export function channelColor(value) {
 // `--dur-2` a duration, and `--h1-size` with `--h1-leading` a type step. A
 // colour is known by its value instead, since its name rarely says so
 // (`--sand-200`, `--c-text`).
-const PREFIX_GROUPS = [
+export const PREFIX_GROUPS = [
   [/^(?:color|colour|clr|c)(?:-|$)/, 'color'],
   [/^(?:spacing|space|sp|gap)(?:-|$)/, 'spacing'],
   [/^(?:radius|radii|rounded)(?:-|$)/, 'radius'],
@@ -61,7 +61,7 @@ const PREFIX_GROUPS = [
   [/^(?:border-width|stroke)(?:-|$)/, 'border-width'],
   [/^size(?:-|$)/, 'size'],
 ]
-const SUFFIX_GROUPS = [
+export const SUFFIX_GROUPS = [
   [/-(?:font-size|size|fs)$/, 'text'],
   [/-(?:line-height|leading|lh)$/, 'leading'],
   [/-(?:letter-spacing|tracking)$/, 'tracking'],
@@ -77,8 +77,10 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // reference to it, and `rgb(var(--x) / 0.14)` the colour it makes in each
 // theme, its exact CSS kept. A fluid clamp() size takes its largest value,
 // its CSS kept too. Stems with a size and a line height, weight or tracking
-// (`--h1-size`, `--h1-leading`) come back as type steps.
-export function readCss(root, files) {
+// (`--h1-size`, `--h1-leading`) come back as type steps. `parse` reads one
+// file's properties; the token mirror passes one that places each selector
+// by the config's theme selectors instead of by the names themes usually have.
+export function readCss(root, files, parse = parseCustomProperties) {
   const entries = new Map()
   // Values set only inside a component's scope or under a condition: said in
   // a note when the same property is a token, never taken as its value. A
@@ -86,7 +88,7 @@ export function readCss(root, files) {
   const elsewhere = new Map()
   const onlyUnder = new Map()
   for (const file of files) {
-    for (const p of parseCustomProperties(readFileSync(join(root, file), 'utf8'), file)) {
+    for (const p of parse(readFileSync(join(root, file), 'utf8'), file)) {
       if (p.name.startsWith('--tw-')) continue
       if (p.scope === 'conditional') {
         const e = onlyUnder.get(p.name) ?? { default: undefined, modes: {}, source: file, condition: p.condition }

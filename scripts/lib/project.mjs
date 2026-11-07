@@ -64,6 +64,9 @@ export const DEFAULTS = {
     // The media widths the audit's breakpoint kind allows: { scale: ['40rem'],
     // twins: ['40.0625rem'] }, the twins being each step's min-width partner.
     breakpoints: null,
+    // The style files stay the source, and the token set at tokens.source is
+    // their checked mirror (`tokens.mjs mirror`), which everything else reads.
+    mirror: false,
   },
   audit: {
     include: ['src/**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}'],

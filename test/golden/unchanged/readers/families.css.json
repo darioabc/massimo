@@ -1,0 +1,275 @@
+{
+  "tokens": [
+    {
+      "path": [
+        "color",
+        "block"
+      ],
+      "type": "color",
+      "value": "{color.ink-900}",
+      "modes": {
+        "dark": "rgb(0 0 0)"
+      },
+      "css": "rgb(var(--ink-900))",
+      "cssVar": "--c-block",
+      "description": "",
+      "source": "families.css",
+      "cssModes": {
+        "dark": "0 0 0"
+      }
+    },
+    {
+      "path": [
+        "color",
+        "line"
+      ],
+      "type": "color",
+      "value": "rgb(29 31 32 / 0.14)",
+      "modes": {
+        "dark": "rgb(250 250 247 / 0.14)"
+      },
+      "css": "rgb(var(--ink-900) / 0.14)",
+      "cssVar": "--c-line",
+      "description": "",
+      "source": "families.css",
+      "cssModes": {
+        "dark": "rgb(var(--ink-900) / 0.14)"
+      }
+    },
+    {
+      "path": [
+        "color",
+        "text"
+      ],
+      "type": "color",
+      "value": "{color.ink-900}",
+      "modes": {
+        "dark": "rgb(236 229 209 / 0.88)"
+      },
+      "css": "rgb(var(--ink-900))",
+      "cssVar": "--c-text",
+      "description": "",
+      "source": "families.css",
+      "cssModes": {
+        "dark": "rgb(var(--sand-200) / 0.88)"
+      }
+    },
+    {
+      "path": [
+        "duration",
+        "1"
+      ],
+      "type": null,
+      "value": "120ms",
+      "modes": {},
+      "css": null,
+      "cssVar": "--dur-1",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "ease",
+        "out"
+      ],
+      "type": null,
+      "value": "cubic-bezier(0.22, 0.61, 0.36, 1)",
+      "modes": {},
+      "css": null,
+      "cssVar": "--ease-out",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "leading",
+        "h1"
+      ],
+      "type": null,
+      "value": "1",
+      "modes": {},
+      "css": null,
+      "cssVar": "--h1-leading",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "text",
+        "h1"
+      ],
+      "type": null,
+      "value": "4rem",
+      "modes": {},
+      "css": "clamp(2.5rem, 1.6rem + 3vw, 4rem)",
+      "cssVar": "--h1-size",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "tracking",
+        "h1"
+      ],
+      "type": null,
+      "value": "-0.04em",
+      "modes": {},
+      "css": null,
+      "cssVar": "--h1-tracking",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "font-weight",
+        "h1"
+      ],
+      "type": null,
+      "value": "900",
+      "modes": {},
+      "css": null,
+      "cssVar": "--h1-weight",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "color",
+        "heading"
+      ],
+      "type": null,
+      "value": "{color.rgb-heading}",
+      "modes": {},
+      "css": "rgb(var(--rgb-heading))",
+      "cssVar": "--heading",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "other",
+        "icon-size"
+      ],
+      "type": null,
+      "value": "24px",
+      "modes": {},
+      "css": null,
+      "cssVar": "--icon-size",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "color",
+        "ink-900"
+      ],
+      "type": "color",
+      "value": "rgb(29 31 32)",
+      "modes": {
+        "dark": "rgb(250 250 247)"
+      },
+      "css": "29 31 32",
+      "cssVar": "--ink-900",
+      "description": "",
+      "source": "families.css",
+      "cssModes": {
+        "dark": "250 250 247"
+      }
+    },
+    {
+      "path": [
+        "other",
+        "measure-text"
+      ],
+      "type": null,
+      "value": "40rem",
+      "modes": {},
+      "css": null,
+      "cssVar": "--measure-text",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "radius",
+        "2"
+      ],
+      "type": null,
+      "value": "0.5rem",
+      "modes": {},
+      "css": null,
+      "cssVar": "--radius-2",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "color",
+        "rgb-heading"
+      ],
+      "type": null,
+      "value": "{color.ink-900}",
+      "modes": {},
+      "css": null,
+      "cssVar": "--rgb-heading",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "color",
+        "sand-200"
+      ],
+      "type": "color",
+      "value": "rgb(236 229 209)",
+      "modes": {},
+      "css": "236 229 209",
+      "cssVar": "--sand-200",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "spacing",
+        "1-5"
+      ],
+      "type": null,
+      "value": "0.375rem",
+      "modes": {},
+      "css": null,
+      "cssVar": "--space-1-5",
+      "description": "",
+      "source": "families.css"
+    },
+    {
+      "path": [
+        "z",
+        "modal"
+      ],
+      "type": null,
+      "value": "50",
+      "modes": {},
+      "css": null,
+      "cssVar": "--z-modal",
+      "description": "",
+      "source": "families.css"
+    }
+  ],
+  "notes": [
+    "--h1-size is fluid (clamp(2.5rem, 1.6rem + 3vw, 4rem)); its token holds the largest size, 4rem, and the CSS output keeps the clamp()"
+  ],
+  "typeSteps": [
+    {
+      "path": [
+        "text",
+        "h1"
+      ],
+      "source": "families.css",
+      "lineHeight": "1",
+      "fontWeight": "900",
+      "fontWeightRef": "{font-weight.h1}",
+      "letterSpacing": "-2.56px"
+    }
+  ],
+  "count": 18
+}
