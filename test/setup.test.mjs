@@ -58,6 +58,41 @@ test('detect: nested apps, the Tailwind version, token files and a story tool st
   }
 })
 
+test('detect: a gated story lane the repo already built is the lane, configured, never scaffolded over', () => {
+  const r = repo({
+    'package.json': JSON.stringify({ dependencies: { astro: '5' }, scripts: { 'stories:dev': 'STORIES=1 astro dev --port 4330', 'stories:build': 'STORIES=1 astro build --outDir dist-stories' } }),
+    'astro.config.mjs': "import stories from './stories-integration.mjs'\nexport default { integrations: [stories()] }\n",
+    'stories-integration.mjs': "export default () => ({ name: 'lane', hooks: { 'astro:config:setup': () => { if (process.env.STORIES !== '1') return } } })\n",
+    'src/stories/manifest.ts': 'export const stories = []\n',
+    'src/stories/index.astro': '---\n---\n',
+    'src/stories/StoryFrame.astro': '---\n---\n',
+    'src/stories/pages/button.astro': '---\n---\n',
+    'src/stories/pages/card.astro': '---\n---\n',
+    'src/components/Button.astro': '---\n---\n',
+  })
+  try {
+    const out = JSON.parse(script('detect', r.root).stdout)
+    assert.deepEqual(out.storyTools.lane, { dir: 'src/stories', manifest: 'src/stories/manifest.ts', index: 'src/stories/index.astro', gate: 'package.json scripts', devScript: 'stories:dev', port: 4330, pages: 2, files: 5 })
+    assert.deepEqual(out.suggestedConfig.stories.include, ['src/stories/pages/**/*.{astro,tsx,jsx,vue,svelte,ts}'])
+    assert.equal(out.suggestedConfig.stories.devCommand, 'npm run stories:dev')
+    assert.equal(out.suggestedConfig.stories.url, 'http://localhost:4330/stories')
+  } finally {
+    r.cleanup()
+  }
+  // No gate, no lane: a stories folder alone is not one.
+  const plain = repo({ 'package.json': '{"dependencies":{"astro":"5"}}', 'src/stories/index.astro': '---\n---\n' })
+  try {
+    assert.equal(JSON.parse(script('detect', plain.root).stdout).storyTools.lane, null)
+  } finally {
+    plain.cleanup()
+  }
+})
+
+test('the skills never scaffold a lane over files that exist', () => {
+  assert.match(read(SCRIPTS, '..', 'skills', 'stories', 'SKILL.md'), /if any already exists, stop and tell the user which/)
+  assert.match(read(SCRIPTS, '..', 'skills', 'stories', 'SKILL.md'), /If detect reports `storyTools.lane`/)
+})
+
 test('init: no package.json gives a warning with the node command, and STATUS.md names no phase yet', () => {
   const r = repo({ 'components/Button.tsx': 'export default 1' })
   try {

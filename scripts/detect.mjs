@@ -125,7 +125,41 @@ function detectStoryTools() {
   if (has('histoire')) out.push('histoire')
   if (has('react-cosmos')) out.push('react-cosmos')
   const storyFiles = files.filter((f) => /\.(stories|story)\.[a-z]+$/.test(f))
-  return { tools: out, storyFiles: storyFiles.length, sample: storyFiles.slice(0, 5) }
+  return { tools: out, storyFiles: storyFiles.length, sample: storyFiles.slice(0, 5), lane: gatedLane() }
+}
+
+// A story lane the repo already built (massimo's shape, or its own): routes
+// that exist only when an env flag is set, and a stories folder with a
+// manifest or an index. Scaffolding a recipe over it would overwrite it.
+function gatedLane() {
+  const scripts = Object.entries(pkg.scripts ?? {})
+  const gated = scripts.filter(([, cmd]) => /\bSTORIES=(?:1|true)\b/.test(String(cmd)))
+  const configs = files.filter((f) => /^(?:astro|nuxt|vite|next|svelte)\.config\.[cm]?[jt]s$/.test(f) || /^vite\.[\w-]*stories[\w-]*\.config\.[cm]?[jt]s$/.test(f))
+  const configGate = configs.find((f) => {
+    try {
+      return /process\.env\.STORIES\b/.test(readFileSync(join(root, f), 'utf8'))
+    } catch {
+      return false
+    }
+  })
+  if (gated.length === 0 && !configGate) return null
+  const manifest = files.find((f) => /(?:^|\/)stories\/manifest\.(?:[cm]?[jt]s|json)$/.test(f))
+  const index = files.find((f) => /(?:^|\/)stories\/(?:index|Gallery)\.[a-z]+$/.test(f))
+  if (!manifest && !index) return null
+  const dir = (manifest ?? index).replace(/\/[^/]+$/, '')
+  const pages = files.filter((f) => f.startsWith(`${dir}/pages/`) && COMPONENT_EXT.test(f))
+  const dev = gated.find(([, cmd]) => /\b(?:dev|serve)\b/.test(String(cmd))) ?? gated[0]
+  const port = Number(String(dev?.[1] ?? '').match(/--port[ =](\d+)/)?.[1]) || null
+  return {
+    dir,
+    manifest: manifest ?? null,
+    index: index ?? null,
+    gate: configGate ?? (gated.length ? 'package.json scripts' : null),
+    devScript: dev?.[0] ?? null,
+    port,
+    pages: pages.length,
+    files: files.filter((f) => f.startsWith(`${dir}/`)).length,
+  }
 }
 
 // Folders whose files look like components, ranked by how many they hold.
@@ -263,7 +297,17 @@ const suggestedConfig = {
   },
   consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(framework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
   aliases: aliases(),
-  stories: { ...DEFAULTS.stories, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
+  // An existing gated lane is the lane: its pages are the stories, and its own
+  // dev script and port run it.
+  stories: stories.lane
+    ? {
+        ...DEFAULTS.stories,
+        include: [`${stories.lane.dir}/${stories.lane.pages > 0 ? 'pages/' : ''}**/*.{astro,tsx,jsx,vue,svelte,ts}`],
+        devCommand: stories.lane.devScript ? `npm run ${stories.lane.devScript}` : null,
+        port: stories.lane.port ?? DEFAULTS.stories.port,
+        url: stories.lane.port ? `http://localhost:${stories.lane.port}/stories` : null,
+      }
+    : { ...DEFAULTS.stories, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
   tokens: {
     ...DEFAULTS.tokens,
     source: `${projectDir}/tokens/tokens.resolver.json`,
