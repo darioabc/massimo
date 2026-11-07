@@ -7,7 +7,7 @@
 // run them, and a vendored script must not drag a dependency tree with it.
 
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export const CONFIG_FILE = 'massimo.config.json'
@@ -43,6 +43,13 @@ export const DEFAULTS = {
     defaultMode: 'light',
     // A selector per mode name, where the dark selector with the name swapped in does not fit.
     selectors: {},
+    // Other places the repo keeps design values, read by `tokens.mjs extract`:
+    // a Tailwind 3 config, JS or TS theme objects, token files (DTCG or Tokens
+    // Studio), and Figma variables exported as JSON.
+    tailwindConfig: null,
+    themeFiles: [],
+    importFiles: [],
+    figmaExport: null,
     outputs: [],
   },
   audit: {
@@ -237,6 +244,7 @@ export function now() {
 // Write through a temporary file and rename it into place, so a reader never
 // sees half a file and a crash mid-write leaves the old one whole.
 export function writeFileAtomic(path, text) {
+  mkdirSync(dirname(path), { recursive: true })
   const tmp = `${path}.${process.pid}.tmp`
   writeFileSync(tmp, text)
   try {

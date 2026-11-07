@@ -154,6 +154,33 @@ function styleFiles() {
     .map(({ file, customProps, theme }) => ({ file, customProps, theme }))
 }
 
+// Other places the repo keeps design values, for `tokens.mjs extract`: a
+// Tailwind 3 config, theme or token modules, and token JSON files (DTCG or
+// Tokens Studio). Read by name and, for JSON, by a quick look inside.
+function tokenSources(projectDir) {
+  const ours = (f) => f.startsWith(`${projectDir}/`)
+  const tailwindConfig = ['tailwind.config.ts', 'tailwind.config.js', 'tailwind.config.mjs', 'tailwind.config.cjs'].find((f) => files.includes(f)) ?? null
+  const themeFiles = files
+    .filter((f) => /(^|\/)(theme|tokens|design-tokens|stitches\.config|panda\.config)\.(ts|tsx|js|mjs|cjs)$/.test(f) || /\.css\.ts$/.test(f) && /(theme|tokens|vars)/i.test(f))
+    .filter((f) => !ours(f))
+    .slice(0, 5)
+  const importFiles = files
+    .filter((f) => /\.tokens\.json$|(^|\/)tokens\.json$|(^|\/)\$themes\.json$|(^|\/)tokens\/[^/]+\.json$/.test(f))
+    .filter((f) => !ours(f) && f !== 'package.json')
+    .filter((f) => {
+      try {
+        const p = join(root, f)
+        if (statSync(p).size > 1024 * 1024) return false
+        const text = readFileSync(p, 'utf8')
+        return /"\$value"|"\$themes"|"value"\s*:/.test(text)
+      } catch {
+        return false
+      }
+    })
+    .slice(0, 5)
+  return { tailwindConfig, themeFiles, importFiles }
+}
+
 function aliases() {
   const out = {}
   for (const name of ['tsconfig.json', 'jsconfig.json', 'tsconfig.app.json']) {
@@ -231,6 +258,7 @@ const suggestedConfig = {
     ...DEFAULTS.tokens,
     source: `${projectDir}/tokens/tokens.resolver.json`,
     styleFiles: styles.slice(0, 3).map((s) => s.file),
+    ...tokenSources(projectDir),
   },
   // The audit reads the same tree as the consumers, so a repo with no src/ is still audited.
   audit: {

@@ -12,7 +12,7 @@ test('extract writes a 2025.10 draft from CSS blocks, themes and aliases; never 
   const before = read(ctx.root, 'design-system', 'tokens', 'tokens.json')
   const r = run('tokens', ctx, ['extract'])
   assert.equal(r.status, 0, r.stderr)
-  assert.match(r.stdout, /^massimo tokens extract: 10 tokens from 1 file; wrote /)
+  assert.match(r.stdout, /^massimo tokens extract: 14 tokens \(10 from 1 source, 4 from the code\), \d+ too rare to propose; wrote /)
   assert.equal(read(ctx.root, 'design-system', 'tokens', 'tokens.json'), before)
   const resolver = readJson(ctx.project, 'tokens', 'draft', 'tokens.resolver.json')
   assert.equal(resolver.version, '2025.10')
@@ -31,7 +31,8 @@ test('extract writes a 2025.10 draft from CSS blocks, themes and aliases; never 
   assert.deepEqual(base.font.sans.$value, ['Geist Sans', 'system-ui', 'sans-serif'])
   assert.equal(base.shadow.$type, 'shadow') // an untyped shadow string, read as a shadow
   assert.equal(base.other.local, undefined) // component-scoped custom properties are not tokens
-  assert.match(read(ctx.project, 'tokens', 'draft', 'report.md'), /shadow\.card` \(typed\): had no type; read as a shadow/)
+  assert.match(read(ctx.project, 'tokens', 'draft', 'report.md'), /\| `shadow\.card` \| 0 1px 2px rgb\(0 0 0 \/ 0\.1\) \| src\/styles\/theme\.css \|/)
+  assert.equal(base.color['base-content'].$extensions.massimo.contrast.on, 'color.base-100') // a DaisyUI pair, by name
 })
 
 test('build writes every configured output plus figma-variables.json and kit.css', () => {

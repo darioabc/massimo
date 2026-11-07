@@ -13,7 +13,7 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── state.json                 machine-readable phase and exploration state (edit only through state.mjs)
 ├── product.md                 product grounding: users, reference products, brand feel, a11y bar, scope, real-content sources
 ├── decisions.md               append-only decision log
-├── README.md                  how the team uses the system (written in the guard phase)
+├── README.md                  how the team uses the system (docs.mjs writes its generated part)
 ├── graph.md / graph.json      generated component graph (graph.mjs)
 ├── audits/                    latest.md, latest.json, baseline.json (audit.mjs)
 ├── tokens/                    the token set in W3C Design Tokens 2025.10: tokens.resolver.json (the entry point), base.tokens.json,
@@ -61,7 +61,8 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 | `state.mjs` | `show`, `next`, `set`, `decide`, `explore`, `render` |
 | `graph.mjs` | writes graph.md/json; `--check` for CI |
 | `audit.mjs` | raw-value audit; `--baseline` (first time), `--lower` (after a fix) and `--check` (CI) ratchet per offender |
-| `tokens.mjs` | `extract`, `build`, `kit`, `check`, `preview`, `hash` |
+| `tokens.mjs` | `extract` (a full draft from the repo's sources and its code), `build`, `kit`, `check`, `preview`, `hash`, `migrate`, `figma` |
+| `docs.mjs` | the generated part of `<project>/README.md`; `--check` for CI |
 | `canvas.mjs` | builds an exploration's side-by-side canvas page |
 | `serve.mjs` | zero-dependency static server for the project folder |
 | `shoot.mjs` | screenshots, page snapshots (`--dom`) and pixel diffs through Playwright, when the repo has it |
