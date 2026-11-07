@@ -34,6 +34,7 @@ import {
   stringLiterals,
   stripComments,
 } from './lib/source.mjs'
+import { readTokenSource } from './lib/dtcg.mjs'
 import { truthy } from './lib/text.mjs'
 
 export const KINDS = [
@@ -570,16 +571,13 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
   const customProps = []
   for (const f of styleFiles) customProps.push(...parseCustomProperties(readFileSync(join(root, f), 'utf8'), f))
   let dtcgTokens = []
-  const sourcePath = join(root, config.tokens.source)
-  if (existsSync(sourcePath)) {
-    try {
-      dtcgTokens = flattenDtcg(readJson(sourcePath))
-    } catch {
-      // an invalid tokens.json is tokens.mjs's problem to report
-    }
+  try {
+    dtcgTokens = readTokenSource(root, config)?.tokens ?? []
+  } catch {
+    // an invalid token file is tokens.mjs's problem to report
   }
   const primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value)).map((t) => t.cssVar))
-  if (dtcgTokens.length === 0) skipped.set('primitive-read', 'no tokens.json')
+  if (dtcgTokens.length === 0) skipped.set('primitive-read', 'no token set yet')
 
   const styling = config.styling ?? []
   const libraries = classLibraries(config)

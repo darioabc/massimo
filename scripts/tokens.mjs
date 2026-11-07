@@ -30,14 +30,12 @@ import { driftReport, recordMirror } from './lib/figma.mjs'
 import {
   FORMAT_VERSION,
   checkValue,
-  cssOnlyTokens,
+  CONTRAST_USES,
   expandDocument,
   flattenFormat,
   formatOf,
-  inOrder,
-  isResolver,
-  looksLegacy,
-  readResolver,
+  fromCss,
+  readTokenSource,
   splitCss,
   tokenJson,
   typedFromLegacy,
@@ -47,7 +45,9 @@ import {
 import { compare, expandGlobs } from './lib/glob.mjs'
 import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, rel, scriptCommand, today } from './lib/project.mjs'
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
-import { readCss } from './lib/readers.mjs'
+import { runAudit } from './audit.mjs'
+import { FAMILIES, propose } from './lib/propose.mjs'
+import { fromTokensStudio, isTokensStudio, readCss, readFigmaExport, readJsonFile, readTailwindConfig, readThemeObject } from './lib/readers.mjs'
 import { escapeHtml, truthy } from './lib/text.mjs'
 
 // The line every generated file opens with; set in main(), once the paths are known.
@@ -496,8 +496,9 @@ function draftFrom(found, config) {
     modes: { ...t.modes },
     description: t.description ?? '',
     cssVar: t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root')),
-    on: null,
-    contrast: 4.5,
+    on: t.contrast?.on ?? null,
+    use: t.contrast?.use ?? null,
+    contrast: CONTRAST_USES[t.contrast?.use] ?? 4.5,
     collection: null,
     extensions: {},
     deprecated: null,
@@ -513,35 +514,74 @@ function draftFrom(found, config) {
   return { tokens: typed, losses, defaultMode: legacy.defaultMode }
 }
 
+// Every place the config names where the repo keeps design values, read.
+function readSources(root, config) {
+  const sources = []
+  const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore)
+  if (styleFiles.length > 0) sources.push({ kind: 'css', ...readCss(root, styleFiles) })
+  if (config.tokens.tailwindConfig) sources.push({ kind: 'tailwind', ...readTailwindConfig(root, config.tokens.tailwindConfig) })
+  for (const file of expandGlobs(root, config.tokens.themeFiles ?? [], [], config.ignore)) sources.push({ kind: 'theme', ...readThemeObject(root, file) })
+  for (const file of expandGlobs(root, config.tokens.importFiles ?? [], [], config.ignore)) {
+    const notes = []
+    const raw = readJsonFile(root, file)
+    let tokens
+    if (isTokensStudio(raw)) tokens = flattenDtcg(fromTokensStudio(raw, notes, file))
+    else if (formatOf(raw) !== null || !looksLegacyDoc(raw)) tokens = flattenFormat(expandDocument(raw, notes), notes)
+    else tokens = flattenDtcg(raw)
+    sources.push({
+      kind: 'tokens',
+      tokens: tokens.map((t) => ({ path: t.path, type: t.type ?? t.groupType ?? null, value: t.value, modes: { ...t.modes }, cssVar: null, description: t.description, source: file })),
+      notes: notes.map((n) => (typeof n === 'string' ? n : `${file}: ${n.path}: ${n.message}`)),
+    })
+  }
+  if (config.tokens.figmaExport) sources.push({ kind: 'figma', ...readFigmaExport(root, config.tokens.figmaExport) })
+  return { sources, styleFiles }
+}
+
+const looksLegacyDoc = (doc) => JSON.stringify(doc).includes('"massimo":{"modes"') || /"\$value":\s*"#/.test(JSON.stringify(doc))
+
+const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', other: 'Other' }
+const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
+
+// The draft's report: what each token is and where it came from, family by
+// family, then the values too rare to propose, notes and conversion losses.
+function draftReport({ sources, audit, report, outliers, notes, losses, count }) {
+  const read = sources.map((s) => [...new Set(s.tokens.map((t) => t.source))].join(', ')).filter(Boolean)
+  const lines = ['# Draft tokens', '']
+  lines.push(`${count} tokens, read from ${read.length ? read.join(', ') : 'no source files'} and the code itself (${audit?.scannedFiles ?? 0} files audited). Nothing here is in use yet: review it family by family with the tokens skill.`, '')
+  for (const family of [...FAMILIES, 'other']) {
+    const rows = report.filter((r) => r.family === family)
+    if (rows.length === 0) continue
+    lines.push(`## ${FAMILY_TITLES[family]}`, '', '| Token | Value | From | Note |', '|---|---|---|---|')
+    for (const r of rows) lines.push(`| \`${cell(r.token)}\` | ${cell(r.value)} | ${cell(r.from)} | ${cell(r.note)} |`)
+    lines.push('')
+  }
+  if (outliers.length) {
+    lines.push('## Too rare to propose', '', 'Each was used too few times, or off the grid, to become a token. Replace it with a token in the tidy phase, or keep it with a reason.', '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
+    for (const o of outliers) lines.push(`| ${FAMILY_TITLES[o.family] ?? o.family} | ${cell(o.value)} | ${o.count} | ${cell(o.note)} |`)
+    lines.push('')
+  }
+  if (losses.length) {
+    lines.push('## What did not convert exactly', '')
+    for (const l of losses) lines.push(`- \`${l.token}\` (${l.kind}): ${l.detail}`)
+    lines.push('')
+  }
+  if (notes.length) {
+    lines.push('## Notes', '')
+    for (const n of notes) lines.push(`- ${n}`)
+    lines.push('')
+  }
+  return `${lines.join('\n').trimEnd()}\n`
+}
+
 // The token set, with the problems found reading it (passed on to buildModel)
 // and which dialect it is in: '2025.10' (a resolver document, or one token
 // file with massimo's format version) or 'legacy' (what massimo wrote before
 // 0.2.0, read as before so existing projects build unchanged).
 function loadTokens(root, config, { draftOk = false, all = null } = {}) {
-  const path = join(root, config.tokens.source)
   const problems = []
-  if (existsSync(path)) {
-    let doc
-    try {
-      doc = readJson(path)
-    } catch (err) {
-      throw new Error(`${config.tokens.source} is not valid JSON: ${err.message}`)
-    }
-    if (isResolver(doc)) {
-      const r = readResolver(path, { root, problems })
-      const modeOrder = r.contexts.filter((c) => !c.isDefault).map((c) => c.name)
-      return { tokens: r.tokens, problems, origin: 'tokens', format: '2025.10', files: r.files, defaultMode: r.defaultMode, modeOrder }
-    }
-    const format = formatOf(doc)
-    if (format !== null && format > FORMAT_VERSION) {
-      throw new Error(`${config.tokens.source} was written by a newer massimo (format ${format}; this one reads ${FORMAT_VERSION}). Update massimo.`)
-    }
-    if (format !== null || !looksLegacy(doc)) {
-      const tokens = inOrder(flattenFormat(expandDocument(doc, problems), problems), cssOnlyTokens(doc, problems))
-      return { tokens, problems, origin: 'tokens', format: '2025.10', files: [config.tokens.source] }
-    }
-    return { tokens: flattenDtcg(doc, problems), problems, origin: 'tokens', format: 'legacy', files: [config.tokens.source] }
-  }
+  const read = readTokenSource(root, config, problems)
+  if (read) return { ...read, origin: 'tokens' }
   if (!draftOk) return null
   const draft = extractDraft(root, config, all)
   return { tokens: flattenDtcg(draft.doc, problems), problems, origin: draft.count > 0 ? 'draft' : 'none', format: 'legacy', files: draft.files }
@@ -1447,24 +1487,23 @@ function main() {
   if (mode === 'migrate') return migrate({ root, config, projectDir, configPath, flags, shown })
 
   if (mode === 'extract') {
-    if (config.tokens.styleFiles.length === 0) fail('tokens.styleFiles is empty; list the stylesheets that define the custom properties')
-    const draft = extractDraft(root, config)
-    if (draft.files.length === 0) fail(`no style files matched tokens.styleFiles (${config.tokens.styleFiles.join(', ')})`)
-    const { tokens, losses, defaultMode } = draftFrom(draft.tokens, config)
-    const sources = draft.files.join(', ')
+    // What the sources define, then the code's own values for the gaps.
+    const { sources } = readSources(root, config)
+    const audit = runAudit(root, config)
+    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2) })
+    if (proposal.tokens.length === 0) fail('found nothing to propose: no style files, config, theme or token files, and no raw values in the code')
+    const { tokens, losses, defaultMode } = draftFrom(proposal.tokens, config)
     const set = writeTokenSet({
       tokens,
       defaultMode,
       name: 'Draft tokens',
-      description: `Draft extracted by massimo from ${sources}. Nothing here is in use yet: review it with the tokens skill.`,
+      description: 'Draft proposed by massimo from what this repo already uses. Nothing here is in use yet: review it with the tokens skill.',
     })
     const dir = join(projectDir, 'tokens', 'draft')
     for (const [name, text] of Object.entries(set)) writeText(join(dir, name), text)
-    const report = ['# Draft tokens', '', `Extracted from ${sources}. ${draft.count} custom properties.`, '', '## What did not convert exactly', '']
-    if (losses.length === 0) report.push('Every value converted exactly.')
-    for (const l of losses) report.push(`- \`${l.token}\` (${l.kind}): ${l.detail}`)
-    writeText(join(dir, 'report.md'), `${report.join('\n')}\n`)
-    process.stdout.write(`massimo tokens extract: ${draft.count} tokens from ${draft.files.length} ${draft.files.length === 1 ? 'file' : 'files'}; wrote ${shown(join(dir, 'tokens.resolver.json'))} and the files it names\n`)
+    writeText(join(dir, 'report.md'), draftReport({ sources, audit, ...proposal, losses, count: tokens.length }))
+    const fromSources = sources.reduce((n, s) => n + s.tokens.length, 0)
+    process.stdout.write(`massimo tokens extract: ${tokens.length} tokens (${fromSources} from ${sources.length} ${sources.length === 1 ? 'source' : 'sources'}, ${tokens.length - Math.min(fromSources, tokens.length)} from the code), ${proposal.outliers.length} too rare to propose; wrote ${shown(join(dir, 'tokens.resolver.json'))} and report.md\n`)
     return
   }
 

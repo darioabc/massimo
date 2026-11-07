@@ -31,6 +31,8 @@ import {
   stringLiterals,
   stripComments,
 } from './lib/source.mjs'
+import { readTokenSource } from './lib/dtcg.mjs'
+import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
 import { natural, truthy } from './lib/text.mjs'
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
@@ -114,13 +116,6 @@ function assignNames(files) {
   return names
 }
 
-function countDtcgTokens(node) {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return 0
-  if ('$value' in node) return 1
-  let n = 0
-  for (const [k, v] of Object.entries(node)) if (!k.startsWith('$')) n += countDtcgTokens(v)
-  return n
-}
 
 function tokenGroup(name) {
   const first = name.replace(/^--/, '').split('-')[0]
@@ -129,6 +124,18 @@ function tokenGroup(name) {
 
 // Everything the graph needs, computed from source. Pure apart from reads:
 // returns { json, markdown, warnings } so --check and tests can reuse it.
+// A component's props with how its call sites use them, and the states it styles.
+function propsAndStates(source, file, name, importers) {
+  const own = componentProps(source, file, componentName(file))
+  const usage = callSiteUsage(componentName(file), importers)
+  const props = own.map((p) => (usage[p.name] ? { ...p, usage: usage[p.name] } : p))
+  for (const [prop, values] of Object.entries(usage)) {
+    if (!own.some((p) => p.name === prop)) props.push({ name: prop, from: 'usage', usage: values })
+  }
+  props.sort((a, b) => compare(a.name, b.name))
+  return { props, states: componentStates(source, props) }
+}
+
 export function buildGraph(root, config, command = "graph.mjs") {
   const warnings = []
   const all = walk(root, { ignore: config.ignore })
@@ -268,6 +275,12 @@ export function buildGraph(root, config, command = "graph.mjs") {
   const ticketRe = config.ticketPattern ? new RegExp(config.ticketPattern, 'g') : null
   const faults = []
 
+  // Call sites are read once each, however many components they use.
+  const textOf = new Map()
+  const text = (f) => {
+    if (!textOf.has(f)) textOf.set(f, readFileSync(join(root, f), 'utf8'))
+    return textOf.get(f)
+  }
   const nodes = nodeFiles.map((file) => {
     const source = readFileSync(join(root, file), 'utf8')
     const code = stripComments(source, file)
@@ -317,6 +330,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       composes: [...composes.get(file)].map((f) => nameOf.get(f)).sort(byName),
       composedBy: sortedAreas,
       usage: importersOf.get(file).size,
+      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) }))),
       packages: sortedUnique(packages.get(file)),
       style: {
         classes: Object.fromEntries(Object.entries(classes).filter(([, set]) => set.size > 0).map(([id, set]) => [id, sortedUnique(set)])),
@@ -340,13 +354,11 @@ export function buildGraph(root, config, command = "graph.mjs") {
   const groups = Object.fromEntries(TOKEN_GROUPS.map((g) => [g, []]))
   for (const name of tokenNames) groups[tokenGroup(name)].push(name)
   let dtcg = null
-  const sourcePath = join(root, config.tokens.source)
-  if (existsSync(sourcePath)) {
-    try {
-      dtcg = { path: config.tokens.source, count: countDtcgTokens(readJson(sourcePath)) }
-    } catch {
-      warnings.push(`${config.tokens.source}: not valid JSON`)
-    }
+  try {
+    const set = readTokenSource(root, config)
+    if (set) dtcg = { path: config.tokens.source, count: set.tokens.length }
+  } catch (err) {
+    warnings.push(err.message)
   }
 
   const unresolvedMap = {}
@@ -442,6 +454,18 @@ function renderNode(node, nameByFile) {
   if (node.style.tokens.length > 0) style.push(`tokens ${node.style.tokens.join(', ')}`)
   if (node.style.cssVars.length > 0) style.push(`vars ${node.style.cssVars.join(', ')}`)
   if (style.length > 0) lines.push(`- style: ${style.join(' · ')}`)
+  if (node.props?.length > 0) {
+    const describe = (p) => {
+      const bits = []
+      if (p.values) bits.push(p.values.join(' | '))
+      if (p.default !== undefined) bits.push(`default ${p.default === '' ? '""' : p.default}`)
+      if (p.usage) bits.push(`used ${Object.entries(p.usage).sort((a, b) => b[1] - a[1]).map(([v, n]) => `${v} ×${n}`).join(', ')}`)
+      if (p.kind) bits.push(p.kind)
+      return bits.length > 0 ? `${p.name} (${bits.join('; ')})` : p.name
+    }
+    lines.push(`- props: ${node.props.map(describe).join(' · ')}`)
+  }
+  if (node.states?.length > 0) lines.push(`- states: ${node.states.join(', ')}`)
   const rules = Object.entries(node.rules).map(([k, v]) => `${k} ${v}`)
   if (node.group) rules.unshift(`group ${node.group}`)
   if (rules.length > 0) lines.push(`- rules: ${rules.join(' · ')}`)

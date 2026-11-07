@@ -17,7 +17,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { DTCG_COLOR_SPACES, colorCss, colorFromCss } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
-import { CSS_VAR_NAME, aliasPath, cssVarFor, isAlias } from './source.mjs'
+import { CSS_VAR_NAME, aliasPath, cssVarFor, flattenDtcg, isAlias } from './source.mjs'
 
 // The format version massimo writes in `$extensions.massimo.format`. A file
 // with a higher number was written by a newer massimo and is refused.
@@ -558,6 +558,37 @@ export function readResolver(path, { root, problems = [] } = {}) {
   }
   const first = contexts.find((c) => c.isDefault)
   return { tokens, files, defaultMode: first?.name ?? null, contexts, cssOnly: [] }
+}
+
+// ── Any token source ───────────────────────────────────────────────────────
+
+// The token set at `config.tokens.source` in whichever dialect it is: a
+// resolver document, one 2025.10 file, or the tokens.json massimo wrote before
+// 0.2.0. Returns null when there is no file; problems go into `problems`.
+export function readTokenSource(root, config, problems = []) {
+  const source = config.tokens.source
+  const path = join(root, source)
+  if (!existsSync(path)) return null
+  let doc
+  try {
+    doc = readJsonFile(path)
+  } catch (err) {
+    throw new Error(`${source} is not valid JSON: ${err.message}`)
+  }
+  if (isResolver(doc)) {
+    const r = readResolver(path, { root, problems })
+    const modeOrder = r.contexts.filter((c) => !c.isDefault).map((c) => c.name)
+    return { tokens: r.tokens, problems, format: '2025.10', files: r.files, defaultMode: r.defaultMode, modeOrder }
+  }
+  const format = formatOf(doc)
+  if (format !== null && format > FORMAT_VERSION) {
+    throw new Error(`${source} was written by a newer massimo (format ${format}; this one reads ${FORMAT_VERSION}). Update massimo.`)
+  }
+  if (format !== null || !looksLegacy(doc)) {
+    const tokens = inOrder(flattenFormat(expandDocument(doc, problems), problems), cssOnlyTokens(doc, problems))
+    return { tokens, problems, format: '2025.10', files: [source] }
+  }
+  return { tokens: flattenDtcg(doc, problems), problems, format: 'legacy', files: [source] }
 }
 
 // ── The dialect before 0.2.0 ───────────────────────────────────────────────
