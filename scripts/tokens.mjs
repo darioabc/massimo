@@ -1342,13 +1342,28 @@ function figmaMirror(root, projectDir, config, files) {
 function figmaCommand({ root, config, projectDir, flags, shown, tokens }) {
   const record = typeof flags.record === 'string' ? flags.record : null
   const drift = typeof flags.drift === 'string' ? flags.drift : null
-  if (!record === !drift) fail('usage: tokens.mjs figma --record <export.json> [--file-key <key>] | --drift <export.json>', 2)
-  const exportPath = resolve(record ?? drift)
+  const pairsOnly = typeof flags.pairs === 'string' ? flags.pairs : null
+  if ([record, drift, pairsOnly].filter(Boolean).length !== 1) fail('usage: tokens.mjs figma --pairs <export.json> | --record <export.json> [--file-key <key>] | --drift <export.json>', 2)
+  const exportPath = resolve(record ?? drift ?? pairsOnly)
   if (!existsSync(exportPath)) fail(`no export at ${exportPath}; save what read-library.js returns there first`)
   const exported = readJson(exportPath)
   const { files } = buildOutputs(root, projectDir, config, tokens)
   const wanted = JSON.parse(files.find((f) => f.path.endsWith('figma-variables.json')).text)
   const mirrorPath = join(projectDir, 'figma', 'mirror.json')
+  // Read only: which Figma variables pair with which tokens, and what differs,
+  // before anything is written to Figma. The mirror is left as it was.
+  if (pairsOnly) {
+    const previous = readJson(mirrorPath, {}) ?? {}
+    const fileKey = typeof flags['file-key'] === 'string' ? flags['file-key'] : undefined
+    const { mirror, mismatches, notes } = recordMirror(wanted, exported, { fileKey, date: today(), previous })
+    for (const n of notes) process.stderr.write(`  note: ${n}\n`)
+    for (const m of mismatches) process.stderr.write(`  differs: ${m}\n`)
+    const by = (match) => Object.values(mirror.variables).filter((v) => (v.match ?? 'name') === match).length
+    const total = Object.keys(mirror.variables).length
+    const wantedCount = (wanted.collections ?? []).reduce((n, c) => n + (c.variables?.length ?? 0), 0)
+    process.stdout.write(`massimo tokens figma: ${total} of ${wantedCount} variables pair with the file (${by('name')} by name, ${by('id')} by id, ${by('code')} by code syntax), ${mismatches.length} ${mismatches.length === 1 ? 'difference' : 'differences'}; nothing written\n`)
+    return
+  }
   if (record) {
     const previous = readJson(mirrorPath, {}) ?? {}
     const fileKey = typeof flags['file-key'] === 'string' ? flags['file-key'] : undefined
