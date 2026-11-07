@@ -481,7 +481,8 @@ export function ownFiles(root, files, pkg, text = (f) => readText(root, f)) {
       } else if (/token/i.test(basename(f)) && !isDtcg(t)) {
         const tokenNames = new Set(t.match(/"--[\w-]+"/g) ?? [])
         if (tokenNames.size >= 3) {
-          tokenFiles.push({ path: f, tokens: Array.isArray(json?.tokens) ? json.tokens.length : tokenNames.size, generated: generatedMark(t), writer: writerNamed(t, files) })
+          // JSON has no comments: a note near its top that says not to edit it is the mark.
+          tokenFiles.push({ path: f, tokens: Array.isArray(json?.tokens) ? json.tokens.length : tokenNames.size, generated: generatedMark(t) || DO_NOT_EDIT.test(t.slice(0, 600)), writer: writerNamed(t, files) })
           addFolder(f)
         }
       }

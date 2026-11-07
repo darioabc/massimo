@@ -231,6 +231,10 @@ test('planning again keeps what a class past found agreed, and marks what scan n
   assert.equal(next.classes.graph.assets.find((a) => a.id === 'doc:docs/system/graph.md').loss, 'carried')
   assert.equal(next.classes.graph.assets.find((a) => a.id === 'doc:docs/system/index.md'), undefined)
   assert.equal(next.classes.graph.date, '2026-11-07')
+  // A class at found whose assets are all gone has nothing left to adopt.
+  const noDocs = planLedger({ ...inv, assets: inv.assets.filter((a) => a.class !== 'docs') }, first, { date: '2026-11-08' })
+  assert.equal(first.classes.docs.state, 'found')
+  assert.equal(noDocs.classes.docs, undefined)
 })
 
 test('a new asset in a class past found starts at found, and takes its class back until it is agreed too', () => {

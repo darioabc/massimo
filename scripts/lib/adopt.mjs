@@ -229,6 +229,8 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
       return old && old.state !== 'found' ? { ...fresh, decision: old.decision, loss: old.loss, lines: old.lines, state: old.state, date: old.date, batch: old.batch } : fresh
     })
     for (const old of was?.assets ?? []) if (old.state !== 'found' && !mine.some((a) => a.id === old.id)) entries.push({ ...old, missing: true })
+    // A class left with nothing in it has nothing to adopt.
+    if (entries.length === 0) continue
     const wasAt = was ? STATES.indexOf(was.state) : 0
     const at = Math.min(wasAt, ...entries.filter((a) => !a.missing).map(standing))
     const same = was && at === wasAt
