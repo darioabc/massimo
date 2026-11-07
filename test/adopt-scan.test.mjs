@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { planLedger } from '../scripts/lib/adopt.mjs'
 import { walk } from '../scripts/lib/glob.mjs'
-import { headerCensus, headerEntries, inventoryMarkdown, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
+import { headerCensus, headerEntries, headerReaders, inventoryMarkdown, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
 import { SCRIPTS, read, readJson, scratch } from './helpers.mjs'
 
 const ctx = scratch('legacy')
@@ -66,7 +66,7 @@ test('the header census counts files per key, knows the built-in ones and propos
   assert.equal(key('owner').proposed, null)
   // The generator documents the grammar in a comment and a string; neither is a header.
   assert.ok(!key('group').examples.includes('scripts/build-system.mjs'))
-  // It names ds: in its code, so it reads the headers.
+  // Its code holds a header parser, so it reads the headers.
   assert.deepEqual(inv.headers.readers, ['scripts/build-system.mjs'])
 })
 
@@ -102,7 +102,8 @@ test("the repo's own files: generated docs, ratchet, token list, notes, DESIGN.m
   assert.equal(ratchet.map, 'raw-colour=color,undefined-var=undefined-var')
   assert.deepEqual(ratchet.unmapped, ['logo-colour'])
   assert.deepEqual(inv.own.tokenFiles.map((t) => [t.path, t.tokens]), [['docs/system/tokens.json', 3]])
-  assert.deepEqual(inv.own.generators, [{ path: 'scripts/build-system.mjs', scripts: ['system', 'system:check'], writes: ['docs/system/graph.md', 'docs/system/index.md', 'docs/system/ratchet.json', 'docs/system/tokens.json', 'docs/system/tokens.md'] }])
+  const outputs = ['docs/system/graph.md', 'docs/system/index.md', 'docs/system/ratchet.json', 'docs/system/tokens.json', 'docs/system/tokens.md']
+  assert.deepEqual(inv.own.generators, [{ path: 'scripts/build-system.mjs', scripts: ['system', 'system:check'], writes: outputs, named: outputs }])
   assert.deepEqual(inv.own.designMd, [{ path: 'DESIGN.md', version: 'alpha', name: 'Weekly box', tokens: { colors: 2, rounded: 1, spacing: 2 }, components: 2, rules: 2, problems: [] }])
   assert.deepEqual(inv.own.styleFiles, ['src/styles/theme.css'])
 })
@@ -237,6 +238,41 @@ test('a run script is followed through its cds: back at the root, what runs is t
   assert.deepEqual(runs(lines), ['graph:check', 'three', 'five', 'seven', 'nine', 'eleven', 'sixteen'])
   // The root-level script keeps its column, so its line and place are where they were.
   assert.equal(out.split('\n')[3].indexOf('npm run graph:check'), lines[3].indexOf('npm run graph:check'))
+})
+
+test('a cd whose folder cannot be read keeps what follows; a subshell keeps its cd; pushd and popd move like cd and cd -', () => {
+  const runs = (lines) => [...workflowText(['jobs:', '  a:', '    steps:', ...lines].join('\n')).matchAll(/npm run ([\w:]+)/g)].map((m) => m[1])
+  // The folder cannot be read, so the step may run at the root.
+  assert.deepEqual(runs(['      - run: cd "$(git rev-parse --show-toplevel)" && npm run graph:check']), ['graph:check'])
+  assert.deepEqual(runs(['      - run: cd $(git rev-parse --show-toplevel) && npm run one']), ['one'])
+  assert.deepEqual(runs(['      - run: cd `git rev-parse --show-toplevel` && npm run two']), ['two'])
+  assert.deepEqual(runs(['      - run: cd "app && npm run three']), ['three'])
+  // A package script named cd is not a cd.
+  assert.deepEqual(runs(['      - run: npm run cd && npm run graph:check']), ['cd', 'graph:check'])
+  // A bare cd, at the end of a line or before a separator, still leaves the root.
+  assert.deepEqual(runs(['      - run: |', '          cd', '          npm run four', '      - run: cd; npm run five', '      - run: cd && npm run six']), [])
+  // A subshell's cd ends with it.
+  assert.deepEqual(runs(['      - run: (cd app && npm run seven) && npm run eight', '      - run: echo "$(pwd)" $(cd app && pwd) && npm run nine', '      - run: (cd) && npm run ten']), ['eight', 'nine', 'ten'])
+  // pushd moves like cd, and popd goes back where the pushd left.
+  assert.deepEqual(runs(['      - run: pushd app && npm run eleven && popd && npm run twelve', '      - run: |', '          pushd app', '          pushd sub', '          npm run thirteen', '          popd', '          npm run fourteen', '          popd', '          npm run fifteen']), ['twelve', 'fifteen'])
+})
+
+test('a header reader holds a header pattern in its code; a package script, a message or a comment is not one', () => {
+  const files = {
+    'lint-staged.config.mjs': "export default { '*.astro': () => 'npm run ds:check' }\n",
+    'scripts/ci.mjs': "import { execSync } from 'node:child_process'\nexecSync('npm run ds:graph -- --check')\n",
+    'scripts/map.mjs': "// Reads every ds:group line.\nthrow new Error(\"a component's ds: header is missing or malformed\")\n",
+    'scripts/usage.mjs': 'console.log(`write a // ds:group <Tier> / <Group> line at the top`)\n',
+    'scripts/parse.mjs': 'export const key = (line) => /ds:([a-z-]+)/.exec(line)\n',
+    'scripts/grouped.mjs': "export const grouped = (text) => text.includes('ds:group')\n",
+    'scripts/prefix.mjs': "export const isHeader = (line) => line.trimStart().startsWith('// ds:')\n",
+    'scripts/owner.ts': "export const owned = (text) => text.includes('// ds:owner ')\n",
+  }
+  const readers = (config, keys) => headerReaders(Object.keys(files), (f) => files[f], config, keys)
+  assert.deepEqual(readers(), ['scripts/grouped.mjs', 'scripts/parse.mjs', 'scripts/prefix.mjs'])
+  // A key of the repo's own counts once its headers or its config use it.
+  assert.deepEqual(readers({}, ['owner']), ['scripts/grouped.mjs', 'scripts/owner.ts', 'scripts/parse.mjs', 'scripts/prefix.mjs'])
+  assert.deepEqual(readers({ graph: { extraKeys: ['owner'] } }), ['scripts/grouped.mjs', 'scripts/owner.ts', 'scripts/parse.mjs', 'scripts/prefix.mjs'])
 })
 
 test("the repo's own scripts that read ds: headers are found, and a key or a reader of its own makes the headers an asset", () => {

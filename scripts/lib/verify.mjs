@@ -23,11 +23,17 @@ const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 // Differences in a list keyed once each: a second one under a key joins the
-// first one's detail.
+// first one's detail. `shown` is the text printed for one when it says more
+// than the detail an accept keeps, such as the line it was found on, which
+// moves when a line is added above it while the difference stays the same.
 function keyed() {
   const out = new Map()
-  const add = (key, detail) => out.set(key, out.has(key) ? { key, detail: `${out.get(key).detail}; ${detail}` } : { key, detail })
-  return { add, list: () => [...out.values()].sort((a, b) => compare(a.key, b.key)) }
+  const add = (key, detail, shown = detail) => {
+    const was = out.get(key)
+    out.set(key, was ? { key, detail: `${was.detail}; ${detail}`, shown: `${was.shown}; ${shown}` } : { key, detail, shown })
+  }
+  const list = () => [...out.values()].sort((a, b) => compare(a.key, b.key)).map((d) => (d.shown === d.detail ? { key: d.key, detail: d.detail } : d))
+  return { add, list }
 }
 
 // ── The repo's own graph ────────────────────────────────────────────────────
@@ -222,7 +228,8 @@ export function compareGraph(repo, json, { route = '/stories/{slug}' } = {}) {
   const notes = []
   const ours = new Map(json.nodes.map((n) => [n.file, n]))
   const fileOfName = new Map(json.nodes.map((n) => [n.name, n.file]))
-  for (const u of repo.unreadable) diffs.add(`unreadable:${u.where}`, `line ${u.line}: ${u.detail}`)
+  // The line is printed, never kept: a line added above would reopen an accept.
+  for (const u of repo.unreadable) diffs.add(`unreadable:${u.where}`, u.detail, `line ${u.line}: ${u.detail}`)
   // An index names ids only: one matches the node whose path ends with it.
   const nodes = repo.nodes.map((n) => {
     if (n.file) return n
@@ -231,7 +238,8 @@ export function compareGraph(repo, json, { route = '/stories/{slug}' } = {}) {
       return x.name === n.id || bare === n.id || bare.endsWith(`/${n.id}`)
     })
     if (hits.length === 1) return { ...n, file: hits[0].file }
-    diffs.add(`unreadable:${n.id}`, `line ${n.line}: ${hits.length === 0 ? 'no node of massimo\'s has this id or a path ending in it' : `the id fits ${hits.length} nodes (${hits.map((h) => h.file).join(', ')})`}, so it is not compared`)
+    const detail = `${hits.length === 0 ? 'no node of massimo\'s has this id or a path ending in it' : `the id fits ${hits.length} nodes (${hits.map((h) => h.file).join(', ')})`}, so it is not compared`
+    diffs.add(`unreadable:${n.id}`, detail, `line ${n.line}: ${detail}`)
     return n
   }).filter((n) => n.file)
   const theirs = new Map(nodes.map((n) => [n.file, n]))
@@ -342,17 +350,20 @@ function valueList(values) {
 // The tokens of the repo's own inventory: its `tokens` list, or the document
 // when it is a list, each with a name, a file and values by selector, and a
 // layer and family when it has them. The type classes, faces and breakpoints
-// beside them come too. A token missing a part is listed, never guessed.
+// beside them come too. A token missing a part is listed, never guessed: by
+// its name, else its file, and its place in the list (`at`) only for printing,
+// since a token added above it moves that.
 export function readTokenInventory(doc) {
   const list = Array.isArray(doc) ? doc : Array.isArray(doc?.tokens) ? doc.tokens : null
   if (!list) return { tokens: [], unreadable: [{ where: 'the file', detail: 'it holds no list of tokens: neither the document nor its "tokens" field is an array' }], extras: {} }
   const tokens = []
   const unreadable = []
   list.forEach((t, i) => {
-    const where = typeof t?.name === 'string' ? t.name : `token ${i + 1}`
+    const named = typeof t?.name === 'string'
+    const where = named ? t.name : typeof t?.file === 'string' ? `${t.file} (no name)` : '(no name or file)'
     const values = valueList(t?.values)
-    const missing = [typeof t?.name !== 'string' && 'a name', typeof t?.file !== 'string' && 'a file', !values && 'values by selector'].filter(Boolean)
-    if (missing.length > 0) return unreadable.push({ where, detail: `it has no ${missing.join(' or ')}` })
+    const missing = [!named && 'name', typeof t?.file !== 'string' && 'file', !values && 'values by selector'].filter(Boolean)
+    if (missing.length > 0) return unreadable.push({ where, detail: `it has no ${missing.join(' or ')}`, ...(named ? {} : { at: `token ${i + 1}` }) })
     const bad = values.filter((v) => typeof v?.selector !== 'string' || (typeof v.value !== 'string' && typeof v.value !== 'number'))
     if (bad.length > 0) return unreadable.push({ where: `${t.file} ${t.name}`, detail: `${plural(bad.length, 'value has', 'values have')} no selector or value` })
     tokens.push({
@@ -394,7 +405,7 @@ const json = (v) => JSON.stringify(v)
 // classes, faces and breakpoints where its file has them.
 export function compareTokens(repo, resolved) {
   const diffs = keyed()
-  for (const u of repo.unreadable) diffs.add(`unreadable:${u.where}`, u.detail)
+  for (const u of repo.unreadable) diffs.add(`unreadable:${u.where}`, u.detail, u.at ? `${u.at}: ${u.detail}` : u.detail)
   const key = (t) => `${t.file} ${t.name}`
   const ours = new Map((resolved.tokens ?? []).map((t) => [key(t), t]))
   const theirs = new Map(repo.tokens.map((t) => [key(t), t]))
@@ -499,6 +510,18 @@ export function storyPairs(entries, { a, b, routes, domTier = 'Pages' }) {
   return { document: { format: PAIRS_FORMAT, pairs }, entries: shot, skipped }
 }
 
+// What a pair that failed shows, as a difference: printed, its error or
+// reasons as shoot.mjs gives them; kept by an accept, only what differs (its
+// pixels or page text over the limit, its sizes, or that it could not be
+// shot), never the measured percentage, so an accept holds while the pair
+// still differs the same way.
+export function shotDifference(result) {
+  const shown = result.error ?? (result.reasons ?? []).join('; ')
+  if (result.error !== undefined) return { key: `shot:${result.name}`, detail: 'it could not be shot', shown }
+  const nature = (r) => (/^sizes differ\b/.test(r) ? 'its sizes differ' : /% changed, over /.test(r) ? `its ${result.mode === 'dom' ? 'page text differs' : 'pixels differ'} over the limit` : r)
+  return { key: `shot:${result.name}`, detail: (result.reasons ?? []).map(nature).join('; '), shown }
+}
+
 // ── Settling against the ledger ─────────────────────────────────────────────
 
 // The differences split by what the ledger accepts: open (to fix or accept),
@@ -506,16 +529,18 @@ export function storyPairs(entries, { a, b, routes, domTier = 'Pages' }) {
 // key holds only while its detail is the one accepted: a key whose detail
 // changed since (another group, a higher count, more values) is open again,
 // and so is one accepted without its detail, since what changed cannot be told.
+// The detail is compared, never the printed text (`shown`), which may say more.
 export function settle(differences, accepted = []) {
   const byKey = new Map(accepted.map((a) => [a.key, a]))
   const found = new Set(differences.map((d) => d.key))
   const open = []
   const held = []
+  const reopened = (d, note) => ({ ...d, detail: `${d.detail}; ${note}`, ...(d.shown === undefined ? {} : { shown: `${d.shown}; ${note}` }), changed: true })
   for (const d of differences) {
     const a = byKey.get(d.key)
     if (!a) open.push(d)
-    else if (typeof a.detail !== 'string') open.push({ ...d, detail: `${d.detail}; accepted on ${a.date ?? 'an earlier day'} without the detail it had then, so a change cannot be told: accept it again if it still holds`, changed: true })
-    else if (a.detail !== d.detail) open.push({ ...d, detail: `${d.detail}; changed since accepted on ${a.date ?? 'an earlier day'}: was ${a.detail}`, changed: true })
+    else if (typeof a.detail !== 'string') open.push(reopened(d, `accepted on ${a.date ?? 'an earlier day'} without the detail it had then, so a change cannot be told: accept it again if it still holds`))
+    else if (a.detail !== d.detail) open.push(reopened(d, `changed since accepted on ${a.date ?? 'an earlier day'}: was ${a.detail}`))
     else held.push({ ...d, why: a.why })
   }
   return { open, accepted: held, stale: accepted.filter((a) => !found.has(a.key)).map((a) => a.key) }

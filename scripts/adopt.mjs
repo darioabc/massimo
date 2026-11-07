@@ -32,7 +32,9 @@
 //   adopt.mjs accept <class> <key> --why <text>
 //                                 accept a difference verify reports now, with the
 //                                 reason and its detail; a key verify does not report
-//                                 is refused
+//                                 is refused. It takes the flags verify takes, for a
+//                                 difference only they produce (--against, and
+//                                 --pairs, --a, --b and --shoot for a shot)
 //   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
 //                                 them; a file code depends on is refused
 //   adopt.mjs retire <class> --dry-run [--json]
@@ -76,7 +78,7 @@ import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
 import { truthy } from './lib/text.mjs'
-import { VERIFY_CLASSES, compareGraph, compareTokens, readRepoGraph, readTokenInventory, settle, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
+import { VERIFY_CLASSES, compareGraph, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 // --write, --force and --shoot take no value, so a positional after them stays one.
@@ -357,7 +359,7 @@ function storyShots(differences, notes) {
     }
   })
   const results = lines.filter((l) => l && !l.summary && typeof l.name === 'string')
-  for (const p of results.filter((x) => !x.ok)) differences.push({ key: `shot:${p.name}`, detail: p.error ?? (p.reasons ?? []).join('; ') })
+  for (const p of results.filter((x) => !x.ok)) differences.push(shotDifference(p))
   const failed = results.filter((x) => !x.ok).length
   notes.push(`Shots and diffs are in ${shownPath(out)}.`)
   return [['pairs shot', '', String(results.length), String(failed), `${results.length - failed} within --max-diff`]]
@@ -460,8 +462,10 @@ function verifyReport(cls, result, c) {
   if (result.notes?.length) lines.push(...result.notes, '')
   const total = result.differences.length
   lines.push(`Differences: ${total}${total ? ` (${open.length} open, ${accepted.length} accepted)` : ''}.`)
-  for (const d of open) lines.push(`  open      ${d.key}  ${d.detail}`)
-  for (const d of accepted) lines.push(`  accepted  ${d.key}  ${d.detail}. Why: ${d.why}`)
+  // The printed text may say more than the detail an accept keeps.
+  const said = (d) => d.shown ?? d.detail
+  for (const d of open) lines.push(`  open      ${d.key}  ${said(d)}`)
+  for (const d of accepted) lines.push(`  accepted  ${d.key}  ${said(d)}. Why: ${d.why}`)
   if (stale.length) lines.push(`Accepted in the ledger but no longer found: ${stale.join('; ')}. Remove ${stale.length === 1 ? 'it' : 'them'} from ${shown('ledger.json')}.`)
   const changed = open.filter((d) => d.changed).length
   lines.push('', open.length > 0 ? `${cls}: ${plural(open.length, 'open difference')}${changed ? `, ${changed} of them changed since accepted` : ''}. Fix each, or accept one with its reason: ${scriptCommand(root, projectDir, 'adopt', `accept ${cls} '<key>' --why '<reason>'`)}` : passLine(cls, c))
@@ -491,8 +495,8 @@ function retireReport(cls, plan) {
   const where = (k) => `${k.file}${k.script ? ` (${k.script})` : ''}${k.line ? `:${k.line}` : ''}`
   const line = (k) => `  ${k.class.padEnd(8)}  ${where(k)}  ${k.how}${k.via ? ` through ${k.via}` : ''}${k.writtenBy ? `, written by ${k.writtenBy}` : ''}  (${k.assets.join(', ')})`
   if (plan.writers.length) {
-    lines.push('', `Written by a generator that stays (${plan.writers.length}), which would write ${plan.writers.length === 1 ? 'it' : 'them'} again, and whose check fails without ${plan.writers.length === 1 ? 'it' : 'them'}:`)
-    for (const w of plan.writers) lines.push(`  ${w.path}  written by ${w.writer} (${w.class ?? 'no class'}${w.state ? `, ${w.state}` : ''}): retire it with its writer${w.class && w.class !== cls ? `, or retire ${w.class} first` : ''}`)
+    lines.push('', `Written by a generator that stays (${plan.writers.length}), whose code names ${plan.writers.length === 1 ? 'it' : 'them'}, so it would write ${plan.writers.length === 1 ? 'it' : 'them'} again and its check fails without ${plan.writers.length === 1 ? 'it' : 'them'}:`)
+    for (const w of plan.writers) lines.push(`  ${w.path}  written by ${w.writer} (${w.class ?? 'no class'}${w.state ? `, ${w.state}` : ''}): retire it with its writer${w.class && w.class !== cls ? `, retire ${w.class} first` : ''}, or change its writer so it no longer writes it`)
   }
   lines.push('', `Consumers to repoint first (${plan.consumers.length}):`, ...(plan.consumers.length ? plan.consumers.map(line) : ['  none']))
   if (plan.historical.length) lines.push('', `Historical docs, left as they are (${plan.historical.length}):`, ...plan.historical.map(line))
@@ -503,12 +507,21 @@ function retireReport(cls, plan) {
   lines.push(
     '',
     holds.length > 0
-      ? `Not clean: ${holds.join(', and ')}. ${plan.writers.length ? 'Retire each writer with what it writes, or its class first. ' : ''}${plan.consumers.length ? `Repoint each consumer first, or mark a doc that only records how things were with ${scriptCommand(root, projectDir, 'adopt', 'historical <path>')}. ` : ''}Then run this again.`
+      ? `Not clean: ${holds.join(', and ')}. ${plan.writers.length ? 'Retire each writer with what it writes or its class first, or change the writer so it no longer writes the file. ' : ''}${plan.consumers.length ? `Repoint each consumer first, or mark a doc that only records how things were with ${scriptCommand(root, projectDir, 'adopt', 'historical <path>')}. ` : ''}Then run this again.`
       : 'Clean: nothing outside the historical docs depends on what goes. The adopt skill removes it, its package scripts and its workflow jobs in one commit carrying an Adopt-Batch trailer, on your OK.',
   )
   return lines
 }
 const notClean = (plan) => plan.consumers.length > 0 || plan.writers.length > 0
+
+// The flags verify takes, checked alike for verify and for accept, which
+// passes them on to verify so it sees what verify saw.
+function checkVerifyFlags(name, cls) {
+  if (cls === undefined && flags.against !== undefined) fail('--against names the file one class is compared with: pass the class too')
+  if (flags.pairs !== undefined && cls !== undefined && cls !== 'stories') fail(`--pairs goes with ${name} stories`)
+  if (flags.pairs !== undefined && (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string')) fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
+  if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
+}
 
 switch (command) {
   case 'scan': {
@@ -589,10 +602,7 @@ switch (command) {
     needInit('verify')
     const [cls] = rest
     if (cls !== undefined && !VERIFY_CLASSES.includes(cls)) fail(`usage: adopt.mjs verify [<${VERIFY_CLASSES.join('|')}>] [--against <file>]; docs has nothing generated to verify`)
-    if (cls === undefined && flags.against !== undefined) fail('--against names the file one class is compared with: pass the class too')
-    if (flags.pairs !== undefined && cls !== undefined && cls !== 'stories') fail('--pairs goes with verify stories')
-    if (flags.pairs !== undefined && (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string')) fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
-    if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
+    checkVerifyFlags('verify', cls)
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
     const reports = (cls ? [cls] : VERIFY_CLASSES).map((name) => [name, verifyReport(name, runVerify(name, ledger), ledger.classes[name])])
@@ -609,21 +619,24 @@ switch (command) {
   case 'accept': {
     needInit('accept')
     const [cls, key] = rest
-    if (!VERIFY_CLASSES.includes(cls) || !key || rest.length > 2) fail(`usage: adopt.mjs accept <${VERIFY_CLASSES.join('|')}> '<key>' --why '<reason>' [--against <file>], with the key verify printed, in quotes`)
+    if (!VERIFY_CLASSES.includes(cls) || !key || rest.length > 2) fail(`usage: adopt.mjs accept <${VERIFY_CLASSES.join('|')}> '<key>' --why '<reason>' [the flags verify took: --against <file>, --pairs <file> --a <url> --b <url> --shoot], with the key verify printed, in quotes`)
     const why = typeof flags.why === 'string' ? flags.why : ''
     if (!why.trim()) fail('accept needs --why <text>: the reason the difference is fine, for whoever reads the ledger next')
+    checkVerifyFlags('accept', cls)
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
     if (!ledger.classes[cls]) fail(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
     if (key === 'error') fail(`error means verify ${cls} could not run, and an error is fixed, never accepted: run verify ${cls} and fix what it says`)
-    // What verify reports now: the key must be one of its differences, and
-    // its detail is kept, so a later change under the key is open again.
+    // What verify reports now, with the flags given here: the key must be
+    // one of its differences, and its detail is kept, so a later change under
+    // the key is open again.
     const result = runVerify(cls, ledger)
     if (result.skip) fail(`verify ${cls} is skipped, so it has nothing to accept: ${result.skip}`)
     const found = result.differences.find((d) => d.key === key)
     if (!found) {
       const { open } = settle(result.differences, ledger.classes[cls].accepted)
-      fail(`verify ${cls} reports no difference with the key '${key}'. Its open keys: ${open.length ? open.map((d) => `'${d.key}'`).join(', ') : 'none'}. Copy the key as verify prints it.`)
+      const shot = key.startsWith('shot:') && !truthy(flags.shoot) ? ' A shot: key comes only from verify stories --pairs <file> --a <url> --b <url> --shoot: pass accept the same flags.' : ''
+      fail(`verify ${cls} reports no difference with the key '${key}'. Its open keys: ${open.length ? open.map((d) => `'${d.key}'`).join(', ') : 'none'}. Copy the key as verify prints it, with the flags verify took.${shot}`)
     }
     let line
     try {

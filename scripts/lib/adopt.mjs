@@ -313,8 +313,9 @@ export function markHistorical(ledger, path, { date = today() } = {}) {
 // be repointed first unless it is a doc the ledger marks historical. Files
 // a retiring generator also writes for another class are listed, as they
 // lose their writer. A file that goes but that a generator which stays
-// still writes is a blocker: its writer would bring it back, and its check
-// would fail without it. `jobAt(file, line)` names a workflow's job at a line.
+// still writes (its code names the file) is a blocker: its writer would
+// bring it back, and its check would fail without it. `jobAt(file, line)`
+// names a workflow's job at a line.
 export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
   const c = ledger.classes[cls]
   const historical = new Set((ledger.historical ?? []).map((h) => h.path))
@@ -351,11 +352,13 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
   }
   const writers = going.filter((a) => a.kind === 'generator').flatMap((a) => inv.own.generators.filter((g) => a.paths.includes(g.path)))
   const elsewhere = [...new Set(writers.flatMap((g) => g.writes))].filter((p) => !goes(p)).sort(compare).map((path) => ({ path, ...classOf(path) }))
-  // A generator of the fresh scan that stays and writes what goes.
+  // A generator of the fresh scan that stays and writes what goes: only what
+  // its own code names (`named`), since a file's GENERATED note outlives the
+  // change that stops its writer writing it.
   const holds = (p, file) => (p.endsWith('/') ? file.startsWith(p) : file === p)
   const written = []
   for (const g of inv.own.generators.filter((x) => !goes(x.path))) {
-    for (const path of g.writes) {
+    for (const path of g.named ?? g.writes) {
       const a = going.find((x) => (fresh.get(x.id)?.paths ?? x.paths).some((p) => holds(p, path)))
       if (a) written.push({ path, asset: a.id, writer: g.path, ...classOf(g.path) })
     }

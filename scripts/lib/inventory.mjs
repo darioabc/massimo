@@ -11,8 +11,8 @@ import { basename, join, posix } from 'node:path'
 import { readDesignMd } from './designmd.mjs'
 import { compare, compileGlobs, walk } from './glob.mjs'
 import { stripJsonComments } from './project.mjs'
-import { DEFAULT_TIERS, keyRoles, tierOf } from './roles.mjs'
-import { RULE_KEYS, createResolver, extractImports, extractRules, isTestFile, stripComments } from './source.mjs'
+import { DEFAULT_TIERS, keyRoles, knownKeys, tierOf } from './roles.mjs'
+import { RULE_KEYS, createResolver, extractImports, extractRules, isTestFile, stringLiterals, stripComments } from './source.mjs'
 import { readCsf, readHistoire, readManifest, readStoryStates } from './stories-read.mjs'
 
 export const INVENTORY_FORMAT = 1
@@ -219,14 +219,34 @@ export function headerCensus(root, files, config = {}, text = (f) => readText(ro
 }
 
 // The repo's own scripts that read ds: headers: JavaScript or TypeScript
-// outside the components and tests whose code, not only a comment, names
-// `ds:`, such as a generator that parses the headers or a check that
-// enforces them. They depend on the headers staying as they are.
+// outside the components and tests whose code holds a header pattern, such
+// as a generator that parses the headers or a check that enforces them. A
+// pattern is `ds:` then a key massimo knows or the repo's headers use (`ds:group`,
+// with no letter after it), or a parser's own syntax (`ds:(`, `ds:[`, `ds:\s`,
+// `ds:${`), or the end of a string or regex (`'// ds:'`, `/ds:/`). Comments,
+// a package script name (`npm run ds:check`) and a message string (prose
+// around a `ds:`) do not count. They depend on the headers staying as they are.
 const SCRIPT_CODE = /\.(?:[cm]?[jt]s)$/
-const NAMES_HEADERS = /(?<![\w$-])ds:/
-export function headerReaders(files, text, config = {}) {
+const RUN_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?ds:[\w:.-]*/g
+const PROSE_WORD = /^[("'`]?[A-Za-z][a-z']+[).,;:!?"'`]?$/
+const blanked = (s) => s.replace(/[^\n]/g, ' ')
+
+// A script's code as a header reader is judged on: comments, message strings
+// and package script names blanked, offsets kept.
+function headerCode(source, file) {
+  let code = stripComments(source, file)
+  for (const s of stringLiterals(source, file)) {
+    const prose = s.text.split(/\s+/).filter((w) => PROSE_WORD.test(w)).length >= 2
+    if (prose && s.text.includes('ds:')) code = code.slice(0, s.start) + blanked(s.text) + code.slice(s.start + s.text.length)
+  }
+  return code.replace(RUN_SCRIPT, blanked)
+}
+
+export function headerReaders(files, text, config = {}, keys = []) {
   const component = compileGlobs(config.components?.include ?? [])
-  return files.filter((f) => SCRIPT_CODE.test(f) && !isTestFile(f) && !component(f) && NAMES_HEADERS.test(text(f) ?? '') && NAMES_HEADERS.test(stripComments(text(f), f))).sort(compare)
+  const known = [...new Set([...RULE_KEYS, ...keys, ...knownKeys(config)])].sort((a, b) => b.length - a.length || compare(a, b))
+  const pattern = new RegExp(`(?<![\\w$-])ds:(?:(?:${known.map(escapeRe).join('|')})(?![\\w-])|[(\\[\\\\'"\`/]|\\$\\{)`)
+  return files.filter((f) => SCRIPT_CODE.test(f) && !isTestFile(f) && !component(f) && (text(f) ?? '').includes('ds:') && pattern.test(headerCode(text(f), f))).sort(compare)
 }
 
 // ── Story tools and lanes ───────────────────────────────────────────────────
@@ -529,9 +549,15 @@ export function ownFiles(root, files, pkg, text = (f) => readText(root, f)) {
       if (files.includes(f) && (writers.has(f) || (!named && writesThem(text(f))))) addWriter(f).scripts.push(name)
     }
   }
+  // What a writer writes: what names it as the writer, and what its text
+  // names. `named` is what its code names, comments left out: a file it
+  // still writes, while a GENERATED note can outlive the change that stops it.
+  const namesIn = (t) => (o) => t.includes(o.path) || (t.includes(dirOf(o.path)) && t.includes(basename(o.path)))
   for (const w of writers.values()) {
     const t = text(w.path)
-    w.writes = outputs.filter((o) => o.writer === w.path || t.includes(o.path) || (t.includes(dirOf(o.path)) && t.includes(basename(o.path)))).map((o) => o.path).sort(compare)
+    const code = SCRIPT_CODE.test(w.path) ? stripComments(t, w.path) : t
+    w.writes = outputs.filter((o) => o.writer === w.path || namesIn(t)(o)).map((o) => o.path).sort(compare)
+    w.named = outputs.filter(namesIn(code)).map((o) => o.path).sort(compare)
     w.scripts.sort(compare)
     for (const o of outputs) if (!o.writer && w.writes.includes(o.path)) o.writer = w.path
   }
@@ -607,20 +633,22 @@ function needlesOf(asset) {
 // without braces, or `${{ github.workspace }}`.
 const WORKSPACE = /^(?:\$\{\{\s*github\.workspace\s*\}\}|\$\{?GITHUB_WORKSPACE\}?)(?=\/|$)/
 const ROOT_DIR = /^(?:\.\/?|\$\{\{\s*github\.workspace\s*\}\}\/?|\$\{?GITHUB_WORKSPACE\}?\/?)$/
-// A `cd` in a run script, with its folder (quoted or not, the workspace
-// expression's spaces kept), or none for a bare `cd`.
-const CD = /(?:^|[\s;&|(])cd(?=[\s;&|)]|$)[ \t]*(?:(['"]?)((?:\$\{\{\s*github\.workspace\s*\}\}|[^\s'";&|)])+)\1)?/g
+// Where a run script is: the folders below the root ([] at the root), null
+// outside it, or UNKNOWN once a `cd` names a folder that cannot be read
+// statically, after which what runs is kept, since it may run at the root.
+const UNKNOWN = 'unknown'
 
-// Where a `cd` leaves a script, from `dir` (the folders below the root, or
-// null when outside it) and `prev` (where it was before, for `cd -`).
+// Where a `cd` leaves a script, from `dir` and `prev` (where it was before,
+// for `cd -`), with `arg` its folder: null for a bare `cd` (home), or UNKNOWN.
 // Returns [dir, prev].
 function cdTo(dir, prev, arg) {
   if (arg === '-') return [prev, dir]
-  if (arg === undefined) return [null, dir]
+  if (arg === null) return [null, dir]
+  if (arg === UNKNOWN) return [UNKNOWN, dir]
   if (ROOT_DIR.test(arg)) return [[], dir]
   const ws = WORKSPACE.exec(arg)
   if (!ws && /^[/~$]/.test(arg)) return [null, dir]
-  if (!ws && dir === null) return [null, dir]
+  if (!ws && (dir === null || dir === UNKNOWN)) return [dir, dir]
   const parts = ws ? [] : [...dir]
   for (const p of arg.slice(ws ? ws[0].length : 0).split('/')) {
     if (!p || p === '.') continue
@@ -631,13 +659,107 @@ function cdTo(dir, prev, arg) {
   return [parts, dir]
 }
 
+// The word a command takes at `i`, as the shell reads it, quotes joined and
+// dropped and `${{ ... }}` kept whole: { word, end }. The word is null when
+// none is there (the end of the line, or a separator), and UNKNOWN when it
+// cannot be read: a quote not closed on the line, `$( ... )` or backticks.
+function shellWord(text, i) {
+  while (text[i] === ' ' || text[i] === '\t') i++
+  if (i >= text.length || ';&|)'.includes(text[i])) return { word: null, end: i }
+  let word = ''
+  while (i < text.length && !/[\s;&|)]/.test(text[i])) {
+    const c = text[i]
+    if (c === '`' || (c === '$' && text[i + 1] === '(')) return { word: UNKNOWN, end: i }
+    if (c === "'" || c === '"') {
+      const close = text.indexOf(c, i + 1)
+      const inner = close === -1 ? '' : text.slice(i + 1, close)
+      if (close === -1 || (c === '"' && /`|\$\(/.test(inner))) return { word: UNKNOWN, end: i }
+      word += inner
+      i = close + 1
+    } else if (text.startsWith('${{', i)) {
+      const close = text.indexOf('}}', i)
+      if (close === -1) return { word: UNKNOWN, end: i }
+      word += text.slice(i, close + 2)
+      i = close + 2
+    } else {
+      word += c
+      i++
+    }
+  }
+  return { word, end: i }
+}
+
+// A line of a run script with what runs outside the root blanked, offsets
+// kept, following `s` ({ dir, prev, pushed, frames, joined }) as the shell
+// would: a `cd`, `pushd` or `popd` where a command starts moves it, and a
+// subshell, `( ... )`, `$( ... )` or backticks, keeps its moves to itself.
+const KEYWORD = /^(?:if|then|else|elif|do|while|until|!)(?=[\s;&|]|$)/
+const MOVE = /^(cd|pushd|popd)(?=[\s;&|)]|$)/
+function followCds(text, s) {
+  let out = ''
+  let quote = null
+  let command = !s.joined
+  const keep = (from, to) => {
+    const part = text.slice(from, to)
+    out += s.dir !== null && (s.dir === UNKNOWN || s.dir.length === 0) ? part : blanked(part)
+  }
+  const restore = () => Object.assign(s, s.frames.pop().state)
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]
+    let next = i + 1
+    if (quote) {
+      if (c === '\\' && quote === '"') next = i + 2
+      else if (c === quote) quote = null
+    } else if (c === '\\') {
+      next = i + 2
+    } else if (c === "'" || c === '"') {
+      quote = c
+      command = false
+    } else if (c === '$' && text[i + 1] === '{') {
+      const close = text.indexOf(text[i + 2] === '{' ? '}}' : '}', i)
+      next = close === -1 ? text.length : close + (text[i + 2] === '{' ? 2 : 1)
+      command = false
+    } else if (c === '(' || (c === '`' && s.frames.at(-1)?.tick !== true)) {
+      s.frames.push({ tick: c === '`', state: { dir: s.dir, prev: s.prev, pushed: [...s.pushed] } })
+      command = true
+    } else if (c === ')' || c === '`') {
+      if (s.frames.length && s.frames.at(-1).tick === (c === '`')) restore()
+      command = false
+    } else if (';&|{\n'.includes(c)) {
+      command = true
+    } else if (!/\s/.test(c)) {
+      const word = /^[^\s;&|()`'"\\]+/.exec(text.slice(i))?.[0] ?? c
+      next = i + word.length
+      const move = command ? MOVE.exec(word)?.[1] : null
+      command = command && KEYWORD.test(word)
+      if (move) {
+        const { word: arg, end } = shellWord(text, next)
+        if (move === 'cd') [s.dir, s.prev] = cdTo(s.dir, s.prev, arg)
+        else if (move === 'pushd') {
+          s.pushed.push(s.dir)
+          ;[s.dir, s.prev] = cdTo(s.dir, s.prev, arg ?? UNKNOWN)
+        } else [s.dir, s.prev] = [s.pushed.length ? s.pushed.pop() : UNKNOWN, s.dir]
+        // The move is judged where it leads, its folder included.
+        next = arg === UNKNOWN || move === 'popd' ? next : end
+      }
+    }
+    keep(i, Math.min(next, text.length))
+    i = next
+  }
+  s.joined = /\\\s*$/.test(text)
+  return out
+}
+
 // A workflow as the repo root sees it: comments blanked, and so is every job
 // or step whose working-directory is another folder (its own, its job's, or
 // the workflow's `defaults`), since its `npm run` names a nested app's
 // scripts. A step's run script is followed folder by folder through its
-// `cd`s: what runs in another folder is blanked, and what runs after a `cd`
-// back to the root (`cd ..`, `cd -`, `cd $GITHUB_WORKSPACE`) is not. Lines
-// keep their numbers.
+// `cd`s, `pushd`s and `popd`s: what runs in another folder is blanked, and
+// what runs after a `cd` back to the root (`cd ..`, `cd -`, `cd
+// $GITHUB_WORKSPACE`) is not. A subshell's `cd` ends with it, and a `cd` to a
+// folder that cannot be read leaves what follows as it is. Lines keep their
+// numbers.
 export function workflowText(text) {
   const lines = text.split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '$1'))
   const indentOf = (l) => l.length - l.trimStart().length
@@ -652,30 +774,18 @@ export function workflowText(text) {
   // lines sit deeper than its `run:` key; the folder carries from line to line.
   const blankAfterCd = (from, to) => {
     let runCol = null
-    let dir = []
-    let prev = []
-    const judged = (s) => (dir !== null && dir.length === 0 ? s : s.replace(/[^\n]/g, ' '))
+    let state = null
     for (let i = from; i < to; i++) {
       const key = /^(\s*(?:-\s+)?)run:/.exec(lines[i])
       if (key) {
         runCol = key[1].length
-        dir = []
-        prev = []
+        state = { dir: [], prev: [], pushed: [], frames: [], joined: false }
       } else if (runCol === null || (lines[i].trim() && indentOf(lines[i]) <= runCol)) {
         runCol = null
         continue
       }
       const offset = key ? key[0].length : 0
-      const line = lines[i]
-      let out = line.slice(0, offset)
-      let at = offset
-      for (const m of line.slice(offset).matchAll(CD)) {
-        const start = offset + m.index
-        out += judged(line.slice(at, start))
-        ;[dir, prev] = cdTo(dir, prev, m[2])
-        at = start
-      }
-      lines[i] = out + judged(line.slice(at))
+      lines[i] = lines[i].slice(0, offset) + followCds(lines[i].slice(offset), state)
     }
   }
   const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l))
@@ -1024,7 +1134,8 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   // The repo's own index may list its tiers as headings: that is their order.
   const index = own.docs.find((d) => d.kind === 'index' && d.generated)
   const tierOrder = index ? [...text(index.path).matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm)].map((m) => m[1]) : []
-  const headers = { ...headerCensus(root, files, config, text, { tierOrder, tierSource: index?.path ?? null }), readers: headerReaders(files, text, config) }
+  const census = headerCensus(root, files, config, text, { tierOrder, tierSource: index?.path ?? null })
+  const headers = { ...census, readers: headerReaders(files, text, config, census.keys.map((k) => k.key)) }
   for (const r of own.ratchets) Object.assign(r, proposedMap(r.rules, auditKinds))
   // The style files the config names, or detect's suggestion before there is one.
   const styleFiles = (config.tokens?.styleFiles?.length ? config.tokens.styleFiles : detected?.suggestedConfig?.tokens?.styleFiles ?? []).filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)

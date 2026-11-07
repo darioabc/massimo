@@ -23,3 +23,6 @@ if (!process.argv.includes('--check')) {
   writeFileSync(`${DIR}/tokens.json`, '{}')
   writeFileSync(`${DIR}/ratchet.json`, '{}')
 }
+
+// The headers it reads, one key and its value per line.
+export const header = (line) => /^\s*\/\/\s*ds:([a-z-]+)\s+(.*)$/.exec(line)

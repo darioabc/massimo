@@ -145,7 +145,7 @@ test('a difference is keyed; accept records it with its reason, and a fixed one 
   // A key verify does not report is refused, with the keys it does.
   const typo = adopt('accept', 'graph', 'group:src/components/Crd.astro', '--why', 'a typo')
   assert.equal(typo.status, 1)
-  assert.match(typo.stderr, /verify graph reports no difference with the key 'group:src\/components\/Crd\.astro'\. Its open keys: 'coverage:src\/components\/Button\.astro', 'group:src\/components\/Card\.astro'\. Copy the key as verify prints it\./)
+  assert.match(typo.stderr, /verify graph reports no difference with the key 'group:src\/components\/Crd\.astro'\. Its open keys: 'coverage:src\/components\/Button\.astro', 'group:src\/components\/Card\.astro'\. Copy the key as verify prints it, with the flags verify took\.$/m)
   assert.match(adopt('accept', 'graph', 'error', '--why', 'y').stderr, /error means verify graph could not run, and an error is fixed, never accepted/)
   assert.equal(ledger().classes.graph.accepted, undefined)
   const a = adopt('accept', 'graph', 'group:src/components/Card.astro', '--why', 'the repo renamed the group after the scan')
@@ -158,10 +158,10 @@ test('a difference is keyed; accept records it with its reason, and a fixed one 
   assert.equal(ok.status, 0, ok.stdout)
   assert.match(ok.stdout, /Differences: 2 \(0 open, 2 accepted\)\.\n  accepted  coverage:src\/components\/Button\.astro  direct: only massimo's: button; incidental: only the repo's: button\. Why: a stale mark\n/)
   // The same key with another detail is open again: what was accepted was the old one.
-  write('docs/system/graph.md', GRAPH.replace('`/stories/button` (direct)', '`/stories/button` (incidental)').replace('group Components / Cards · file `src/components/Card.astro`', 'group Explorations / Parked · file `src/components/Card.astro`'))
+  write('docs/system/graph.md', GRAPH.replace('`/stories/button` (direct)', '`/stories/button` (incidental)').replace('group Components / Cards · file `src/components/Card.astro`', 'group Explorations / Kept · file `src/components/Card.astro`'))
   const moved = adopt('verify', 'graph')
   assert.equal(moved.status, 1, moved.stdout)
-  assert.match(moved.stdout, /Differences: 2 \(1 open, 1 accepted\)\.\n  open {6}group:src\/components\/Card\.astro  the repo files it in Explorations \/ Parked, massimo in Components \/ Cards; changed since accepted on 2026-11-07: was the repo files it in Components \/ Lists, massimo in Components \/ Cards\n/)
+  assert.match(moved.stdout, /Differences: 2 \(1 open, 1 accepted\)\.\n  open {6}group:src\/components\/Card\.astro  the repo files it in Explorations \/ Kept, massimo in Components \/ Cards; changed since accepted on 2026-11-07: was the repo files it in Components \/ Lists, massimo in Components \/ Cards\n/)
   assert.match(moved.stdout, /graph: 1 open difference, 1 of them changed since accepted\./)
   write('docs/system/graph.md', GRAPH)
   const stale = adopt('verify', 'graph')
@@ -170,6 +170,28 @@ test('a difference is keyed; accept records it with its reason, and a fixed one 
   // Planning again keeps what was accepted.
   assert.equal(adopt('plan').status, 0)
   assert.equal(ledger().classes.graph.accepted.length, 2)
+})
+
+test('an unreadable part is accepted without its line, so a line added above it keeps the accept', () => {
+  const unmarked = GRAPH.replace('`/stories/button` (direct)', '`/stories/button` (seen)')
+  const line = unmarked.split('\n').findIndex((l) => l.includes('(seen)')) + 1
+  const path = join(project, 'adopt', 'ledger.json')
+  const saved = readFileSync(path, 'utf8')
+  try {
+    write('docs/system/graph.md', unmarked)
+    const r = adopt('verify', 'graph')
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, new RegExp(`\\n  open {6}unreadable:Button  line ${line}: the story "\`/stories/button\` \\(seen\\)" is marked neither direct nor incidental\\n`))
+    assert.equal(adopt('accept', 'graph', 'unreadable:Button', '--why', 'the page marks this story by hand').status, 0)
+    assert.equal(ledger().classes.graph.accepted.find((a) => a.key === 'unreadable:Button').detail, 'the story "`/stories/button` (seen)" is marked neither direct nor incidental')
+    write('docs/system/graph.md', unmarked.replace('# Design system graph\n', '# Design system graph\n\nOne more line of introduction.\n'))
+    const moved = adopt('verify', 'graph')
+    assert.equal(moved.status, 0, moved.stdout)
+    assert.match(moved.stdout, new RegExp(`\\n  accepted  unreadable:Button  line ${line + 2}: the story .* is marked neither direct nor incidental\\. Why: the page marks this story by hand\\n`))
+  } finally {
+    writeFileSync(path, saved)
+    write('docs/system/graph.md', GRAPH)
+  }
 })
 
 test('the graph page is read tolerantly: a part that does not read is listed, never guessed', () => {
@@ -296,6 +318,43 @@ test('--shoot runs shoot.mjs on the pairs and folds each verdict in', () => {
   const none = script('adopt', ['verify', 'stories', '--pairs', 'shots.json', '--a', 'http://a.test', '--b', 'http://b.test', '--shoot', '--playwright', join(ctx.root, 'nothing-here')])
   assert.equal(none.status, 1)
   assert.match(none.stdout, /  open {6}shoot  shoot\.mjs found no Playwright: pass --playwright <path> to a checkout that has it\n/)
+})
+
+test('accept takes the flags verify took, and a shot holds while the pair still differs the same way', () => {
+  const pkg = join(ctx.root, '..', 'pw', 'node_modules', 'playwright')
+  const shoot = ['--pairs', 'shots.json', '--a', 'http://a.test', '--b', 'http://b.test', '--shoot', '--playwright', pkg]
+  const key = 'shot:button/dark-1440'
+  const path = join(project, 'adopt', 'ledger.json')
+  const saved = readFileSync(path, 'utf8')
+  try {
+    // Accept runs the checks verify runs on these flags.
+    assert.match(adopt('accept', 'stories', key, '--why', 'y', '--shoot').stderr, /--shoot runs the pairs file --pairs writes/)
+    assert.match(adopt('accept', 'stories', key, '--why', 'y', '--pairs', 'shots.json').stderr, /--pairs <file> needs --a <base url> and --b <base url>/)
+    assert.match(adopt('accept', 'graph', 'x', '--why', 'y', '--pairs', 'shots.json', '--a', 'http://a.test', '--b', 'http://b.test').stderr, /--pairs goes with accept stories/)
+    // Without the flags verify took, verify reports no shot, and accept says which flags.
+    const bare = script('adopt', ['accept', 'stories', key, '--why', 'y'], { FAKE_CHANGED: '3' })
+    assert.equal(bare.status, 1)
+    assert.match(bare.stderr, /reports no difference with the key 'shot:button\/dark-1440'\. .* A shot: key comes only from verify stories --pairs <file> --a <url> --b <url> --shoot: pass accept the same flags\./)
+    // A typo is still refused, with the shot keys verify reports.
+    const typo = script('adopt', ['accept', 'stories', 'shot:button/dark-144', '--why', 'y', ...shoot], { FAKE_CHANGED: '3' })
+    assert.equal(typo.status, 1)
+    assert.match(typo.stderr, /reports no difference with the key 'shot:button\/dark-144'\. Its open keys: .*'shot:button\/dark-1440'/)
+    const ok = script('adopt', ['accept', 'stories', key, '--why', 'the dark frame changes on purpose', ...shoot], { FAKE_CHANGED: '3' })
+    assert.equal(ok.status, 0, ok.stderr)
+    assert.equal(ok.stdout, `stories: accepted: ${key}\n`)
+    // The detail kept is what differs, not the measured percentage.
+    assert.deepEqual(ledger().classes.stories.accepted.find((a) => a.key === key), { key, why: 'the dark frame changes on purpose', detail: 'its pixels differ over the limit', date: '2026-11-07' })
+    const lower = script('adopt', ['verify', 'stories', ...shoot], { FAKE_CHANGED: '2' })
+    assert.match(lower.stdout, /\n  accepted  shot:button\/dark-1440  50% changed, over 0%\. Why: the dark frame changes on purpose\n/)
+    assert.doesNotMatch(lower.stdout, /open {6}shot:button\/dark-1440/)
+    // Another way of differing is open again, and a pair that passes leaves the accept stale.
+    const sizes = script('adopt', ['verify', 'stories', ...shoot], { FAKE_CHANGED: '2', FAKE_MISMATCH: '1' })
+    assert.match(sizes.stdout, /\n  open {6}shot:button\/dark-1440  sizes differ \(2x2 and 2x2\); 50% changed, over 0%; changed since accepted on 2026-11-07: was its pixels differ over the limit\n/)
+    const passes = script('adopt', ['verify', 'stories', ...shoot])
+    assert.match(passes.stdout, /Accepted in the ledger but no longer found: shot:button\/dark-1440\./)
+  } finally {
+    writeFileSync(path, saved)
+  }
 })
 
 test('plan proposes the audit map from the rule names and keeps the one you edit', () => {
@@ -430,7 +489,7 @@ test('the token inventory is read tolerantly, and a selector list is the same as
     ],
     typeClasses: ['t-body'],
   })
-  assert.deepEqual(repo.unreadable, [{ where: '--c', detail: 'it has no a file' }, { where: 'x.css --d', detail: '1 value has no selector or value' }])
+  assert.deepEqual(repo.unreadable, [{ where: '--c', detail: 'it has no file' }, { where: 'x.css --d', detail: '1 value has no selector or value' }])
   const ours = {
     tokens: [
       { name: '--a', file: 'x.css', values: [{ selector: '.one', value: '1px' }, { selector: '.two', value: '1px' }, { selector: '@media (width < 40rem) .one', value: '2px' }, { selector: '@media (width < 40rem) .two', value: '3px' }] },
@@ -442,12 +501,21 @@ test('the token inventory is read tolerantly, and a selector list is the same as
   assert.deepEqual(out.differences.map((d) => `${d.key}: ${d.detail}`), [
     'resolved-more:x.css: massimo resolves 1 value the repo\'s inventory leaves unresolved, such as --b @ .dark',
     'resolved:x.css --b @ :root: the repo resolves it to #ffffff, massimo to #fefefe',
-    'unreadable:--c: it has no a file',
+    'unreadable:--c: it has no file',
     'unreadable:x.css --d: 1 value has no selector or value',
     'value:x.css --a @ @media (width < 40rem) .two: the repo\'s is 2px, massimo\'s 3px',
   ])
   assert.deepEqual(cells(textTable(out.rows), 'values by selector'), ['values by selector', '4', '4', '3', '1', '2 selector lists the repo files as one, massimo by member'])
   assert.deepEqual(cells(textTable(out.rows), 'type classes'), ['type classes', 'yes'])
+})
+
+test('a token with no name is keyed by its file, and its place in the list is printed, never kept', () => {
+  const unreadable = (list) => compareTokens(readTokenInventory({ tokens: list }), { tokens: [] }).differences.filter((d) => d.key.startsWith('unreadable:'))
+  const nameless = { file: 'x.css', values: [] }
+  assert.deepEqual(unreadable([nameless]), [{ key: 'unreadable:x.css (no name)', detail: 'it has no name', shown: 'token 1: it has no name' }])
+  // A token added above it moves its place, not its key or detail.
+  assert.deepEqual(unreadable([{ name: '--a', file: 'x.css', values: [] }, nameless]), [{ key: 'unreadable:x.css (no name)', detail: 'it has no name', shown: 'token 2: it has no name' }])
+  assert.deepEqual(unreadable([{ values: [] }]), [{ key: 'unreadable:(no name or file)', detail: 'it has no name or file', shown: 'token 1: it has no name or file' }])
 })
 
 test('settle splits differences by what the ledger accepts, and a key holds only with the detail it was accepted with', () => {
@@ -509,8 +577,8 @@ test('retire refuses without --dry-run; the dry run lists what goes, its scripts
 test('a file that goes while a generator that stays still writes it holds the retirement up', () => {
   const audit = adopt('retire', 'audit', '--dry-run')
   assert.equal(audit.status, 1)
-  assert.match(audit.stdout, /\nWritten by a generator that stays \(1\), which would write it again, and whose check fails without it:\n  docs\/system\/ratchet\.json  written by scripts\/build-system\.mjs \(graph, found\): retire it with its writer, or retire graph first\n/)
-  assert.match(audit.stdout, /\nNot clean: 1 file has a writer that stays(, and \d+ consumers? remains?)?[^.]*\. Retire each writer with what it writes, or its class first\. /)
+  assert.match(audit.stdout, /\nWritten by a generator that stays \(1\), whose code names it, so it would write it again and its check fails without it:\n  docs\/system\/ratchet\.json  written by scripts\/build-system\.mjs \(graph, found\): retire it with its writer, retire graph first, or change its writer so it no longer writes it\n/)
+  assert.match(audit.stdout, /\nNot clean: 1 file has a writer that stays(, and \d+ consumers? remains?)?[^.]*\. Retire each writer with what it writes or its class first, or change the writer so it no longer writes the file\. /)
   const plan = JSON.parse(adopt('retire', 'tokens', '--dry-run', '--json').stdout)
   assert.deepEqual(plan.writers, [
     { path: 'docs/system/tokens.json', asset: 'tokens:docs/system/tokens.json', writer: 'scripts/build-system.mjs', class: 'graph', state: 'found' },
@@ -539,7 +607,7 @@ test('a historical doc does not hold a retirement up, and a clean dry run exits 
   const written = adopt('retire', 'tokens', '--dry-run')
   assert.equal(written.status, 1, written.stdout)
   assert.match(written.stdout, /Consumers to repoint first \(0\):\n  none\n/)
-  assert.match(written.stdout, /Not clean: 2 files have a writer that stays\. Retire each writer with what it writes, or its class first\. Then run this again\.\n$/)
+  assert.match(written.stdout, /Not clean: 2 files have a writer that stays\. Retire each writer with what it writes or its class first, or change the writer so it no longer writes the file\. Then run this again\.\n$/)
   // With graph retired first, its generator is gone: nothing writes what goes.
   const generator = join(ctx.root, 'scripts', 'build-system.mjs')
   rmSync(generator)
@@ -554,6 +622,32 @@ test('a historical doc does not hold a retirement up, and a clean dry run exits 
   }
   assert.equal(adopt('plan').status, 0)
   assert.deepEqual(ledger().historical, [{ path: 'docs/history.md', date: '2026-11-07' }])
+})
+
+test('a generator that stays holds a file up only while its code names it, whatever the file says of its writer', () => {
+  const generator = join(ctx.root, 'scripts', 'build-system.mjs')
+  const was = readFileSync(generator, 'utf8')
+  const path = join(project, 'adopt', 'ledger.json')
+  const saved = readFileSync(path, 'utf8')
+  try {
+    // The generator is kept, and changed so it no longer writes the token files.
+    const l = ledger()
+    l.classes.graph.assets.find((a) => a.id === 'generator:scripts/build-system.mjs').decision = 'keep'
+    writeFileSync(path, JSON.stringify(l, null, 2))
+    writeFileSync(generator, was.replace(/^ {2}writeFileSync\(`\$\{DIR\}\/tokens\.(?:md|json)`.*\n/gm, ''))
+    assert.doesNotMatch(readFileSync(generator, 'utf8'), /tokens\./)
+    // The files still say it writes them.
+    assert.match(readFileSync(join(ctx.root, 'docs', 'system', 'tokens.json'), 'utf8'), /GENERATED by scripts\/build-system\.mjs/)
+    const r = adopt('retire', 'tokens', '--dry-run')
+    assert.equal(r.status, 0, r.stdout)
+    assert.doesNotMatch(r.stdout, /Written by a generator that stays/)
+    // A comment that still names a file is not code that writes it.
+    writeFileSync(generator, `// It wrote docs/system/tokens.json once.\n${readFileSync(generator, 'utf8')}`)
+    assert.equal(adopt('retire', 'tokens', '--dry-run').status, 0)
+  } finally {
+    writeFileSync(generator, was)
+    writeFileSync(path, saved)
+  }
 })
 
 test('a hand edit that breaks an acceptance or the historical list is caught', () => {
