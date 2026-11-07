@@ -39,6 +39,9 @@ export const DEFAULTS = {
     manifest: null,
     pages: null,
     frames: null,
+    // The places (`Root / Group`) where a manifest story may name no
+    // component: token pages, decision records.
+    componentless: [],
   },
   tokens: {
     // Defaults to <projectDir>/tokens/tokens.json (see loadConfig).
@@ -87,10 +90,11 @@ export const DEFAULTS = {
     // A repo's own keys with the role each plays (lib/roles.mjs): a role name,
     // or { role, values, under }.
     keys: {},
-    // { tiers, groups, placement, rules, parked, require }: the tiers in order,
-    // each group with a line on what belongs in it, the placement test, path
-    // rules that give a file its group, the marker of a parked file and its
-    // group, and the keys each tier needs. Null takes any group.
+    // { tiers, groups, placement, rules, parked, require, notLive }: the tiers
+    // in order, each group with a line on what belongs in it, the placement
+    // test, path rules that give a file its group, the marker of a parked file
+    // and its group, the keys each tier needs, and the tiers that are not live
+    // code, so need no story. Null takes any group.
     taxonomy: null,
     // Node kinds beyond components, each a list of globs: { layout: [...], page: [...] }.
     kinds: {},

@@ -11,7 +11,8 @@
     "include": ["src/stories/**/*.{astro,ts}"],
     "manifest": "src/stories/manifest.ts",
     "pages": "src/stories/pages/{slug}/index.astro",
-    "frames": "src/stories/pages/{slug}/frame.astro"
+    "frames": "src/stories/pages/{slug}/frame.astro",
+    "componentless": ["Foundations / Colour"]
   },
   "graph": {
     "keys": {

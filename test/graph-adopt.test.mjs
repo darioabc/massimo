@@ -265,6 +265,142 @@ test('without a manifest, stories are found by file name as before', () => {
   }
 })
 
+// The fixture's four entries, to change one field at a time.
+const ENTRIES = {
+  colours: { slug: 'colours', title: 'Foundations / Colour / Palette', root: 'Foundations', group: 'Colour' },
+  button: { slug: 'button', title: 'Primitives / Actions / Button', root: 'Primitives', group: 'Actions', component: 'src/components/Button.astro', states: ['Solid', 'Quiet'] },
+  card: { slug: 'card', title: 'Components / Cards / Card', root: 'Components', group: 'Cards', component: ['src/components/Card.astro'], frame: true },
+  home: { slug: 'home', title: 'Pages / Home / Home', root: 'Pages', group: 'Home', component: 'src/pages/index.astro' },
+}
+const manifest = (entries, tail = '') => `export const stories = [\n${entries.map((e) => `  ${JSON.stringify(e)},`).join('\n')}\n${tail}]\n`
+
+// The lane's problems for a variant, as "rule · file · detail" lines, and
+// the whole graph.json.
+function laneOf(files, patch) {
+  const t = variant(files, patch)
+  try {
+    const r = run('graph', t)
+    assert.equal(r.status, 0, r.stderr)
+    const g = readJson(t.project, 'graph.json')
+    return { lines: g.storyLane.problems.map((p) => `${p.rule} · ${p.file} · ${p.detail}`), graph: g, md: read(t.project, 'graph.md') }
+  } finally {
+    t.cleanup()
+  }
+}
+
+test('story-title: a title under its fields, its fields its component\'s group, and a component unless its place allows none', () => {
+  const { colours, button, card, home } = ENTRIES
+  const { lines } = laneOf({
+    'src/stories/manifest.ts': manifest([
+      { ...colours, title: 'Palette' },
+      { ...button, title: 'Primitives / Action / Button' },
+      { ...card, root: 'Primitives', group: 'Cards', title: 'Primitives / Cards / Card' },
+      { ...home, component: 'src/pages/missing.astro' },
+      { slug: 'motion', title: 'Foundations / Motion / Easing', root: 'Foundations', group: 'Motion' },
+      { slug: 'kiosk', title: 'Kiosk / Screens / Idle', root: 'Kiosk', group: 'Screens' },
+      { slug: 'chip', title: 'Primitives / Actions / Chip' },
+    ]),
+  })
+  const title = lines.filter((l) => l.startsWith('story-title'))
+  assert.deepEqual(title, [
+    'story-title · src/stories/manifest.ts · button: "Primitives / Action / Button" is not under its fields, Primitives / Actions',
+    'story-title · src/stories/manifest.ts · card: filed under Primitives / Cards, but Card is in Components / Cards',
+    'story-title · src/stories/manifest.ts · chip: no root and group fields',
+    'story-title · src/stories/manifest.ts · colours: "Palette" is not Root / Group / Name',
+    'story-title · src/stories/manifest.ts · home: component "src/pages/missing.astro" is not a graph node',
+    'story-title · src/stories/manifest.ts · kiosk: "Kiosk / Screens / Idle" is not Root / Group / Name',
+    'story-title · src/stories/manifest.ts · motion: no component, but stories in Foundations / Motion cover one (a story without one goes in Foundations / Colour)',
+  ])
+})
+
+test('story-files: an entry without its page, a page without an entry, a frame flag and a frame file that disagree', () => {
+  const { colours, button, card, home } = ENTRIES
+  const { lines } = laneOf({
+    'src/stories/manifest.ts': manifest([colours, { ...button, frame: true }, { ...card, frame: false }, { ...home, slug: 'start' }]),
+  })
+  assert.deepEqual(lines.filter((l) => l.startsWith('story-files')), [
+    'story-files · src/stories/manifest.ts · button: frame: true with no src/stories/pages/button/frame.astro',
+    'story-files · src/stories/manifest.ts · card: src/stories/pages/card/frame.astro with no frame: true',
+    'story-files · src/stories/manifest.ts · start: no src/stories/pages/start/index.astro',
+    'story-files · src/stories/pages/home/index.astro · home: a page with no manifest entry',
+  ])
+})
+
+test('story-states: a states list is the page\'s labels in order; a label it cannot read is reported, not guessed', () => {
+  const { colours, button, card, home } = ENTRIES
+  const swapped = laneOf({ 'src/stories/manifest.ts': manifest([colours, { ...button, states: ['Quiet', 'Solid'] }, card, home]) })
+  assert.deepEqual(swapped.lines, ['story-states · src/stories/manifest.ts · button: states [Quiet, Solid] but the page labels [Solid, Quiet]'])
+  const page = 'src/stories/pages/button/index.astro'
+  const computed = laneOf({ [page]: '---\nimport Stage from "../../Stage.astro"\nconst n = 2\n---\n<StoryState label="Solid" /><StoryState label={`${n} rows`}><Stage /></StoryState>\n' })
+  assert.deepEqual(computed.lines, [])
+  assert.deepEqual(computed.graph.storyLane.unreadable, [{ file: page, detail: 'button: a state label is not statically readable, so its states are not checked' }])
+  assert.match(computed.md, /Not statically readable, so not checked:\n\n- `src\/stories\/pages\/button\/index\.astro`: button: a state label/)
+})
+
+test('no-story: a live node with no direct story and no ds:no-story, whatever covers it incidentally', () => {
+  const { lines, graph } = laneOf({ 'src/layouts/Shell.astro': '---\n// ds:group Shells / Site\n---\n<slot />\n' })
+  // The shell shows only inside the home story; the module and the kept card are not live.
+  assert.deepEqual(lines, ['no-story · src/layouts/Shell.astro · no direct story'])
+  assert.deepEqual(graph.storyQueue.map((q) => q.name), ['layouts/Shell'])
+})
+
+test('a manifest entry it cannot read is listed and not checked, and its slug keeps its page', () => {
+  const { colours, button, card } = ENTRIES
+  const { lines, graph } = laneOf({
+    'src/stories/manifest.ts': manifest([colours, button, card], "  { slug: 'home', title: titleOf('home'), component: HOME },\n"),
+  })
+  // No title check, and no "page with no entry" for home; without the
+  // component it names, the home route has no direct story.
+  assert.deepEqual(lines, ['no-story · src/pages/index.astro · no direct story'])
+  assert.deepEqual(graph.storyLane.unreadable, [
+    { file: 'src/stories/manifest.ts', detail: 'home: component is not statically readable' },
+    { file: 'src/stories/manifest.ts', detail: 'home: title is not statically readable' },
+  ])
+})
+
+test('strictFaults: story-title, story-files and story-states fail the run; no-story never does', () => {
+  const strict = (c) => ({ ...c, graph: { ...c.graph, strictFaults: true } })
+  const noStory = variant({ 'src/layouts/Shell.astro': '---\n// ds:group Shells / Site\n---\n<slot />\n' }, strict)
+  try {
+    assert.equal(run('graph', noStory).status, 0)
+  } finally {
+    noStory.cleanup()
+  }
+  const { colours, button, card, home } = ENTRIES
+  const t = variant({ 'src/stories/manifest.ts': manifest([colours, { ...button, states: ['Solid'] }, card, home]) }, strict)
+  try {
+    const r = run('graph', t)
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /src\/stories\/manifest\.ts: story-states: button: states \[Solid\] but the page labels \[Solid, Quiet\]/)
+    assert.match(r.stderr, /graph\.strictFaults is on, so this fault fails the run/)
+    assert.equal(run('graph', t, ['--check']).status, 1)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('stories.lane: "manifest" needs stories.manifest, and "native" leaves a manifest unread', () => {
+  const missing = variant({}, (c) => ({ ...c, stories: { ...c.stories, manifest: null } }))
+  try {
+    const r = run('graph', missing)
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /stories\.lane is "manifest", so stories\.manifest must name the file that lists the stories/)
+  } finally {
+    missing.cleanup()
+  }
+  const native = variant({}, (c) => ({ ...c, stories: { ...c.stories, lane: 'native' } }))
+  try {
+    const r = run('graph', native)
+    assert.equal(r.status, 0)
+    assert.match(r.stderr, /stories\.manifest is set, but stories\.lane is "native", so stories are found by file name/)
+    assert.equal(readJson(native.project, 'graph.json').storyLane, undefined)
+  } finally {
+    native.cleanup()
+  }
+  const gone = laneOf({}, (c) => ({ ...c, stories: { ...c.stories, manifest: 'src/stories/list.ts' } }))
+  assert.deepEqual(gone.lines.filter((l) => l.startsWith('story-files')), ['story-files · src/stories/list.ts · stories.manifest names src/stories/list.ts, which does not exist'])
+})
+
 test('the README lists tiers in the taxonomy\'s order', () => {
   const r = spawnSync(process.execPath, [join(SCRIPTS, 'docs.mjs'), '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)

@@ -35,13 +35,15 @@ import {
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
-import { componentsOf, readManifest, readStoryStates, slugPath } from './lib/stories-read.mjs'
+import { componentsOf, readManifest, readStoryStates, slugFiles, slugPath } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
 const STORY_EXTS = /\.(?:tsx?|jsx?|mjs|vue|svelte|astro|mdx?)$/
 const CODE_EXTS = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro)$/
 const MDX_EXT = /\.mdx$/i
+// A story title: Root / Group / Name.
+const STORY_TITLE = /^([^/]+?) \/ ([^/]+?) \/ ([^/]+)$/
 // import.meta.glob('pattern') or (['a', '!b']), with or without a type argument.
 const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?\s*(?:<[^>()]*>)?\s*\(\s*(\[[^\]]*\]|(['"`])[^'"`\n]+\2)/g
 const TOKEN_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'other']
@@ -459,8 +461,11 @@ export function buildGraph(root, config, command = "graph.mjs") {
     const lane = {
       manifest,
       entries: [],
+      skipped: [],
       unreadable: [],
       states: 0,
+      // Each page's state blocks, read once.
+      blocks: new Map(),
       direct: new Map(nodeFiles.map((f) => [f, new Set()])),
       incidental: new Map(nodeFiles.map((f) => [f, new Set()])),
       pagesOf: new Map(nodeFiles.map((f) => [f, new Set()])),
@@ -471,6 +476,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     if (!fileSet.has(manifest)) return lane
     const read = readManifest(readFileSync(join(root, manifest), 'utf8'), manifest)
     lane.entries = read.entries
+    lane.skipped = read.unreadable
     for (const u of read.unreadable) lane.unreadable.push({ file: manifest, detail: u.slug ? `${u.slug}: ${u.detail}` : u.detail })
     for (const entry of lane.entries) {
       if (typeof entry?.slug !== 'string') continue
@@ -495,11 +501,112 @@ export function buildGraph(root, config, command = "graph.mjs") {
         lane.pagesOf.get(n).add(shown)
       }
       for (const n of reached) lane.incidental.get(n).add(entry.slug)
-      if (page && fileSet.has(page)) lane.states += readStoryStates(readFileSync(join(root, page), 'utf8')).length
+      if (page && fileSet.has(page) && !lane.blocks.has(page)) {
+        lane.blocks.set(page, readStoryStates(readFileSync(join(root, page), 'utf8')))
+        lane.states += lane.blocks.get(page).length
+      }
     }
     return lane
   }
-  const lane = config.stories.manifest ? readLane() : null
+
+  // What the lane's checks find, each { rule, file, detail }, sorted, with
+  // no line numbers so a ratchet can key on them:
+  //   story-title   a title that is not Root / Group / Name under its root and
+  //                 group fields, a place that is not its component's group, or
+  //                 no component outside stories.componentless
+  //   story-files   an entry without its page, a page without an entry, a frame
+  //                 flag and a frame file that disagree
+  //   story-states  a states list that is not the page's state labels, in order
+  //   no-story      a live node with no direct story and no ds:no-story
+  // `file` is the manifest, the page with no entry, or the node with no story.
+  // A field the manifest does not hold as a literal is not checked.
+  function laneProblems(lane, nodes, live) {
+    const { manifest, pageOf, frameOf, fileSet } = lane
+    const out = []
+    const add = (rule, file, detail) => out.push({ rule, file, detail })
+    if (!fileSet.has(manifest)) {
+      add('story-files', manifest, `stories.manifest names ${manifest}, which does not exist`)
+      return out
+    }
+    const byFile = new Map(nodes.map((n) => [n.file, n]))
+    const byName = new Map(nodes.map((n) => [n.name, n]))
+    const roots = Array.isArray(taxonomy?.tiers) && taxonomy.tiers.length > 0 ? taxonomy.tiers : null
+    const componentless = [].concat(config.stories.componentless ?? [])
+    const skipped = new Map()
+    for (const u of lane.skipped) {
+      if (u.entry === null) continue
+      if (!skipped.has(u.entry)) skipped.set(u.entry, new Set())
+      skipped.get(u.entry).add(u.field)
+    }
+    lane.entries.forEach((entry, index) => {
+      if (!entry) return
+      const unread = skipped.get(index) ?? new Set()
+      const slug = typeof entry.slug === 'string' ? entry.slug : null
+      const where = slug ?? `an entry with no slug (${JSON.stringify(entry.title ?? '')})`
+      if (!['title', 'root', 'group', 'component', '...'].some((f) => unread.has(f))) {
+        const title = typeof entry.title === 'string' ? entry.title : ''
+        const m = STORY_TITLE.exec(title)
+        const place = `${entry.root} / ${entry.group}`
+        const named = componentsOf(entry)
+        if (!m || (roots && !roots.includes(m[1]))) add('story-title', manifest, `${where}: "${title}" is not Root / Group / Name`)
+        else if (!entry.root || !entry.group) add('story-title', manifest, `${where}: no root and group fields`)
+        else if (roots && !roots.includes(entry.root)) add('story-title', manifest, `${where}: root "${entry.root}" is not a tier of the taxonomy`)
+        else if (`${m[1]} / ${m[2]}` !== place) add('story-title', manifest, `${where}: "${title}" is not under its fields, ${place}`)
+        else if (named.length === 0) {
+          if (!componentless.includes(place)) add('story-title', manifest, `${where}: no component, but stories in ${place} cover one (a story without one goes in ${componentless.length > 0 ? componentless.join(', ') : 'a place stories.componentless lists'})`)
+        } else {
+          for (const c of named) {
+            const n = byFile.get(c) ?? byName.get(c)
+            if (!n) add('story-title', manifest, `${where}: component "${c}" is not a graph node`)
+            else if (n.group !== place) add('story-title', manifest, `${where}: filed under ${place}, but ${n.name} is in ${n.group ?? 'no group'}`)
+          }
+        }
+      }
+      if (!slug) return
+      const page = pageOf(slug)
+      const frame = frameOf(slug)
+      if (page && !fileSet.has(page)) add('story-files', manifest, `${slug}: no ${page}`)
+      if (frame && !unread.has('frame') && !unread.has('...')) {
+        if (entry.frame === true && !fileSet.has(frame)) add('story-files', manifest, `${slug}: frame: true with no ${frame}`)
+        if (entry.frame !== true && fileSet.has(frame)) add('story-files', manifest, `${slug}: ${frame} with no frame: true`)
+      }
+      if (Array.isArray(entry.states) && lane.blocks.has(page)) {
+        const labels = lane.blocks.get(page).map((s) => s.label)
+        if (labels.some((l) => typeof l !== 'string')) lane.unreadable.push({ file: page, detail: `${slug}: a state label is not statically readable, so its states are not checked` })
+        else if (labels.join('\n') !== entry.states.join('\n')) add('story-states', manifest, `${slug}: states [${entry.states.join(', ')}] but the page labels [${labels.join(', ')}]`)
+      }
+    })
+    // A page or frame no entry names, unless an entry's slug could not be read.
+    if (!lane.entries.some((e) => !e || typeof e.slug !== 'string')) {
+      const slugs = new Set(lane.entries.map((e) => e.slug))
+      const orphans = new Map()
+      for (const pattern of [config.stories.pages, config.stories.frames].filter(Boolean)) {
+        for (const [slug, file] of slugFiles(pattern, all)) if (!slugs.has(slug) && !orphans.has(slug)) orphans.set(slug, file)
+      }
+      for (const [slug, file] of orphans) add('story-files', file, `${slug}: a page with no manifest entry`)
+    }
+    for (const n of nodes) if (live(n) && n.direct.length === 0 && n.noStory === null) add('no-story', n.file, 'no direct story')
+    const seen = new Set()
+    return out
+      .sort((a, b) => compare(a.rule, b.rule) || compare(a.file, b.file) || compare(a.detail, b.detail))
+      .filter((p) => {
+        const id = `${p.rule}\n${p.file}\n${p.detail}`
+        if (seen.has(id)) return false
+        seen.add(id)
+        return true
+      })
+  }
+
+  // stories.lane says how stories are found: "manifest" reads the lane's
+  // list and needs to know where it is; anything else finds them by file name.
+  const laneMode = config.stories.lane ?? 'native'
+  if (laneMode === 'manifest' && !config.stories.manifest) {
+    throw new Error('stories.lane is "manifest", so stories.manifest must name the file that lists the stories, such as src/stories/manifest.ts. Set it, or set stories.lane to "native" to find stories by file name.')
+  }
+  if (laneMode !== 'manifest' && config.stories.manifest) {
+    warnings.push(`stories.manifest is set, but stories.lane is "${laneMode}", so stories are found by file name and the manifest is not read; set stories.lane to "manifest" to read it`)
+  }
+  const lane = laneMode === 'manifest' ? readLane() : null
 
   // Style harvesting reads the colour names the styleFiles define.
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
@@ -644,12 +751,18 @@ export function buildGraph(root, config, command = "graph.mjs") {
   })
   nodes.sort((a, b) => byName(a.name, b.name) || compare(a.file, b.file))
 
+  // Live code needs a story; a tier the taxonomy marks not live (internal
+  // modules, parked work) does not, and a node it cannot place is a fault.
+  const notLive = new Set([].concat(taxonomy?.notLive ?? []))
+  const live = (n) => !taxonomy || (Boolean(n.group) && !notLive.has(n.tier))
+
   const withStory = nodes.filter((n) => n.stories.length > 0).length
   const noStory = nodes.filter((n) => n.stories.length === 0 && n.noStory !== null).length
   const storyQueue = nodes
-    .filter((n) => n.stories.length === 0 && n.noStory === null)
+    .filter((n) => n.stories.length === 0 && n.noStory === null && (notLive.size === 0 || live(n)))
     .map((n) => ({ name: n.name, file: n.file, usage: n.usage }))
     .sort((a, b) => b.usage - a.usage || byName(a.name, b.name))
+  const problems = lane ? laneProblems(lane, nodes, live) : []
 
   const tokenNames = sortedUnique(customProps.map((p) => p.name).filter((n) => !n.startsWith('--tw-')))
   const groups = Object.fromEntries(TOKEN_GROUPS.map((g) => [g, []]))
@@ -691,7 +804,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     nodes,
     unresolved: unresolvedMap,
     faults: faultList,
-    ...(lane ? { storyLane: laneSummary(lane, nodes) } : {}),
+    ...(lane ? { storyLane: laneSummary(lane, nodes, problems) } : {}),
   }
   const view = { order: tierOrder(config), taxonomy }
   return { json, markdown: renderMarkdown(json, rulesNodes, command, view), warnings, faultLines: sortedUnique(faultLines) }
@@ -708,7 +821,7 @@ function kindCounts(nodes, kinds) {
 // The story lane in graph.json: where its manifest is, how many entries and
 // states it holds, the coverage split (direct, incidental only, none) and
 // the problems its checks find, each { rule, file, detail }.
-function laneSummary(lane, nodes) {
+function laneSummary(lane, nodes, problems) {
   const direct = nodes.filter((n) => n.direct.length > 0).length
   const incidental = nodes.filter((n) => n.direct.length === 0 && n.incidental.length > 0).length
   const unreadable = lane.unreadable.sort((a, b) => compare(a.file, b.file) || compare(a.detail, b.detail))
@@ -719,7 +832,7 @@ function laneSummary(lane, nodes) {
     direct,
     incidental,
     none: nodes.length - direct - incidental,
-    problems: [],
+    problems,
     ...(unreadable.length > 0 ? { unreadable } : {}),
   }
 }
@@ -877,6 +990,12 @@ function renderLane(lane) {
   const out = ['## Story lane', '']
   out.push(`${code(lane.manifest)} lists ${lane.entries} ${lane.entries === 1 ? 'story' : 'stories'}, with ${lane.states} ${lane.states === 1 ? 'state' : 'states'} on their pages. A story covers a node directly when its page or frame imports it (itself or through the lane's own helpers) or its entry names it, and covers what that node composes only incidentally.`, '')
   out.push(`- Direct: ${lane.direct} · seen only inside a parent's story: ${lane.incidental} · none: ${lane.none}.`, '')
+  out.push('The checks: `story-title` (a title is Root / Group / Name under its root and group, which are its component\'s group), `story-files` (every entry has its page, every page an entry, and a frame flag its frame), `story-states` (a states list is the page\'s state labels, in order) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, the first three fail the run; the audit ratchets `no-story`.', '')
+  if (lane.problems.length === 0) out.push('None of them finds a problem.', '')
+  else {
+    for (const p of lane.problems) out.push(`- ${code(p.rule)} · ${code(p.file)} · ${p.detail}`)
+    out.push('')
+  }
   if (lane.unreadable?.length > 0) {
     out.push('Not statically readable, so not checked:', '')
     for (const u of lane.unreadable) out.push(`- ${code(u.file)}: ${u.detail}`)
@@ -979,8 +1098,11 @@ function main() {
   if (json.faults.length > 0 && (!check || strict)) {
     process.stderr.write(`massimo graph: ${json.faults.length} header ${json.faults.length === 1 ? 'fault' : 'faults'}; see "Header faults" in graph.md\n`)
   }
+  // Story lane problems fail it too, apart from no-story, which the audit ratchets.
+  const storyFaults = strict ? (json.storyLane?.problems ?? []).filter((p) => p.rule !== 'no-story') : []
   if (strict) for (const line of faultLines) process.stderr.write(`massimo graph: ${line}\n`)
-  const failing = strict ? json.faults.length : 0
+  for (const p of storyFaults) process.stderr.write(`massimo graph: ${p.file}: ${p.rule}: ${p.detail}\n`)
+  const failing = strict ? json.faults.length + storyFaults.length : 0
   const strictFailure = () => {
     if (failing === 0) return false
     process.stderr.write(`massimo graph: graph.strictFaults is on, so ${failing === 1 ? 'this fault fails' : `these ${failing} faults fail`} the ${check ? 'check' : 'run'}. Fix ${failing === 1 ? 'it' : 'them'}, or set graph.strictFaults to false to report faults without failing.\n`)
