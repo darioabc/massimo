@@ -24,6 +24,8 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── handoffs/<topic>.md        translate specs ready to build
 ├── tidy/backlog.md            the tidy batches, their status and results
 ├── figma/                     export.json (what the file holds, read by read-library.js), mirror.json (what was mirrored, with ids), drift.md
+├── adopt/                     inventory.json and inventory.md (adopt.mjs scan), ledger.json (what becomes of each part of the
+│                              repo's own setup, and where each class stands), config.proposed.json (adopt.mjs plan)
 ├── shots/                     screenshots (gitignored; regenerate any time), except shots/kept/
 │   └── kept/<topic>/          screenshots a handoff, brief or baseline links to (committed)
 └── scripts/                   vendored massimo scripts, so CI and teammates without the plugin can run them
@@ -46,11 +48,12 @@ Keys for a repo that already has its own design-system setup, all inert until se
 
 ## Phases
 
-`state.json` tracks seven phases in this order. Each has one skill.
+`state.json` tracks eight phases in this order. Each has one skill.
 
 | id | skill | done when |
 |---|---|---|
 | `setup` | `start` | config, product.md and the project folder exist |
+| `adopt` | `adopt` | optional, to do only when the repo has a setup of its own; every class in `adopt/ledger.json` is cut over or retired. The ledger is where adopt stands; the phase note is a view of it |
 | `graph` | `graph` | graph.md is generated and its unresolved-import list is empty or explained |
 | `stories` | `stories` | the native story lane runs and the agreed set of components has baseline stories |
 | `tokens` | `tokens` | tokens.json exists, builds into the repo's styling, and the user approved each group |
@@ -58,7 +61,7 @@ Keys for a repo that already has its own design-system setup, all inert until se
 | `guard` | `guard` | `ds:` rules on the primitives, `ds:check` in CI, <project>/README.md written |
 | `figma` | `figma` | optional; tokens and primitives mirrored, mirror.json recorded |
 
-Status values: `todo`, `in_progress`, `done`, `skipped`. A user can skip any phase at setup or later. The `ux` loop is not a phase: it runs whenever there is a surface to design, and its topics live in `state.json` → `explorations`.
+Status values: `todo`, `in_progress`, `done`, `skipped`. A user can skip any phase at setup or later. A project without an `adopt` entry (made before 0.3.0) has it as skipped, and STATUS.md and the session hook leave out an optional phase skipped that way. The `ux` loop is not a phase: it runs whenever there is a surface to design, and its topics live in `state.json` → `explorations`.
 
 ## Scripts
 
@@ -69,7 +72,7 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 | script | does |
 |---|---|
 | `detect.mjs` | reads the repo and prints the stack as JSON, with a suggested config, and `adoptable` when the repo has a setup of its own to adopt |
-| `adopt.mjs` | `scan`: what the repo already has (story tools and lanes, a census of its `ds:` keys, its own graph, ratchet, token files, DESIGN.md and the script that writes them) and who depends on each; read-only, printed before init and written to `<project>/adopt/inventory.json` and `inventory.md` after |
+| `adopt.mjs` | `scan`: what the repo already has (story tools and lanes, a census of its `ds:` keys, its own graph, ratchet, token files, DESIGN.md and the script that writes them) and who depends on each; read-only, printed before init and written to `<project>/adopt/inventory.json` and `inventory.md` after. `plan`: the ledger and the proposed config. `config`: the proposal as a diff against the config, merged in with `--write` (it adds keys and never overwrites a value the user set). `status`: the ledger as a table. `mark <class> <state>`: moves a class (graph, stories, audit, tokens, docs) through found, mapped, shadowed, proven, cut-over (with `--batch <id>`) and retired; never past a blocker, never back without `--force` |
 | `init.mjs` | writes config, project folder, templates, vendored scripts, npm scripts; never overwrites |
 | `state.mjs` | `show`, `next`, `set`, `decide`, `explore`, `render` |
 | `graph.mjs` | writes graph.md/json; `--check` for CI |

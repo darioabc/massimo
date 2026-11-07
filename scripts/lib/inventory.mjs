@@ -346,6 +346,8 @@ function laneRecord(root, files, pkg, lane, text) {
     route: `/${basename(dir)}`,
     outDir: outDir ? outDir.replace(/^\.\//, '').replace(/\/$/, '') : null,
     files: files.filter((f) => f.startsWith(`${dir}/`)).length,
+    // The kinds of code the lane holds, for a glob that covers all of it.
+    exts: [...new Set(files.filter((f) => f.startsWith(`${dir}/`) && CODE_EXT.test(f) && !STYLE_EXT.test(f)).map((f) => f.slice(f.lastIndexOf('.') + 1)))].sort(compare),
   }
 }
 
