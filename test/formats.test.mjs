@@ -53,11 +53,11 @@ test('a graph.json or baseline.json in a newer format is refused, not read as th
   assert.equal(docs.status, 1)
   assert.match(docs.stderr, /graph\.json is format 2/)
   mkdirSync(join(ctx.project, 'audits'), { recursive: true })
-  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 2, kinds: {} }))
+  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 3, kinds: {} }))
   for (const flag of ['--check', '--lower']) {
     const r = run('audit', ctx, [flag])
     assert.equal(r.status, 1, flag)
-    assert.match(r.stderr, /audits\/baseline\.json is format 2/)
+    assert.match(r.stderr, /audits\/baseline\.json is format 3, and these scripts \(\S+\) read up to 2/)
   }
 })
 
@@ -102,10 +102,10 @@ test('graph and audit --baseline never check against or overwrite a newer file',
   assert.match(g.stderr, /graph\.json is format 2/)
   assert.equal(readJson(ctx.project, 'graph.json').version, 2)
   mkdirSync(join(ctx.project, 'audits'), { recursive: true })
-  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 2, kinds: {} }))
+  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 3, kinds: {} }))
   const a = run('audit', ctx, ['--baseline'])
   assert.equal(a.status, 1)
-  assert.equal(readJson(ctx.project, 'audits', 'baseline.json').version, 2)
+  assert.equal(readJson(ctx.project, 'audits', 'baseline.json').version, 3)
 })
 
 test('a vendored version in either quote style reads; one that cannot be read neither warns nor blocks', () => {

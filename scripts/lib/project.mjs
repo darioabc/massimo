@@ -69,12 +69,16 @@ export const DEFAULTS = {
     include: ['src/**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}'],
     // Stories stage components with fixture values on purpose; they are not drift.
     exclude: ['**/*.test.*', '**/*.spec.*', '**/*.d.ts', '**/*.stories.*', '**/*.story.*', 'src/stories/**'],
-    // Kinds turned off by name, as { length: false }.
+    // Kinds turned off by name, as { length: false }; true turns the Tailwind
+    // palette kind on with the Tailwind config's colours as the repo's own.
     kinds: {},
     // Per kind, what it skips: { color: { roles: { theme: '*' }, tiers: [], groups: [], files: [] } }.
     exempt: {},
     // 'all' counts every Tailwind arbitrary value; 'color' only the colours.
     arbitrary: 'all',
+    // 'all' reads every literal token as a primitive; 'color' only colours,
+    // and with no token set yet, the literal colours tokens.styleFiles define.
+    primitives: 'all',
     // --check also fails while the baseline is behind the code.
     failWhenBehind: false,
   },
@@ -260,7 +264,8 @@ const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts f
 
 // The newest format of each file this version reads. A file in a newer one
 // was written by a newer massimo, and reading it as an older one would guess.
-export const FORMATS_READ = { config: 1, graph: 1, baseline: 1 }
+// baseline 2: it tracks a kind added in 0.3.0 (audit.mjs NEWER_KINDS).
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 2 }
 const newerMessage = (kind, version, where) =>
   typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null
 export function refuseNewer(kind, version, where) {

@@ -1,0 +1,11 @@
+/* A sheet with its own palette and widths, exempt by file. */
+.sheet {
+  color: #000;
+  background: rgb(var(--sand-200));
+}
+
+@media (max-width: 719px) {
+  .sheet {
+    color: var(--c-text);
+  }
+}

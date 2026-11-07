@@ -7,6 +7,13 @@
 // primitive-read (a var() of a primitive token outside the token files),
 // undefined-var (a var() with no fallback and no definition anywhere),
 // tailwind-palette (`text-red-600` in a repo with its own colour tokens).
+// breakpoint (an @media width or a Tailwind screen off tokens.breakpoints)
+// joins when that key is set.
+//
+// The audit settings: audit.kinds turns a kind off (false) or on (true);
+// audit.exempt skips a kind in files by a header role, a tier, a group or a
+// glob; audit.arbitrary 'color' counts only arbitrary colours; and
+// audit.primitives 'color' counts only colour primitives.
 //
 // Writes audits/latest.json and audits/latest.md. The ratchet is per offender:
 // baseline.json keys are "<file>: <value>" with counts, and --check fails when
@@ -28,6 +35,7 @@ import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, warnIfVendoredOlder } from './lib/project.mjs'
 import {
   classLibraries,
+  extractRules,
   flattenDtcg,
   isAlias,
   parseCustomProperties,
@@ -35,8 +43,12 @@ import {
   stripComments,
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
+import { findObject, leaves } from './lib/jsobject.mjs'
+import { channelColor } from './lib/readers.mjs'
+import { headerRoles, keyRoles, knownKeys, placeFile } from './lib/roles.mjs'
 import { truthy } from './lib/text.mjs'
 
+// The kinds every project's audit reports, as 0.2.1 did.
 export const KINDS = [
   'color',
   'arbitrary',
@@ -46,6 +58,10 @@ export const KINDS = [
   'undefined-var',
   'tailwind-palette',
 ]
+// Kinds a key turns on, unknown to scripts before 0.3.0. A baseline that
+// tracks any of them is format 2, which those scripts refuse by name.
+export const NEWER_KINDS = ['breakpoint']
+export const ALL_KINDS = [...KINDS, ...NEWER_KINDS]
 
 const TOP_FILES = 15
 const MD_CLUSTERS = 20
@@ -92,6 +108,9 @@ const PALETTE_UTILITY = new RegExp(
 
 const TEXT_SCALE = { xs: 12, sm: 14, base: 16, lg: 18, xl: 20, '2xl': 24, '3xl': 30, '4xl': 36, '5xl': 48, '6xl': 60, '7xl': 72, '8xl': 96, '9xl': 128 }
 const TEXT_UTILITY = /^text-(xs|sm|base|lg|xl|[2-9]xl)$/
+
+// Utilities whose arbitrary value is a colour when it reads a colour token.
+const COLOR_UTILITY = /^(?:bg|text|border(?:-[xytrblse])?|ring-offset|ring|outline|fill|stroke|from|via|to|decoration|divide|placeholder|caret|accent|shadow)$/
 
 const SPACING_UTILITY = /^-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy]|inset(?:-[xy])?|top|right|bottom|left|start|end|scroll-[mp][xytrblse]?)$/
 const SIZE_UTILITY = /^(?:w|h|size|min-w|max-w|min-h|max-h|basis)$/
@@ -209,6 +228,90 @@ function classTokens(code, file) {
   return out
 }
 
+// ── Breakpoints ─────────────────────────────────────────────────────────────
+
+const MEDIA = /@media\b([^{};]*)\{/g
+const TAILWIND_SCREENS = { sm: '640px', md: '768px', lg: '1024px', xl: '1280px', '2xl': '1536px' }
+const TAILWIND_CONFIG = [/export\s+default\s*(?:defineConfig\(\s*|\{\s*\.\.\.)?/, /module\.exports\s*=\s*/, /defineConfig\(\s*/, /const\s+config(?:\s*:\s*[\w.]+)?\s*=\s*/]
+
+// A width in rem at the default 16px root, so 640px and 40rem compare equal.
+const remOf = (width) => Number.parseFloat(width) / (/px$/.test(width) ? 16 : 1)
+const widthOf = (n, unit) => `${Number.parseFloat(n)}${unit}`
+
+// The widths a media query names: `(min-width: 40rem)`, `(width >= 640px)`
+// and `(400px <= width)`, each as written with its unit.
+export function mediaWidths(query) {
+  const out = []
+  for (const m of query.matchAll(/\(\s*(?:min|max)-width\s*:\s*(\d*\.?\d+)(rem|px|em)\s*\)/g)) out.push(widthOf(m[1], m[2]))
+  for (const m of query.matchAll(/width\s*[<>]=?\s*(\d*\.?\d+)(rem|px|em)/g)) out.push(widthOf(m[1], m[2]))
+  for (const m of query.matchAll(/(\d*\.?\d+)(rem|px|em)\s*[<>]=?\s*width/g)) out.push(widthOf(m[1], m[2]))
+  return out
+}
+
+// A class token's variants (`md:`, `max-sm:`, `min-[400px]:`, `[@media(...)]:`),
+// split at the colons outside brackets; the utility itself is left out.
+function variantsOf(token) {
+  const out = []
+  let depth = 0
+  let last = 0
+  for (let i = 0; i < token.length; i++) {
+    if (token[i] === '[') depth++
+    else if (token[i] === ']') depth--
+    else if (token[i] === ':' && depth === 0) {
+      out.push(token.slice(last, i))
+      last = i + 1
+    }
+  }
+  return out
+}
+
+// The media widths a token's variants compile to. A screen comes back in
+// rem, an arbitrary width as written.
+export function variantWidths(token, screens) {
+  const out = []
+  for (const variant of variantsOf(token)) {
+    const arbitrary = /^(?:min|max)-\[(\d*\.?\d+)(rem|px|em)\]$/.exec(variant)
+    const screen = /^(?:max-|min-)?([\w-]+)$/.exec(variant)
+    if (arbitrary) out.push({ variant, width: widthOf(arbitrary[1], arbitrary[2]) })
+    else if (screen && Object.hasOwn(screens, screen[1])) out.push({ variant, width: `${remOf(screens[screen[1]])}rem` })
+    else if (/^\[@media/.test(variant)) for (const width of mediaWidths(variant.slice(1, -1).replace(/_/g, ' '))) out.push({ variant, width })
+  }
+  return out
+}
+
+// The theme object of a Tailwind 3 config, read as text, or null.
+function tailwindTheme(root, file) {
+  if (!file || !existsSync(join(root, file))) return null
+  const theme = findObject(readFileSync(join(root, file), 'utf8'), TAILWIND_CONFIG)?.theme
+  return theme && typeof theme === 'object' && !('expr' in theme) ? theme : null
+}
+
+// Tailwind's screens by name: the config's own `theme.screens` in place of
+// the defaults when it has them, then `theme.extend.screens` over them.
+function tailwindScreens(theme) {
+  const read = (obj) => {
+    const out = {}
+    for (const [name, v] of Object.entries(obj ?? {})) {
+      const width = typeof v === 'string' ? v : v && typeof v === 'object' ? v.min ?? v.max : null
+      if (typeof width === 'string' && /^\d*\.?\d+(?:rem|px|em)$/.test(width.trim())) out[name] = width.trim()
+    }
+    return out
+  }
+  const own = theme?.screens && typeof theme.screens === 'object' && !('expr' in theme.screens) ? read(theme.screens) : null
+  return { ...(own && Object.keys(own).length > 0 ? own : TAILWIND_SCREENS), ...read(theme?.extend?.screens) }
+}
+
+// The colour names a Tailwind config defines (`c-ground`, `brand`), values
+// computed or not, so the palette kind leaves those keys alone.
+function tailwindColorNames(theme) {
+  const names = []
+  for (const colors of [theme?.colors, theme?.extend?.colors]) {
+    if (!colors || typeof colors !== 'object' || 'expr' in colors) continue
+    for (const [path] of leaves(colors)) names.push(path.filter((p, i) => !(p === 'DEFAULT' && i === path.length - 1)).join('-'))
+  }
+  return names
+}
+
 // ── What a colour is used for ───────────────────────────────────────────────
 
 // The job a raw colour does where it sits: a background, text, a border, an
@@ -295,7 +398,8 @@ function inventoryOf(code, isCss, tokens, inv) {
 
 // ── Per-file scan ───────────────────────────────────────────────────────────
 
-function scanFile(file, source, ctx) {
+// `info` is what the file's header says through the roles (fileInfo).
+function scanFile(file, source, ctx, info) {
   const code = stripComments(source, file)
   const li = lineIndex(source)
   const findings = []
@@ -327,9 +431,20 @@ function scanFile(file, source, ctx) {
       let value = m[3].replace(/_/g, ' ')
       const hint = /^(color|length|percentage|number|url|image|position|size|family|absolute-size|relative-size):/.exec(value)
       if (hint) value = value.slice(hint[0].length)
-      if (/^(?:content|will-change|font|transition)$/.test(utility) || /var\(/.test(value) || /^url\(/.test(value)) continue
+      if (/^(?:content|will-change|font|transition)$/.test(utility) || /^url\(/.test(value)) continue
+      if (/var\(/.test(value)) {
+        // Counting only colours, a role read is one too: `text-[color:var(--x)]`,
+        // or a colour utility reading a colour custom property. It names a
+        // token, so it stays out of the raw colour clusters (sub-kind `role`).
+        const read = /^var\(\s*(--[\w-]+)/.exec(value)?.[1]
+        if (ctx.arbitraryColorOnly && (hint?.[1] === 'color' || (COLOR_UTILITY.test(utility) && ctx.colorVars.has(read)))) {
+          add(m.index, 'arbitrary', `${name}-[${m[3]}]`, { sub: 'role' })
+        }
+        continue
+      }
       claimed.fill(1, m.index, m.index + m[0].length)
       const color = hint?.[1] === 'color' || parseColor(value) !== null || /^#[0-9a-f]{3,8}$/i.test(value)
+      if (ctx.arbitraryColorOnly && !color) continue
       const length = !color && (/^-?[\d.]+(?:px|rem|em|%|vw|vh|vmin|vmax|ch|ex|pt|cm|mm|in|svh|dvh|svw|dvw|lvh)$/.test(value) || (/calc\(/.test(value) && /\d(?:px|rem|em)/.test(value)))
       const sub = color ? 'color' : length ? 'length' : 'other'
       let category
@@ -432,17 +547,92 @@ function scanFile(file, source, ctx) {
     }
   }
 
-  // var() reads and every way a custom property can be set.
+  // Media widths off the breakpoint scale: @media queries, and Tailwind
+  // screens and width variants in class strings and @apply lists. A width
+  // the file's header allows (the breakpoint role) is on its scale.
+  if (ctx.breakpoints) {
+    const allowed = [...ctx.breakpoints, ...info.breakpoints.map(remOf)]
+    const onScale = (width) => allowed.some((w) => Math.abs(w - remOf(width)) < 1e-9)
+    for (const m of code.matchAll(MEDIA)) {
+      for (const width of mediaWidths(m[1])) if (!onScale(width)) add(m.index, 'breakpoint', `@media ${width}`)
+    }
+    const variants = (text, start) => {
+      for (const t of text.matchAll(/\S+/g)) {
+        for (const { variant, width } of variantWidths(t[0], ctx.screens)) {
+          if (!onScale(width)) add(start + t.index, 'breakpoint', `@media ${width} (${variant}:)`)
+        }
+      }
+    }
+    if (!isCss) for (const { text, start } of stringLiterals(code, file)) variants(text, start)
+    for (const m of code.matchAll(/@apply\s+([^;}\n]+)/g)) variants(m[1], m.index + m[0].indexOf(m[1]))
+  }
+
+  // var() reads and every way a custom property can be set. Counting only
+  // colour primitives, a read inside the token files is where they belong.
+  const primitives = ctx.primitivesOutside?.has(file) ? new Set() : ctx.primitives
   for (const m of code.matchAll(VAR_READ)) {
     const name = m[1]
     const end = m.index + m[0].indexOf(name) + name.length
     if (code[end] === '$') continue // `var(--space-${n})` is built at runtime
     if (!m[2]) reads.push({ name, line: li.lineOf(m.index), snippet: snippetOf(source, li, m.index) })
-    if (ctx.primitives.has(name)) add(m.index, 'primitive-read', name)
+    if (primitives.has(name)) add(m.index, 'primitive-read', name)
   }
   collectDefinitions(code, defs)
 
   return { findings, reads, defs }
+}
+
+// What a file's header says through the roles: its scopes, the custom
+// properties it defines, the widths it allows, and its place in the taxonomy.
+function fileInfo(file, source, ctx) {
+  const { rules, entries } = extractRules(source, ctx.headerKeys)
+  const roles = headerRoles(entries, ctx.roles)
+  const { group, tier } = placeFile(file, source, rules.group, ctx.taxonomy)
+  return { scopes: roles.scopes, definitions: new Set(roles.definitions), breakpoints: roles.breakpoints.map((b) => b.width), group, tier }
+}
+
+// audit.exempt as one test per kind: is this file exempt from it? A file is
+// when a scope role has a listed value ('*' for any), its tier or group is
+// listed, or a glob matches it.
+function exemptions(config) {
+  const tests = new Map()
+  for (const [kind, spec] of Object.entries(config.audit?.exempt ?? {})) {
+    const files = compileGlobs([].concat(spec?.files ?? []))
+    const tiers = new Set([].concat(spec?.tiers ?? []))
+    const groups = new Set([].concat(spec?.groups ?? []))
+    const roles = Object.entries(spec?.roles ?? {})
+    const scoped = (info) => roles.some(([key, want]) => key in info.scopes && (want === '*' || [].concat(want).includes(info.scopes[key])))
+    tests.set(kind, (file, info) => files(file) || tiers.has(info.tier) || groups.has(info.group) || scoped(info))
+  }
+  return tests
+}
+
+// Custom properties that hold a colour: a literal, channels, a colour
+// function, or a var() of another colour property; and the DTCG colours.
+function colorProperties(customProps, dtcgTokens) {
+  const colors = new Set(dtcgTokens.filter((t) => (t.type ?? t.groupType) === 'color').map((t) => t.cssVar))
+  const literal = (v) => parseColor(v) !== null || channelColor(v) !== null || /^(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark)\(/i.test(v)
+  for (const p of customProps) if (literal(p.value)) colors.add(p.name)
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const p of customProps) {
+      const alias = /^var\(\s*(--[\w-]+)\s*\)$/.exec(p.value)?.[1]
+      if (alias && colors.has(alias) && !colors.has(p.name)) {
+        colors.add(p.name)
+        grew = true
+      }
+    }
+  }
+  return colors
+}
+
+// The colour primitives the token files define: custom properties whose
+// every value is a literal colour or colour channels, never a var().
+function stylePrimitives(customProps) {
+  const values = new Map()
+  for (const p of customProps) values.set(p.name, [...(values.get(p.name) ?? []), p.value])
+  const literal = (v) => !/var\(/.test(v) && (parseColor(v) !== null || channelColor(v) !== null)
+  return new Set([...values].filter(([, list]) => list.every(literal)).map(([name]) => name))
 }
 
 function collectDefinitions(code, defs) {
@@ -466,7 +656,7 @@ const normalizeValue = (kind, value) => {
 
 export function offendersOf(findings) {
   const kinds = {}
-  for (const kind of KINDS) kinds[kind] = {}
+  for (const kind of ALL_KINDS) kinds[kind] = {}
   for (const f of findings) {
     const key = `${f.file}: ${normalizeValue(f.kind, f.value)}`
     kinds[f.kind][key] = (kinds[f.kind][key] ?? 0) + 1
@@ -474,18 +664,24 @@ export function offendersOf(findings) {
   return kinds
 }
 
+// A baseline's format: 2 once it tracks a kind scripts before 0.3.0 do not
+// know, so they refuse it by name instead of dropping that kind; else 1.
+export const baselineVersion = (kinds) => (Object.keys(kinds).some((k) => NEWER_KINDS.includes(k)) ? 2 : 1)
+
+// One kind's offenders as the baseline records them, keys sorted.
+function recorded(offenders) {
+  const keys = Object.keys(offenders).sort(compare)
+  return { count: keys.reduce((n, k) => n + offenders[k], 0), offenders: Object.fromEntries(keys.map((k) => [k, offenders[k]])) }
+}
+
 function baselineDocument(offenders, skipped) {
   const kinds = {}
-  for (const kind of KINDS) {
+  for (const kind of ALL_KINDS) {
     if (skipped.has(kind)) continue
-    const keys = Object.keys(offenders[kind]).sort(compare)
-    kinds[kind] = {
-      count: keys.reduce((n, k) => n + offenders[kind][k], 0),
-      offenders: Object.fromEntries(keys.map((k) => [k, offenders[kind][k]])),
-    }
+    kinds[kind] = recorded(offenders[kind])
   }
   return {
-    version: 1,
+    version: baselineVersion(kinds),
     generatedBy: 'massimo audit',
     note: 'Raw design values by kind and offender ("<file>: <value>": count). `audit.mjs --check` fails when any offender rises or a new one appears, even if the kind total holds. `--lower` records only counts that fell and never a rise. Raise or add an offender by hand, in a reviewed change that says why; move a key by hand when a file is renamed.',
     kinds,
@@ -502,7 +698,7 @@ function lowerBaseline(baseline, offenders, skipped) {
   const rises = []
   let lowered = 0
   let dropped = 0
-  for (const kind of KINDS) {
+  for (const kind of ALL_KINDS) {
     if (skipped.has(kind)) {
       if (baseline.kinds?.[kind]) kinds[kind] = baseline.kinds[kind]
       continue
@@ -510,8 +706,7 @@ function lowerBaseline(baseline, offenders, skipped) {
     const base = baseline.kinds?.[kind]
     const current = offenders[kind]
     if (!base) {
-      const keys = Object.keys(current).sort(compare)
-      kinds[kind] = { count: keys.reduce((n, k) => n + current[k], 0), offenders: Object.fromEntries(keys.map((k) => [k, current[k]])) }
+      kinds[kind] = recorded(current)
       continue
     }
     const kept = {}
@@ -530,11 +725,14 @@ function lowerBaseline(baseline, offenders, skipped) {
   }
   const unknown = unknownKinds(baseline)
   for (const kind of unknown) kinds[kind] = baseline.kinds[kind]
-  return { document: { ...baseline, kinds }, rises, lowered, dropped, unknown }
+  // A kind newer scripts track moves the file up a format, never down.
+  const version = baselineVersion(kinds)
+  const document = version > (baseline.version ?? 1) ? { ...baseline, version, kinds } : { ...baseline, kinds }
+  return { document, rises, lowered, dropped, unknown }
 }
 
 // Kinds in a baseline that this version of the audit does not measure.
-const unknownKinds = (baseline) => Object.keys(baseline.kinds ?? {}).filter((k) => !KINDS.includes(k)).sort(compare)
+const unknownKinds = (baseline) => Object.keys(baseline.kinds ?? {}).filter((k) => !ALL_KINDS.includes(k)).sort(compare)
 
 // Offenders that rose or are new against the baseline; kinds the baseline does
 // not track are left out, and `fell` counts offenders that dropped or vanished.
@@ -542,7 +740,7 @@ function compareToBaseline(baseline, offenders, skipped) {
   const rises = []
   let fell = 0
   const untracked = []
-  for (const kind of KINDS) {
+  for (const kind of ALL_KINDS) {
     if (skipped.has(kind)) continue
     const base = baseline.kinds?.[kind]
     if (!base) {
@@ -565,6 +763,22 @@ export function maskTokenDeclarations(text) {
   return text.replace(/(--[\w-]+\s*:)([^;{}]*)/g, (_, decl, value) => decl + value.replace(/[^\n]/g, ' '))
 }
 
+// The kinds this run reports. Every project gets KINDS; the breakpoint kind
+// joins with tokens.breakpoints. A kind set to false in audit.kinds is
+// reported as skipped, and its findings are dropped before anything counts.
+// `warnings` name settings that point at nothing.
+function kindsFor(config) {
+  const settings = config.audit?.kinds ?? {}
+  const kinds = [...KINDS, ...(config.tokens?.breakpoints ? ['breakpoint'] : [])]
+  const off = new Set(kinds.filter((k) => settings[k] === false))
+  const warnings = []
+  for (const [setting, list] of [['audit.kinds', Object.keys(settings)], ['audit.exempt', Object.keys(config.audit?.exempt ?? {})]]) {
+    for (const k of list) if (!ALL_KINDS.includes(k)) warnings.push(`${setting} names "${k}", which is not a kind: ${ALL_KINDS.join(', ')}`)
+  }
+  if (settings.breakpoint !== undefined && !kinds.includes('breakpoint')) warnings.push('audit.kinds sets breakpoint, which only runs with tokens.breakpoints')
+  return { kinds, off, warnings }
+}
+
 export function runAudit(root, config, { cluster = 0.03 } = {}) {
   const all = walk(root, { ignore: config.ignore })
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
@@ -576,6 +790,8 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
   })()
   const isProjectFile = projectRel ? compileGlobs([`${projectRel}/**`]) : () => false
   const skipped = new Map()
+  const { kinds, off, warnings } = kindsFor(config)
+  const turnedOn = (kind) => config.audit?.kinds?.[kind] === true
 
   // Tokens: colours the repo already has, DTCG primitives and definitions.
   const customProps = []
@@ -586,18 +802,35 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
   } catch {
     // an invalid token file is tokens.mjs's problem to report
   }
-  const primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value)).map((t) => t.cssVar))
-  if (dtcgTokens.length === 0) skipped.set('primitive-read', 'no token set yet')
+  // Every literal DTCG token is a primitive, unless audit.primitives is
+  // 'color': then only colours count, and with no DTCG set yet, the literal
+  // colours the token files define, read anywhere but those files.
+  const colorPrimitives = config.audit?.primitives === 'color'
+  let primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value)).map((t) => t.cssVar))
+  if (colorPrimitives) {
+    primitives = dtcgTokens.length > 0 ? new Set(dtcgTokens.filter((t) => !isAlias(t.value) && (t.type ?? t.groupType) === 'color').map((t) => t.cssVar)) : stylePrimitives(customProps)
+  }
+  if (dtcgTokens.length === 0 && primitives.size === 0) skipped.set('primitive-read', 'no token set yet')
 
   const styling = config.styling ?? []
   const libraries = classLibraries(config)
   const hasTailwind = styling.some((s) => /^tailwind/.test(s))
+  // Set to true in audit.kinds, the palette kind also counts the colours a
+  // Tailwind config defines as the repo's own, and runs on those alone.
+  const theme = turnedOn('tailwind-palette') || config.tokens?.breakpoints ? tailwindTheme(root, config.tokens?.tailwindConfig) : null
   const ownColors = new Set([
     ...customProps.map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
     ...dtcgTokens.filter((t) => t.path[0] === 'color').map((t) => t.path.slice(1).join('-')),
+    ...(turnedOn('tailwind-palette') ? tailwindColorNames(theme) : []),
   ])
   const palette = hasTailwind && ownColors.size > 0
   if (!palette) skipped.set('tailwind-palette', hasTailwind ? 'no colour tokens of its own' : 'no Tailwind in styling')
+
+  // The breakpoint scale, in rem, and the Tailwind screens its variants name.
+  const scale = config.tokens?.breakpoints
+  const breakpoints = scale ? [...(scale.scale ?? []), ...(scale.twins ?? [])].map(String).map(remOf).filter(Number.isFinite) : null
+
+  for (const k of off) skipped.set(k, 'turned off in audit.kinds')
 
   // Generated token outputs are skipped whole. Style files are audited too:
   // only their custom property declarations are where raw values belong, so
@@ -608,14 +841,31 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
     (f) => !outputSet.has(f) && !isProjectFile(f),
   )
   const scannedSet = new Set(scanned)
-  const ctx = { primitives, palette, ownColors, tailwindText: new Map(), inventory: {} }
-  const findings = []
+  const ctx = {
+    primitives,
+    primitivesOutside: colorPrimitives ? styleSet : null,
+    palette,
+    ownColors,
+    tailwindText: new Map(),
+    inventory: {},
+    arbitraryColorOnly: config.audit?.arbitrary === 'color',
+    colorVars: config.audit?.arbitrary === 'color' ? colorProperties(customProps, dtcgTokens) : new Set(),
+    breakpoints,
+    screens: breakpoints ? tailwindScreens(theme) : {},
+    headerKeys: knownKeys(config),
+    roles: keyRoles(config).roles,
+    taxonomy: config.graph?.taxonomy ?? null,
+  }
+  const infos = new Map()
+  let findings = []
   const allReads = []
   const defined = new Set()
   for (const file of scanned) {
     const raw = readFileSync(join(root, file), 'utf8')
     const source = styleSet.has(file) ? maskTokenDeclarations(raw) : raw
-    const result = scanFile(file, source, ctx)
+    const info = fileInfo(file, raw, ctx)
+    infos.set(file, info)
+    const result = scanFile(file, source, ctx, info)
     findings.push(...result.findings)
     for (const r of result.reads) allReads.push({ file, ...r })
     for (const d of result.defs) defined.add(d)
@@ -643,13 +893,25 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
     if (defined.has(r.name) || RUNTIME_VAR.test(r.name)) continue
     if (styling.includes('tailwind4') && TAILWIND4_NAMESPACES.test(r.name)) continue
     if (libraryVar?.test(r.name)) continue
+    // A header's definitions role: a parent or a script sets it for this file.
+    if (infos.get(r.file)?.definitions.has(r.name)) continue
     findings.push({ file: r.file, line: r.line, kind: 'undefined-var', value: r.name, snippet: r.snippet })
   }
+
+  // Kinds turned off, and files exempt from a kind, leave no finding behind.
+  const exempt = exemptions(config)
+  const exempted = {}
+  findings = findings.filter((f) => {
+    if (off.has(f.kind)) return false
+    if (!exempt.get(f.kind)?.(f.file, infos.get(f.file))) return true
+    exempted[f.kind] = (exempted[f.kind] ?? 0) + 1
+    return false
+  })
 
   findings.sort((a, b) => compare(a.file, b.file) || a.line - b.line || compare(a.kind, b.kind) || compare(a.value, b.value))
 
   // Aggregates.
-  const totals = Object.fromEntries(KINDS.map((k) => [k, 0]))
+  const totals = Object.fromEntries(kinds.map((k) => [k, 0]))
   const perFile = new Map()
   for (const f of findings) {
     totals[f.kind]++
@@ -768,7 +1030,13 @@ export function runAudit(root, config, { cluster = 0.03 } = {}) {
         .map(([family, map]) => [family, [...map.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).map(([value, count]) => ({ value, count }))]),
     ),
     skipped: Object.fromEntries([...skipped.entries()].sort((a, b) => compare(a[0], b[0]))),
+    // Findings audit.exempt left out, by kind; there only when it is set.
+    ...(exempt.size > 0 ? { exempted: Object.fromEntries(Object.entries(exempted).sort((a, b) => compare(a[0], b[0]))) } : {}),
     cluster,
+    // The kinds reported, and settings that point at nothing: read by the
+    // CLI, never written to latest.json.
+    kinds,
+    warnings,
   }
 }
 
@@ -811,8 +1079,9 @@ function renderMarkdown(result, date, command) {
   out.push(`- Arbitrary values: ${canon.arbitraryValues}`, '')
 
   out.push('## Findings by kind', '')
-  for (const kind of KINDS) {
-    out.push(skipped[kind] ? `- ${kind}: skipped (${skipped[kind]})` : `- ${kind}: ${totals[kind]}`)
+  for (const kind of result.kinds ?? KINDS) {
+    const exempt = result.exempted?.[kind] ? ` (${result.exempted[kind]} exempt by audit.exempt)` : ''
+    out.push(skipped[kind] ? `- ${kind}: skipped (${skipped[kind]})` : `- ${kind}: ${totals[kind]}${exempt}`)
   }
   out.push('')
 
@@ -908,7 +1177,10 @@ function main() {
   }
 
   const result = runAudit(root, config, { cluster })
-  const skipped = new Set(Object.keys(result.skipped))
+  for (const w of result.warnings) process.stderr.write(`massimo audit: warn: ${w}\n`)
+  // Not measured this run: skipped kinds, and kinds whose key is not set,
+  // whose baseline entries stand as they are.
+  const skipped = new Set([...Object.keys(result.skipped), ...ALL_KINDS.filter((k) => !result.kinds.includes(k))])
   const offenders = offendersOf(result.findings)
   const baselinePath = join(projectDir, 'audits', 'baseline.json')
   const shown = (name) => {
@@ -944,7 +1216,7 @@ function main() {
   const date = today()
   const auditsDir = join(projectDir, 'audits')
   mkdirSync(auditsDir, { recursive: true })
-  const { findings, ...summary } = result
+  const { findings, kinds, warnings, ...summary } = result
   const json = { version: 1, generatedBy: 'massimo audit', date, ...summary, findings }
   writeFileSync(join(auditsDir, 'latest.json'), `${JSON.stringify(json, null, 2)}\n`)
   writeFileSync(join(auditsDir, 'latest.md'), renderMarkdown(result, date, scriptCommand(root, projectDir, 'audit')))
