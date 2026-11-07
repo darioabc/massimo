@@ -24,8 +24,10 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── handoffs/<topic>.md        translate specs ready to build
 ├── tidy/backlog.md            the tidy batches, their status and results
 ├── figma/                     export.json (what the file holds, read by read-library.js), mirror.json (what was mirrored, with ids), drift.md
-├── adopt/                     inventory.json and inventory.md (adopt.mjs scan), ledger.json (what becomes of each part of the
-│                              repo's own setup, and where each class stands), config.proposed.json (adopt.mjs plan)
+├── adopt/                     inventory.json and inventory.md (adopt.mjs scan); ledger.json (adopt.mjs plan): what becomes of each
+│                              part of the repo's own setup, where each class stands, the differences accepted with their
+│                              reasons, the audit's map onto the repo's ratchet, and the docs marked historical;
+│                              config.proposed.json (adopt.mjs plan)
 ├── shots/                     screenshots (gitignored; regenerate any time), except shots/kept/
 │   └── kept/<topic>/          screenshots a handoff, brief or baseline links to (committed)
 └── scripts/                   vendored massimo scripts, so CI and teammates without the plugin can run them
@@ -53,7 +55,7 @@ Keys for a repo that already has its own design-system setup, all inert until se
 | id | skill | done when |
 |---|---|---|
 | `setup` | `start` | config, product.md and the project folder exist |
-| `adopt` | `adopt` | optional, to do only when the repo has a setup of its own; every class in `adopt/ledger.json` is cut over or retired. The ledger is where adopt stands; the phase note is a view of it |
+| `adopt` | `adopt` | optional, to do only when the repo has a setup of its own; every class in `adopt/ledger.json` (graph, stories, audit, tokens, docs) is cut over or retired, each having moved through found, mapped, shadowed and proven. The ledger is where adopt stands; the phase note is a view of it, rebuilt on each `adopt.mjs plan` and `mark` |
 | `graph` | `graph` | graph.md is generated and its unresolved-import list is empty or explained |
 | `stories` | `stories` | the native story lane runs and the agreed set of components has baseline stories |
 | `tokens` | `tokens` | tokens.json exists, builds into the repo's styling, and the user approved each group |
@@ -72,7 +74,7 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 | script | does |
 |---|---|
 | `detect.mjs` | reads the repo and prints the stack as JSON, with a suggested config, and `adoptable` when the repo has a setup of its own to adopt |
-| `adopt.mjs` | `scan`: what the repo already has (story tools and lanes, a census of its `ds:` keys, its own graph, ratchet, token files, DESIGN.md and the script that writes them) and who depends on each; read-only, printed before init and written to `<project>/adopt/inventory.json` and `inventory.md` after. `plan`: the ledger and the proposed config. `config`: the proposal as a diff against the config, merged in with `--write` (it adds keys and never overwrites a value the user set; a config with comments is left for a hand edit). `status`: the ledger as a table. `mark <class> <state>`: moves a class (graph, stories, audit, tokens, docs) one state on through found, mapped, shadowed, proven, cut-over (with `--batch <id>`) and retired; never past a blocker; `--force` goes back or skips states, to repair the ledger. A new asset in a class past found takes its class back to found until it is agreed |
+| `adopt.mjs` | `scan`: what the repo already has (story tools and lanes, a census of its `ds:` keys, its own graph, ratchet, token files, DESIGN.md and the script that writes them) and who depends on each; read-only, printed before init and written to `<project>/adopt/inventory.json` and `inventory.md` after. `plan`: the ledger and the proposed config. `config`: the proposal as a diff against the config, merged in with `--write` (it adds keys and never overwrites a value the user set; a config with comments is left for a hand edit). `status`: the ledger as a table. `mark <class> <state>`: moves a class (graph, stories, audit, tokens, docs) one state on through found, mapped, shadowed, proven, cut-over (with `--batch <id>`, the id its commit's `Adopt-Batch` trailer carries) and retired; never past a blocker; `--force` goes back or skips states, to repair the ledger. A new asset in a class past found takes its class back to found until it is agreed. `verify [<class>]`: massimo's graph, story lane, audit and token inventory set beside the repo's own (its generated graph or index, its ratchet by the ledger's map, its token inventory), as a table per class, exiting 1 on any difference the ledger has not accepted; `--against <file>` names the repo's file; `verify stories --pairs <file> --a <url> --b <url>` writes a `shoot.mjs` pairs file from the manifest, and `--shoot` runs it. It records nothing. `accept <class> '<key>' --why <text>`: accepts a difference verify printed, with the reason. `historical [<path>]`: marks a doc as a record of how things were, which retire leaves as it is, or lists them. `retire <class> --dry-run`: what retiring a class takes out (its assets marked retire or convert, and the package scripts and workflow jobs that run them) and every consumer still outside the historical docs, exiting 1 while one remains; without `--dry-run` it refuses, since deleting is the adopt skill's job |
 | `init.mjs` | writes config, project folder, templates, vendored scripts, npm scripts; never overwrites |
 | `state.mjs` | `show`, `next`, `set`, `decide`, `explore`, `render` |
 | `graph.mjs` | writes graph.md/json; `--check` for CI |

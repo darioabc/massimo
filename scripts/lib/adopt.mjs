@@ -29,6 +29,8 @@ const LEDGER_NOTE =
 
 // ── Reading ─────────────────────────────────────────────────────────────────
 
+const isText = (v) => typeof v === 'string' && v.trim() !== ''
+
 // The values the ledger may hold, so a hand edit with a typo is caught.
 function ledgerProblems(ledger) {
   const out = []
@@ -40,6 +42,13 @@ function ledgerProblems(ledger) {
       if (!LOSSES.includes(a.loss)) out.push(`${a.id} has loss "${a.loss}", not one of ${LOSSES.join(', ')}`)
       if (!STATES.includes(a.state)) out.push(`${a.id} has state "${a.state}", not one of ${STATES.join(', ')}`)
     }
+    if (c.accepted !== undefined && !(Array.isArray(c.accepted) && c.accepted.every((d) => isText(d?.key) && isText(d?.why)))) {
+      out.push(`${name}.accepted must be a list of { key, why }, as adopt.mjs accept writes it`)
+    }
+    if (c.verify !== undefined && !(isText(c.verify?.ratchet) && typeof c.verify?.map === 'string')) out.push(`${name}.verify must be { ratchet, map, kept }, as adopt.mjs plan writes it`)
+  }
+  if (ledger?.historical !== undefined && !(Array.isArray(ledger.historical) && ledger.historical.every((h) => isText(h?.path)))) {
+    out.push('historical must be a list of { path }, as adopt.mjs historical writes it')
   }
   return out
 }
@@ -234,9 +243,107 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
     const wasAt = was ? STATES.indexOf(was.state) : 0
     const at = Math.min(wasAt, ...entries.filter((a) => !a.missing).map(standing))
     const same = was && at === wasAt
-    classes[cls] = { state: STATES[at], date: same ? was.date : date, batch: same ? was.batch : at >= CUT_OVER ? was.batch : null, assets: entries.sort((a, b) => compare(a.id, b.id)) }
+    const verify = cls === 'audit' ? auditVerify(inv, was?.verify) : null
+    classes[cls] = {
+      state: STATES[at],
+      date: same ? was.date : date,
+      batch: same ? was.batch : at >= CUT_OVER ? was.batch : null,
+      assets: entries.sort((a, b) => compare(a.id, b.id)),
+      ...(verify ? { verify } : {}),
+      ...(was?.accepted?.length ? { accepted: was.accepted } : {}),
+    }
   }
-  return { format: LEDGER_FORMAT, generatedBy: 'massimo adopt', note: LEDGER_NOTE, classes }
+  const historical = previous?.historical ?? []
+  return { format: LEDGER_FORMAT, generatedBy: 'massimo adopt', note: LEDGER_NOTE, classes, ...(historical.length ? { historical } : {}) }
+}
+
+// What verify audit compares the audit with: the repo's ratchet, the map of
+// its rules to massimo's kinds (by name, which you may edit here), and the
+// rules with no kind, which the repo keeps, through guard.extraChecks. A map
+// agreed on the same ratchet is kept as it was.
+function auditVerify(inv, was) {
+  const ratchet = inv.own.ratchets[0]
+  if (!ratchet) return null
+  if (was?.ratchet === ratchet.path) return was
+  return { ratchet: ratchet.path, map: ratchet.map, kept: ratchet.unmapped }
+}
+
+// ── Accepting a difference, and historical docs ─────────────────────────────
+
+// Accept a difference verify reports, by its key, with the reason; a key
+// accepted before takes the new reason. Returns a line on what changed.
+export function acceptDifference(ledger, cls, key, why, { date = today() } = {}) {
+  const c = ledger.classes[cls]
+  if (!c) throw new Error(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
+  if (!isText(key)) throw new Error('accept needs the key verify printed for the difference')
+  if (!isText(why)) throw new Error('accept needs --why <text>: the reason the difference is fine, for whoever reads the ledger next')
+  const list = (c.accepted ?? []).filter((d) => d.key !== key)
+  const again = list.length !== (c.accepted ?? []).length
+  c.accepted = [...list, { key, why: why.trim(), date }].sort((a, b) => compare(a.key, b.key))
+  return `${cls}: ${again ? 'accepted again, with the new reason' : 'accepted'}: ${key}`
+}
+
+// Mark a doc historical: a record of how things were, which retire leaves as
+// it is, so it does not hold a retirement up.
+export function markHistorical(ledger, path, { date = today() } = {}) {
+  const list = ledger.historical ?? []
+  if (list.some((h) => h.path === path)) return `${path} is already historical`
+  ledger.historical = [...list, { path, date }].sort((a, b) => compare(a.path, b.path))
+  return `${path} is historical: retire leaves it as it is`
+}
+
+// ── Retiring a class ────────────────────────────────────────────────────────
+
+// What retiring a class takes out, from the ledger and a fresh scan: the
+// assets that go (marked retire, or convert, whose place massimo's own
+// output takes), the package scripts that run them and the workflow jobs
+// that run those, which go with them, and every other consumer, which must
+// be repointed first unless it is a doc the ledger marks historical. Files
+// a retiring generator also writes for another class are listed, as they
+// lose their writer. `jobAt(file, line)` names a workflow's job at a line.
+export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
+  const c = ledger.classes[cls]
+  const historical = new Set((ledger.historical ?? []).map((h) => h.path))
+  const fresh = new Map(inv.assets.map((a) => [a.id, a]))
+  const going = c.assets.filter((a) => a.decision !== 'keep' && !a.missing)
+  const goingPaths = going.flatMap((a) => fresh.get(a.id)?.paths ?? a.paths)
+  const goes = (file) => goingPaths.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
+  const scripts = [...new Set(going.flatMap((a) => fresh.get(a.id)?.scripts ?? []))].sort(compare)
+  const consumers = new Map()
+  const jobs = new Map()
+  for (const a of going) {
+    for (const k of fresh.get(a.id)?.consumers ?? []) {
+      if (goes(k.file)) continue
+      if (k.class === 'ci' && k.how === 'runs' && scripts.includes(k.via)) {
+        const job = jobAt(k.file, k.line)
+        const id = `${k.file}#${job?.id ?? k.line}`
+        jobs.set(id, { file: k.file, line: k.line, job: job?.id ?? null, name: job?.name ?? null, via: [...new Set([...(jobs.get(id)?.via ?? []), k.via])].sort(compare) })
+        continue
+      }
+      // A file that depends on several assets is listed once, as its
+      // strongest tie: a deploy read before a CI run before a mention.
+      const id = `${k.file}#${k.script ?? ''}`
+      const seen = consumers.get(id)
+      const stronger = !seen || CONSUMER_CLASSES.indexOf(k.class) < CONSUMER_CLASSES.indexOf(seen.class)
+      consumers.set(id, { ...(stronger ? k : seen), assets: [...(seen?.assets ?? []), a.id] })
+    }
+  }
+  const all = [...consumers.values()].sort((x, y) => compare(x.file, y.file) || compare(x.script ?? '', y.script ?? ''))
+  const kept = (k) => k.class === 'docs' && historical.has(k.file)
+  const writers = going.filter((a) => a.kind === 'generator').flatMap((a) => inv.own.generators.filter((g) => a.paths.includes(g.path)))
+  const elsewhere = [...new Set(writers.flatMap((g) => g.writes))].filter((p) => !goes(p)).sort(compare).map((path) => {
+    const [name, other] = Object.entries(ledger.classes).find(([, x]) => x.assets.some((a) => a.paths.includes(path))) ?? []
+    return { path, class: name ?? null, state: other?.state ?? null }
+  })
+  return {
+    state: c.state,
+    going: going.map((a) => ({ id: a.id, decision: a.decision, paths: fresh.get(a.id)?.paths ?? a.paths, found: fresh.has(a.id) })),
+    scripts,
+    jobs: [...jobs.values()].sort((x, y) => compare(x.file, y.file) || (x.line ?? 0) - (y.line ?? 0)),
+    consumers: all.filter((k) => !kept(k)),
+    historical: all.filter(kept),
+    elsewhere,
+  }
 }
 
 // ── Moving a class ──────────────────────────────────────────────────────────

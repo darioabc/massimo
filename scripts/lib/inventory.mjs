@@ -677,6 +677,34 @@ export function workflowText(text) {
   return lines.join('\n')
 }
 
+// The job of a workflow that holds a line: its key under `jobs:` and its
+// `name:`, or null when the line is outside every job.
+export function workflowJob(text, line) {
+  const lines = text.split(/\r?\n/)
+  const jobsAt = lines.findIndex((l) => /^jobs:\s*(?:#.*)?$/.test(l))
+  if (jobsAt === -1 || !line || line - 1 <= jobsAt) return null
+  let job = null
+  let indent = null
+  // The indent of the job's own keys, where its `name:` sits.
+  let own = null
+  for (let i = jobsAt + 1; i < lines.length && i < line; i++) {
+    const l = lines[i]
+    if (!l.trim() || /^\s*#/.test(l)) continue
+    const at = l.length - l.trimStart().length
+    if (at === 0) return null
+    indent ??= at
+    if (at === indent) {
+      job = { id: /^\s*([\w.-]+):/.exec(l)?.[1] ?? l.trim(), name: null }
+      own = null
+      continue
+    }
+    own ??= at
+    const name = at === own ? /^\s*name:\s*(['"]?)(.+?)\1\s*$/.exec(l) : null
+    if (job && name && !job.name) job.name = name[2]
+  }
+  return job
+}
+
 // A component file (.astro, .vue, .svelte) with its markup blanked: what is
 // left is the code that runs, its frontmatter, <script> and <style> blocks,
 // and the import and read calls in its template. A path or a command in the

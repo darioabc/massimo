@@ -906,6 +906,14 @@ export function compareLegacy(legacy, pairs, offenders, skippedReasons) {
   })
 }
 
+// Why each kind a run did not measure was left out: skipped this run, or
+// its key is not set.
+export function notMeasured(result) {
+  const reasons = new Map(Object.entries(result.skipped))
+  for (const k of ALL_KINDS) if (!result.kinds.includes(k)) reasons.set(k, `${k === 'breakpoint' ? 'tokens.breakpoints' : 'stories.manifest'} is not set`)
+  return reasons
+}
+
 // The comparison as a table, then each file that differs. `tracked` lists
 // the kinds a baseline already there records, which an import keeps.
 function importReport(rows, legacyRules, measured, tracked) {
@@ -1374,9 +1382,7 @@ function importLegacy(flags, { root, projectDir, result, offenders, baselinePath
   if (!existsSync(path)) fail(`no ratchet file at ${flags.import}`)
   const legacy = readJson(path, null)
   if (!legacy || typeof legacy.rules !== 'object' || legacy.rules === null) fail(`${flags.import} is not a ratchet of the shape { note, rules: { <rule>: { count, offenders } } }`)
-  // Why a kind was not measured: skipped this run, or its key is not set.
-  const reasons = new Map(Object.entries(result.skipped))
-  for (const k of ALL_KINDS) if (!result.kinds.includes(k)) reasons.set(k, `${k === 'breakpoint' ? 'tokens.breakpoints' : 'stories.manifest'} is not set`)
+  const reasons = notMeasured(result)
   const rows = compareLegacy(legacy, pairs, offenders, reasons)
   const measured = result.kinds.filter((k) => !reasons.has(k))
   const before = readJson(baselinePath, null)
