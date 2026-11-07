@@ -373,7 +373,7 @@ function verifyAudit(ledger) {
   if (!legacy || typeof legacy.rules !== 'object' || legacy.rules === null) return { title, differences: [{ key: 'ratchet', detail: `${v.ratchet} is not there, or not a ratchet of the shape { rules: { <rule>: { count, offenders } } }` }] }
   // A map with no rule in it: plan found no rule whose name is a kind.
   const rules = Object.keys(legacy.rules)
-  const fix = `name the massimo kind each rule counts in audit.verify.map in ${shown('ledger.json')}, as <rule>=<kind> pairs${rules.length ? ` such as ${rules[0]}=color` : ''}, or keep the ratchet as the repo's own check`
+  const fix = `name the massimo kind each rule counts in audit.verify.map in ${shown('ledger.json')}, as <rule>=<kind> pairs (the kinds: ${ALL_KINDS.join(', ')}), or keep the ratchet as the repo's own check`
   if (!v.map.split(',').some((p) => p.trim())) return { title, differences: [{ key: 'map', detail: `no rule of ${v.ratchet} (${rules.join(', ') || 'none'}) maps to a massimo kind, so there is nothing to compare: ${fix}` }] }
   let pairs
   try {

@@ -332,7 +332,7 @@ test('plan proposes the audit map from the rule names and keeps the one you edit
   const bad = adopt('verify', 'audit')
   assert.equal(bad.status, 1)
   assert.equal(bad.stderr, '')
-  assert.match(bad.stdout, /\n  open {6}map  audit\.verify\.map does not read: it names "colour", which is not a kind: [^;]+; name the massimo kind each rule counts in audit\.verify\.map in design-system\/adopt\/ledger\.json, as <rule>=<kind> pairs such as raw-colour=color, or keep the ratchet as the repo's own check\n/)
+  assert.match(bad.stdout, /\n  open {6}map  audit\.verify\.map does not read: it names "colour", which is not a kind: [^;]+; name the massimo kind each rule counts in audit\.verify\.map in design-system\/adopt\/ledger\.json, as <rule>=<kind> pairs \(the kinds: color, arbitrary, [a-z, -]+\), or keep the ratchet as the repo's own check\n/)
   l.classes.audit.verify.map = 'raw-colour=color'
   writeFileSync(path, JSON.stringify(l, null, 2))
 })
@@ -379,7 +379,7 @@ test('one class that cannot run is its own difference; the others still print, a
     assert.equal(r.status, 1)
     assert.equal(r.stderr, '')
     for (const cls of ['graph', 'stories', 'audit', 'tokens']) assert.match(r.stdout, new RegExp(`(^|\\n)massimo adopt verify ${cls}: `), cls)
-    assert.match(r.stdout, /\n  open {6}map  no rule of docs\/system\/ratchet\.json \(hex-literals, no-raw-px\) maps to a massimo kind, so there is nothing to compare: name the massimo kind each rule counts in audit\.verify\.map in design-system\/adopt\/ledger\.json, as <rule>=<kind> pairs such as hex-literals=color, or keep the ratchet as the repo's own check\n/)
+    assert.match(r.stdout, /\n  open {6}map  no rule of docs\/system\/ratchet\.json \(hex-literals, no-raw-px\) maps to a massimo kind, so there is nothing to compare: name the massimo kind each rule counts in audit\.verify\.map in design-system\/adopt\/ledger\.json, as <rule>=<kind> pairs \(the kinds: color, arbitrary, [a-z, -]+\), or keep the ratchet as the repo's own check\n/)
     assert.match(r.stdout, /\nmassimo adopt verify: graph passes, stories passes, audit 1 open difference, tokens \d+ open differences?\n$/)
     // Whatever stops a class is its difference, key error: here a graph.json
     // a newer massimo wrote, which stories reads.
