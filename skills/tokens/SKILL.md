@@ -32,7 +32,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 7. **Build and wire.** `node <project>/scripts/tokens.mjs build`. Import the outputs where the app loads its global CSS or theme config. Add `"ds:tokens": "node <project>/scripts/tokens.mjs build"` to package.json. Do not yet rewrite components to use the tokens: that is the tidy phase.
 8. **Prove nothing broke.** Run the app's build. If the story lane exists, screenshot five of the most-used components' stories before step 7 and after (`shoot.mjs`, then `shoot.mjs --diff`). Wiring tokens should change nothing visible yet; any diff is a wiring mistake (an overridden variable, a changed default) to fix now.
 9. **Contrast.** `node <project>/scripts/tokens.mjs check`. List failing pairs against the accessibility bar in `product.md`, and resolve each with the user (adjust the token or accept it with a recorded reason).
-10. **Kit.** The build also refreshed `<project>/kit/kit.css`, so ux mockups now use the real tokens.
+10. **Kit.** The build also refreshed `<project>/kit/kit.css`, so ux mockups now use the real tokens. Where pages list the tokens themselves (a Foundations story, a docs page), point them at the inventory instead of a hand-kept list: `node <project>/scripts/tokens.mjs resolved` writes `<project>/tokens/resolved.json` with every custom property per selector, the type classes, the faces and the breakpoints. Set `tokens.inventory` in `massimo.config.json` when it should list more sheets than `tokens.styleFiles`, or name the repo's own layers and families (`<plugin>/reference/project.md` has the shape).
 11. **End.** `state.mjs set tokens done --note "<n> tokens, <outputs>"`. Next step: tidy.
 
 ## Rules

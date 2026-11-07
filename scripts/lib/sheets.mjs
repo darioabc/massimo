@@ -9,11 +9,14 @@
 // tokens.selectors and tokens.darkMedia, as the build writes them. Any other
 // selector is a scope, kept by its own text, never read as a theme.
 
+import { parseColor, toHex } from './color.mjs'
+import { compare, compileGlobs } from './glob.mjs'
+import { PREFIX_GROUPS, SUFFIX_GROUPS, channelColor } from './readers.mjs'
 import { atRuleKind, classifyMember, scanSource, selectorMembers } from './source.mjs'
 
 const clean = (s) => s.replace(/\s+/g, ' ').trim()
 
-const RULE = /[─-╿]+|-{3,}|={3,}/
+const RULE = /[\u2500-\u257f]+|-{3,}|={3,}/
 const RULES = new RegExp(RULE.source, 'g')
 
 // A comment's text without its markers, its `*` gutters and the rules drawn
@@ -207,13 +210,14 @@ export function themePlacer(config) {
     for (const [selector, mode] of selectorOf) if (selector && member.startsWith(`${selector} `)) return mode
     return null
   }
-  // Why a selector that looks like a theme is kept as a scope, or null.
+  // The theme a scope's selector looks like by the names themes usually
+  // have (`.dark`, `[data-theme="brand"]`), for a note; null when it does not.
   const looksLikeTheme = (member, conditions) => {
     if (member.startsWith('@') || conditions.some((c) => atRuleKind(c).kind !== 'transparent')) return null
     const c = classifyMember(member)
     return c.scope === 'selector' ? c.mode : null
   }
-  return { place, inside, looksLikeTheme, selectorFor: (mode) => [...selectorOf].find(([, m]) => m === mode)?.[0] ?? null }
+  return { place, inside, looksLikeTheme }
 }
 
 // Every custom property declaration in a set of sheets, one entry per member
@@ -244,4 +248,131 @@ export function sheetDeclarations(sheets, config) {
     }
   }
   return { declarations: out, pairs }
+}
+
+// ── The token inventory ─────────────────────────────────────────────────────
+
+const IMPORTANT = /\s*!important$/i
+const VAR_CALL = /var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g
+
+// A value with its var() reads replaced through `lookup`, as a colour: hex
+// when opaque, `rgb(r g b / a)` when not; null when it is not one, or a read
+// stays unresolved. Channel triplets read as the colour they stand for.
+export function resolveColour(value, lookup) {
+  let text = value.replace(IMPORTANT, '')
+  for (let k = 0; k < 8 && text.includes('var('); k++) {
+    const next = text.replace(VAR_CALL, (call, name, fallback) => lookup(name)?.replace(IMPORTANT, '') ?? (fallback === undefined ? call : fallback.trim()))
+    if (next === text) break
+    text = next
+  }
+  if (text.includes('var(')) return null
+  const channels = channelColor(text.trim())
+  const c = parseColor(channels ? channels.value : text)
+  if (!c) return null
+  return c.a >= 1 ? toHex(c) : `rgb(${[c.r, c.g, c.b].map((x) => Math.round(x * 255)).join(' ')} / ${Number(c.a.toFixed(4))})`
+}
+
+// massimo's families for a custom property: by its value when it is a
+// colour, else by the prefixes and suffixes systems name families with (a
+// suffix counts only where its stem has two, as `--h1-size` and
+// `--h1-leading` do), the same reading as the CSS reader's.
+const FAMILY_OF_GROUP = {
+  color: 'color', text: 'typography', 'font-weight': 'typography', leading: 'typography', tracking: 'typography', font: 'typography',
+  spacing: 'spacing', radius: 'radius', shadow: 'shadow', 'border-width': 'border', duration: 'motion', ease: 'motion', z: 'z-index', opacity: 'opacity',
+}
+function builtInFamilies(names) {
+  const stems = new Map()
+  for (const name of names) {
+    const bare = name.slice(2)
+    for (const [re, group] of SUFFIX_GROUPS) {
+      if (re.test(bare)) stems.set(bare.replace(re, ''), new Set([...(stems.get(bare.replace(re, '')) ?? []), group]))
+    }
+  }
+  return (name, colour) => {
+    if (colour) return 'color'
+    const bare = name.slice(2)
+    const prefix = PREFIX_GROUPS.find(([re]) => re.test(bare))
+    if (prefix) return FAMILY_OF_GROUP[prefix[1]] ?? 'other'
+    const suffix = SUFFIX_GROUPS.find(([re]) => re.test(bare))
+    return suffix && stems.get(bare.replace(suffix[0], ''))?.size >= 2 ? FAMILY_OF_GROUP[suffix[1]] : 'other'
+  }
+}
+
+// The layer rules of tokens.inventory, in order: a list of file globs, or
+// { files, names, selectors }, each a list of globs, where `selectors` is
+// matched against the selector a token is first declared under.
+function layerRules(inventory) {
+  return Object.entries(inventory?.layers ?? {}).map(([name, rule]) => {
+    const r = Array.isArray(rule) ? { files: rule } : rule ?? {}
+    const test = (globs) => (globs ? compileGlobs(globs) : () => true)
+    return { name, files: test(r.files), names: test(r.names), selectors: test(r.selectors) }
+  })
+}
+
+const TYPE_PROPS = new Set(['font', 'font-family', 'font-size', 'font-weight', 'line-height'])
+
+// Every custom property a set of sheets declares, as tokens/resolved.json
+// holds them: one token per file and name, with its layer, its family, and
+// its values in source order, one per selector, each with the colour it
+// resolves to in its theme. A theme's values read the root's and its own; a
+// scope's read its theme's (the one it sits inside, or shares a rule with)
+// and its own. Then the type classes and the @font-face rules.
+export function inventoryOf(sheets, config) {
+  const inventory = config.tokens.inventory ?? {}
+  const { inside } = themePlacer(config)
+  const { declarations, pairs } = sheetDeclarations(sheets, config)
+  const envs = new Map([['default', new Map()]])
+  const scopes = new Map()
+  const into = (map, key) => map.get(key) ?? map.set(key, new Map()).get(key)
+  for (const d of declarations) into(d.mode ? envs : scopes, d.mode ?? d.key).set(d.name, d.value)
+  const lookupFor = (d) => {
+    const mode = d.mode ?? inside(d.member) ?? pairs.get(d.key) ?? 'default'
+    const own = d.mode ? null : scopes.get(d.key)
+    const theme = mode === 'default' ? null : envs.get(mode)
+    return (name) => own?.get(name) ?? theme?.get(name) ?? envs.get('default').get(name)
+  }
+  const tokens = []
+  const byKey = new Map()
+  for (const d of declarations) {
+    const key = `${d.file}\n${d.name}`
+    if (!byKey.has(key)) {
+      const token = { name: d.name, file: d.file, layer: null, family: null, values: [] }
+      byKey.set(key, token)
+      tokens.push(token)
+    }
+    const resolved = resolveColour(d.value, lookupFor(d))
+    byKey.get(key).values.push({ selector: d.key, value: d.value, ...(resolved ? { resolved } : {}) })
+  }
+  const layers = layerRules(inventory)
+  const families = Object.entries(inventory.families ?? {}).map(([name, globs]) => ({ name, test: compileGlobs(globs) }))
+  const builtIn = builtInFamilies(tokens.map((t) => t.name))
+  for (const t of tokens) {
+    t.layer = layers.length === 0 ? 'tokens' : layers.find((l) => l.files(t.file) && l.names(t.name) && l.selectors(t.values[0].selector))?.name ?? 'other'
+    t.family = families.find((f) => f.test(t.name))?.name ?? builtIn(t.name, t.values.some((v) => v.resolved))
+  }
+
+  // Type classes: those tokens.inventory.typeClasses names, wherever a
+  // selector uses them, or else every class that is a selector on its own
+  // in a rule that sets a size, line height, weight or family.
+  const named = inventory.typeClasses ? compileGlobs(inventory.typeClasses) : null
+  const typeClasses = new Set()
+  const faces = []
+  for (const { file, css } of sheets) {
+    for (const rule of cssRules(css, file)) {
+      const { members, atRule } = ruleSelectors(rule.headers)
+      if (atRule && /^@font-face$/i.test(members[0])) {
+        const get = (prop) => rule.decls.filter((d) => d.prop === prop).pop()?.value ?? ''
+        faces.push({ family: unquote(get('font-family')), weight: get('font-weight') || 'normal', style: get('font-style') || 'normal', src: /url\(\s*["']?([^"')]+)/.exec(get('src'))?.[1] ?? '', file })
+        continue
+      }
+      if (atRule) continue
+      const setsType = rule.decls.some((d) => TYPE_PROPS.has(d.prop))
+      for (const member of members) {
+        if (named) for (const [, cls] of member.matchAll(/\.([\w-]+)/g)) if (named(cls)) typeClasses.add(cls)
+        if (!named && setsType && /^\.[\w-]+$/.test(member)) typeClasses.add(member.slice(1))
+      }
+    }
+  }
+  const order = (a, b) => compare(a.family, b.family) || compare(a.style, b.style) || compare(a.weight, b.weight) || compare(a.file, b.file) || compare(a.src, b.src)
+  return { tokens, typeClasses: [...typeClasses].sort(compare), faces: faces.sort(order) }
 }

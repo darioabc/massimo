@@ -14,7 +14,7 @@ import { golden, read, readJson, run, scratch } from './helpers.mjs'
 const contexts = []
 after(() => contexts.forEach((c) => c.cleanup()))
 const fresh = () => {
-  const ctx = scratch('mirror')
+  const ctx = scratch('sheets')
   contexts.push(ctx)
   return ctx
 }
@@ -48,7 +48,7 @@ test('golden: every selector rebuilds from the mirror as the CSS declares it', (
   const ctx = fresh()
   const r = run('tokens', ctx, ['mirror'])
   assert.equal(r.status, 0, r.stderr)
-  assert.match(r.stdout, /^massimo tokens mirror: 31 tokens from src\/styles\/theme\.css, 10 with values in scopes, 1 set only in themes or scopes; wrote /)
+  assert.match(r.stdout, /^massimo tokens mirror: 32 tokens from src\/styles\/theme\.css, 11 with values in scopes, 2 set only in themes or scopes; wrote /)
   for (const f of ['tokens.resolver.json', 'base.tokens.json', 'theme/dark.tokens.json']) {
     assert.equal(read(tokensDir(ctx), f), golden(`mirror/${f}`, read(tokensDir(ctx), f)) ?? read(tokensDir(ctx), f), f)
   }
@@ -94,7 +94,11 @@ test('no theme is misread: a scope inside dark, a phone-width override and a str
   assert.deepEqual(gap.scopes, { '@media (max-width: 60rem) :root': 'calc(var(--space-10) + var(--space-4))' })
   assert.deepEqual(base.$extensions.massimo.mirror, {
     from: ['src/styles/theme.css'],
-    scoped: { '--c-art': { scopes: { '.band-block': 'rgb(var(--ink-900))', 'html.dark .band-block': 'rgb(var(--cream-50))' } } },
+    scoped: {
+      '--c-art': { scopes: { '.band-block': 'rgb(var(--ink-900))', 'html.dark .band-block': 'rgb(var(--cream-50))' } },
+      // The comment above `.band-dark {` is the rule's, not the declaration's.
+      '--c-mark': { scopes: { '.band-dark': 'var(--c-focus)' } },
+    },
   })
   assert.match(r.stderr, /note: \.dark looks like the dark theme, but tokens\.darkSelector and tokens\.selectors do not name it, so its values are kept as a scope/)
   assert.match(r.stderr, /note: --c-focus under html\.dark is !important, which a token cannot hold/)
@@ -114,12 +118,11 @@ test('a comment before a declaration, or after it on its line, becomes its descr
 
 test('mirror --check and tokens check fail while the mirror is behind the CSS', () => {
   const ctx = fresh()
-  assert.equal(run('tokens', ctx, ['mirror']).status, 0)
-  assert.equal(run('tokens', ctx, ['build']).status, 0)
+  for (const mode of ['mirror', 'build', 'resolved']) assert.equal(run('tokens', ctx, [mode]).status, 0, mode)
   const ok = run('tokens', ctx, ['mirror', '--check'])
   assert.equal(ok.status, 0, ok.stderr)
-  assert.match(ok.stdout, /up to date with src\/styles\/theme\.css \(31 tokens\)/)
-  assert.match(run('tokens', ctx, ['check']).stdout, /up to date \(31 tokens, 0 stale, 0 contrast failures, mirror current\)/)
+  assert.match(ok.stdout, /up to date with src\/styles\/theme\.css \(32 tokens\)/)
+  assert.match(run('tokens', ctx, ['check']).stdout, /up to date \(32 tokens, 0 stale, 0 contrast failures, mirror current, resolved\.json current\)/)
 
   const css = join(ctx.root, 'src', 'styles', 'theme.css')
   writeFileSync(css, readFileSync(css, 'utf8').replace('--radius-2: 0.5rem;', '--radius-2: 0.75rem;'))
@@ -129,10 +132,9 @@ test('mirror --check and tokens check fail while the mirror is behind the CSS', 
   const check = run('tokens', ctx, ['check'])
   assert.equal(check.status, 1)
   assert.match(check.stderr, /behind the style files: design-system\/tokens\/base\.tokens\.json/)
-  assert.match(check.stdout, /mirror behind the style files\)\. Run: node \.\.\/project\/scripts\/tokens\.mjs mirror, then node \.\.\/project\/scripts\/tokens\.mjs build/)
+  assert.match(check.stdout, /mirror behind the style files, resolved\.json behind\)\. Run: node \.\.\/project\/scripts\/tokens\.mjs mirror, then node \.\.\/project\/scripts\/tokens\.mjs build, then node \.\.\/project\/scripts\/tokens\.mjs resolved/)
   assert.match(run('tokens', ctx, ['build']).stderr, /warn: the mirror is behind the style files/)
-  assert.equal(run('tokens', ctx, ['mirror']).status, 0)
-  assert.equal(run('tokens', ctx, ['build']).status, 0)
+  for (const mode of ['mirror', 'build', 'resolved']) assert.equal(run('tokens', ctx, [mode]).status, 0, mode)
   assert.equal(run('tokens', ctx, ['check']).status, 0)
 })
 

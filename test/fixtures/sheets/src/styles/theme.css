@@ -66,9 +66,12 @@ html.dark { --c-focus: rgb(var(--accent-300)) !important; }
   --c-art: rgb(var(--ink-900));
 }
 html.dark .band-block {
+  --c-ground: var(--c-accent);
   --c-text: rgb(var(--ink-950));
   --c-art: rgb(var(--cream-50));
 }
+/* The dark band's mark takes the dark theme's focus colour. */
+.band-dark { --c-mark: var(--c-focus); }
 
 /* Composites, declared again in every scope so they follow it. */
 :root,
@@ -77,6 +80,7 @@ html.dark .band-block {
 .band-block {
   --lift: 0 4px 0 var(--c-text);
   --focus-ring: 2px solid var(--c-focus);
+  --c-hairline: color-mix(in srgb, var(--c-text) 24%, transparent);
 }
 
 /* Looks like a theme, but the config's dark selector is html.dark. */

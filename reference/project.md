@@ -17,7 +17,8 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── graph.md / graph.json      generated component graph (graph.mjs)
 ├── audits/                    latest.md, latest.json, baseline.json (audit.mjs)
 ├── tokens/                    the token set in W3C Design Tokens 2025.10: tokens.resolver.json (the entry point), base.tokens.json,
-│                              theme/<context>.tokens.json; draft/ from extract; preview.html, figma-variables.json
+│                              theme/<context>.tokens.json; draft/ from extract; preview.html, figma-variables.json;
+│                              resolved.json, the inventory of every custom property per selector (tokens.mjs resolved)
 ├── kit/kit.css                generated token stylesheet that mockups link to
 ├── explorations/<topic>/      one folder per design topic in the ux loop (brief.md, round-N/, index.html)
 ├── handoffs/<topic>.md        translate specs ready to build
@@ -41,6 +42,7 @@ Keys for a repo that already has its own design-system setup, all inert until se
 - `audit.kinds` turns kinds off (`false`), or the Tailwind palette kind on (`true`, with the Tailwind config's colours as the repo's own). `audit.exempt` skips a kind in a file by a scope role's value, its tier or group, or a glob. `audit.arbitrary` limits arbitrary values to colours, a role read such as `text-[color:var(--x)]` included. `audit.primitives` limits primitive reads to colours; with no token set yet, a primitive is then a literal colour the style files define, read outside them. `audit.failWhenBehind` fails `--check` while the baseline is behind the code. With `stories.manifest` set, the audit also counts the story lane's policy problems that the graph writes to `graph.json` (`story-title`, `story-files`, `story-states`, `no-story`). A baseline that tracks a kind added in 0.3.0, such as `breakpoint` or the story kinds, is format 2, which older scripts refuse.
 - `guard.extraChecks` lists project commands `ds:check` runs as well, and `tokens.breakpoints` is the width scale the breakpoint audit holds the code to: an `@media` width, or a Tailwind screen or `min-[...]:` or `max-[...]:` variant, off the scale and its twins is a finding unless the file's header allows that width through the breakpoint role. Screen names come from `tokens.tailwindConfig` when it sets screens, else Tailwind's defaults.
 - `tokens.mirror` keeps the style files as the source: `tokens.mjs mirror` writes the token set at `tokens.source` from them, and every other command reads that set. Each token keeps its CSS name, its themes follow the config's theme selectors, a value under any other selector (a band, a tone, a phone-width override) goes in its `$extensions.massimo.scopes`, and the comment before a declaration is its description. `tokens.mjs check` then fails while the mirror is behind the CSS, and `build` refuses an output that would write over a file it mirrors.
+- `tokens.inventory` sets what `tokens.mjs resolved` lists in `tokens/resolved.json`: every custom property the sheets declare, with its file, layer, family and a value per selector, each colour resolved in its theme, plus the type classes, the `@font-face` rules and `tokens.breakpoints`. `files` are the sheets (globs). `layers` names each layer in order with its file globs, or `{ files, names, selectors }` to place by property name or by the selector a property is first declared under. `families` names families by property-name globs, ahead of massimo's own. `typeClasses` are class-name globs; without them, a type class is any class that is a selector on its own in a rule setting a size, line height, weight or family. Without the key, the inventory lists `tokens.styleFiles` as one layer. `tokens.mjs check` keeps the file current when this key or `tokens.mirror` is set.
 
 ## Phases
 
@@ -71,7 +73,7 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 | `state.mjs` | `show`, `next`, `set`, `decide`, `explore`, `render` |
 | `graph.mjs` | writes graph.md/json; `--check` for CI |
 | `audit.mjs` | raw-value audit; `--baseline` (first time), `--lower` (after a fix) and `--check` (CI) ratchet per offender; `--import <file> --map <rule>=<kind>` seeds the baseline from a ratchet kept in another shape, once every mapped rule matches file by file |
-| `tokens.mjs` | `extract` (a full draft from the repo's sources and its code), `build`, `kit`, `check`, `preview`, `hash`, `migrate`, `figma`, `mirror` (the token set as a checked mirror of the style files; `--check` for CI) |
+| `tokens.mjs` | `extract` (a full draft from the repo's sources and its code), `build`, `kit`, `check`, `preview`, `hash`, `migrate`, `figma`, `mirror` (the token set as a checked mirror of the style files; `--check` for CI), `resolved` (the inventory in `tokens/resolved.json`; `--check` for CI) |
 | `docs.mjs` | the generated part of `<project>/README.md`; `--check` for CI |
 | `check.mjs` | `ds:check`: every check above that applies to the project, then `guard.extraChecks`, one line each |
 | `canvas.mjs` | builds an exploration's side-by-side canvas page |

@@ -67,7 +67,8 @@
           "scopes": {
             ".band-light": "rgb(var(--sand-200))",
             ".band-dark": "rgb(var(--ink-950))",
-            ".band-block": "var(--c-accent)"
+            ".band-block": "var(--c-accent)",
+            "html.dark .band-block": "var(--c-accent)"
           }
         }
       }
@@ -416,6 +417,16 @@
     "massimo": {
       "format": 2,
       "cssOnly": {
+        "color.hairline": {
+          "css": "color-mix(in srgb, var(--c-text) 24%, transparent)",
+          "after": "color.ground",
+          "cssVar": "--c-hairline",
+          "scopes": {
+            ".band-light": "color-mix(in srgb, var(--c-text) 24%, transparent)",
+            ".band-dark": "color-mix(in srgb, var(--c-text) 24%, transparent)",
+            ".band-block": "color-mix(in srgb, var(--c-text) 24%, transparent)"
+          }
+        },
         "other.focus-ring": {
           "css": "2px solid var(--c-focus)",
           "after": "ease.out",
@@ -454,6 +465,11 @@
             "scopes": {
               ".band-block": "rgb(var(--ink-900))",
               "html.dark .band-block": "rgb(var(--cream-50))"
+            }
+          },
+          "--c-mark": {
+            "scopes": {
+              ".band-dark": "var(--c-focus)"
             }
           }
         }

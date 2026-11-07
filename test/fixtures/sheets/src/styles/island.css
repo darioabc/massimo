@@ -1,0 +1,18 @@
+/* A printed page with its own palette and scale, outside the themes. */
+@font-face {
+  font-family: "Geist Print";
+  src: url("../fonts/print.woff2") format("woff2");
+  font-weight: 400;
+}
+
+.island {
+  --island-ink: #333;
+  --island-rule: rgb(var(--ink-900) / 0.2);
+  --u: 1;
+}
+
+@media print {
+  .island { --u: 0.75; }
+}
+
+.island .t-print { font-size: calc(12px * var(--u)); }
