@@ -78,7 +78,7 @@ The plugin root is two directories above a skill's base directory (`<plugin-root
 | `check.mjs` | `ds:check`: every check above that applies to the project, then `guard.extraChecks`, one line each |
 | `canvas.mjs` | builds an exploration's side-by-side canvas page |
 | `serve.mjs` | zero-dependency static server for the project folder |
-| `shoot.mjs` | screenshots, page snapshots (`--dom`), pixel diffs and a pairs runner (`--pairs`, with a pass or fail exit against `--max-diff`) through Playwright, from the repo or from another checkout (`--playwright <path>`); `--reduced-motion`, `--settle` and `--freeze` make shots repeatable |
+| `shoot.mjs` | screenshots, page snapshots (`--dom`), pixel diffs and a pairs runner (`--pairs`, with a pass or fail exit against `--max-diff`, and exit 2 for a broken pairs file) through Playwright, from the repo or from another checkout (`--playwright <path>`); `--reduced-motion`, `--settle` and `--freeze` make shots repeatable |
 | `agent-guard.mjs` | the plugin's PreToolUse hook: massimo's reviewers write nothing, and its ideator writes only inside `<project>/explorations/` |
 
 ## Session protocol

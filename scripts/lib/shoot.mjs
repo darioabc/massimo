@@ -11,14 +11,20 @@ import { pathToFileURL } from 'node:url'
 export const PLAYWRIGHT_NAMES = ['playwright', '@playwright/test', 'playwright-core']
 
 // What `--freeze` injects into every frame: animations run to their end state at
-// once, transitions do not run, and the text caret does not blink.
+// once, scrolling is not smooth and the text caret does not blink. Transitions
+// are left alone on purpose: a transition of 0s never fires transitionend, so
+// a page that finishes its reveal there would be shot in a state no visitor
+// sees. Playwright's `animations: 'disabled'` (passed with the screenshots when
+// freeze is on) finishes them instead, which fires the event.
 export const FREEZE_CSS =
-  '*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;transition-duration:0s!important;transition-delay:0s!important;scroll-behavior:auto!important;caret-color:transparent!important}'
+  '*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;animation-iteration-count:1!important;scroll-behavior:auto!important;caret-color:transparent!important}'
 
 // --pairs turns every determinism control on.
 export const DETERMINISTIC = { reducedMotion: true, freeze: true, settle: true }
 
-const PAIR_FIELDS = ['name', 'a', 'b', 'width', 'height', 'scheme', 'selector', 'full', 'mode']
+const PAIR_FIELDS = ['name', 'a', 'b', 'width', 'height', 'scheme', 'selector', 'full', 'mode', 'reducedMotion', 'settle', 'freeze']
+// The pair fields that switch one determinism control off (or back on).
+const PAIR_CONTROLS = ['reducedMotion', 'settle', 'freeze']
 const NAME_OK = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/
 
 export const isUrl = (s) => /^(https?|file):\/\//i.test(s)
@@ -26,11 +32,11 @@ export const isUrl = (s) => /^(https?|file):\/\//i.test(s)
 // A flag read from the command line or from a JSON entry: bare, `=true` or 1.
 export const isOn = (v) => v === true || v === 'true' || v === '1' || v === 1
 
-// parseArgs lets a bare flag swallow the word after it, so a flag that takes no
-// value is rewritten to `--name=true` before parsing.
-export function booleanize(argv, names) {
-  const bare = new Set(names.map((n) => `--${n}`))
-  return argv.map((a) => (bare.has(a) ? `${a}=true` : a))
+// A numeric flag: the fallback when it is absent, NaN when it is bare, empty,
+// repeated or not a number, so a typo is caught instead of read as 1 or 0.
+export function flagNumber(value, fallback) {
+  if (value === undefined) return fallback
+  return typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN
 }
 
 // The three determinism controls for a shot. `src` is a flag set or a batch
@@ -77,10 +83,25 @@ export function pngSize(buffer) {
   return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
 }
 
-// Read a pairs file: an array of { name, a, b, width, height, scheme, selector,
-// full, mode }. Returns the pairs with defaults filled in, and a list of
-// problems instead of throwing, so every mistake is reported at once. An
-// unknown field is a problem, because it is almost always a typo.
+// A pairs file is a bare array of pairs, or { "format": 1, "pairs": [...] } for
+// one that states its format. Returns the list, the format the file states (the
+// caller refuses a newer one, through refuseNewer) and the problems with the
+// wrapper. Nothing is read from a wrapper beyond those two fields.
+export function pairsDocument(doc) {
+  if (Array.isArray(doc)) return { list: doc, problems: [] }
+  if (!doc || typeof doc !== 'object') return { list: null, problems: ['the pairs file must hold an array of pairs, or { "format": 1, "pairs": [...] }'] }
+  const problems = []
+  for (const key of Object.keys(doc)) if (key !== 'format' && key !== 'pairs') problems.push(`unknown field "${key}"`)
+  if (!Number.isInteger(doc.format) || doc.format < 1) problems.push('"format" must be a whole number, 1 or more')
+  if (!Array.isArray(doc.pairs)) problems.push('"pairs" must be an array of pairs')
+  return { list: Array.isArray(doc.pairs) ? doc.pairs : null, format: doc.format, problems }
+}
+
+// Read the array of a pairs file: { name, a, b, width, height, scheme, selector,
+// full, mode, reducedMotion, settle, freeze }. Returns the pairs with defaults
+// filled in, and a list of problems instead of throwing, so every mistake is
+// reported at once. An unknown field is a problem, because it is almost always
+// a typo.
 export function parsePairs(list, defaults = {}) {
   const problems = []
   if (!Array.isArray(list)) return { pairs: [], problems: ['the pairs file must hold an array'] }
@@ -94,9 +115,11 @@ export function parsePairs(list, defaults = {}) {
     }
     const bad = (why) => problems.push(`${where}: ${why}`)
     for (const key of Object.keys(p)) if (!PAIR_FIELDS.includes(key)) bad(`unknown field "${key}"`)
+    // Compared without case: on a case-insensitive disk (macOS, Windows) two
+    // names that differ only in case would write the same files.
     if (typeof p.name !== 'string' || !NAME_OK.test(p.name)) bad('name must be letters, digits, ".", "_", "-" and "/" between folders')
-    else if (seen.has(p.name)) bad('name is used twice')
-    else seen.add(p.name)
+    else if (seen.has(p.name.toLowerCase())) bad('name is used twice (names are compared without case)')
+    else seen.add(p.name.toLowerCase())
     for (const side of ['a', 'b']) if (typeof p[side] !== 'string' || !p[side]) bad(`${side} must be a URL or a file path`)
     const mode = p.mode ?? 'pixel'
     if (!['pixel', 'dom'].includes(mode)) bad(`mode must be "pixel" or "dom"`)
@@ -110,6 +133,7 @@ export function parsePairs(list, defaults = {}) {
     const width = size('width', 1280)
     const height = size('height', 800)
     if (p.selector !== undefined && (typeof p.selector !== 'string' || !p.selector)) bad('selector must be a CSS or text selector')
+    for (const key of PAIR_CONTROLS) if (p[key] !== undefined && typeof p[key] !== 'boolean') bad(`${key} must be true or false`)
     pairs.push({
       name: p.name,
       a: p.a,
@@ -120,6 +144,7 @@ export function parsePairs(list, defaults = {}) {
       scheme,
       full: p.full === undefined ? isOn(defaults.full) : isOn(p.full),
       ...(p.selector ? { selector: p.selector } : {}),
+      ...Object.fromEntries(PAIR_CONTROLS.filter((key) => typeof p[key] === 'boolean').map((key) => [key, p[key]])),
     })
   })
   return { pairs: problems.length ? [] : pairs, problems }
@@ -141,13 +166,71 @@ export function textLines(text) {
   return lines
 }
 
-// Above this many cells the line alignment is skipped and the differing middle
-// is reported as removed then added.
-const ALIGN_LIMIT = 4_000_000
+// Past this many edits the line alignment is skipped, because the trace it
+// keeps grows with the square of the edit count. The differing middle is then
+// reported as removed then added, and the result says it was not aligned.
+const MAX_EDITS = 3000
 
-// The edit script between two line lists: the lines both share at either end are
-// peeled off, the middle is aligned by longest common subsequence.
-function editScript(x, y) {
+// The shortest edit script between two line lists, as [type, line] pairs in
+// order, by Myers' O(ND) algorithm: cheap when the texts are close, which is
+// what a check between two builds of one page expects. Null above MAX_EDITS.
+function myers(x, y) {
+  const n = x.length
+  const m = y.length
+  const top = Math.min(n + m, MAX_EDITS)
+  const mid = top + 1
+  // v[mid + k] is the furthest x reached on diagonal k (x - y) so far.
+  const v = new Int32Array(2 * top + 3)
+  // trace[d] keeps v for the diagonals -d..d once round d is done.
+  const trace = []
+  for (let d = 0; d <= top; d++) {
+    for (let k = -d; k <= d; k += 2) {
+      const down = k === -d || (k !== d && v[mid + k - 1] < v[mid + k + 1])
+      let px = down ? v[mid + k + 1] : v[mid + k - 1] + 1
+      let py = px - k
+      while (px < n && py < m && x[px] === y[py]) {
+        px++
+        py++
+      }
+      v[mid + k] = px
+      if (px >= n && py >= m) return walkBack(trace, x, y, d)
+    }
+    trace.push(v.slice(mid - d, mid + d + 1))
+  }
+  return null
+}
+
+// The edits of the path myers found, read back from the end.
+function walkBack(trace, x, y, edits) {
+  const out = []
+  let px = x.length
+  let py = y.length
+  for (let d = edits; d > 0; d--) {
+    const prev = trace[d - 1]
+    const at = d - 1
+    const k = px - py
+    const down = k === -d || (k !== d && prev[at + k - 1] < prev[at + k + 1])
+    const pk = down ? k + 1 : k - 1
+    const sx = prev[at + pk]
+    const sy = sx - pk
+    // the lines both share, back to where the edit ended
+    const ex = down ? sx : sx + 1
+    while (px > ex) {
+      out.push([' ', x[--px]])
+      py--
+    }
+    out.push(down ? ['+', y[sy]] : ['-', x[sx]])
+    px = sx
+    py = sy
+  }
+  while (px > 0) out.push([' ', x[--px]])
+  return out.reverse()
+}
+
+// The edit script between two line lists: the lines both share at either end
+// are peeled off, the middle is aligned. `aligned` is false when the middle was
+// too different to align, so its percentage reads high.
+export function editScript(x, y) {
   const ops = []
   let ai = 0
   let bi = 0
@@ -163,34 +246,15 @@ function editScript(x, y) {
   for (let i = 0; i < head; i++) push(' ', x[i])
   const mx = x.slice(head, x.length - tail)
   const my = y.slice(head, y.length - tail)
-  const n = mx.length
-  const m = my.length
-  if ((n + 1) * (m + 1) > ALIGN_LIMIT) {
+  // with nothing on one side there is nothing to align
+  const edits = mx.length && my.length ? myers(mx, my) : null
+  if (edits) for (const [t, s] of edits) push(t, s)
+  else {
     for (const s of mx) push('-', s)
     for (const s of my) push('+', s)
-  } else {
-    const w = m + 1
-    const L = new Uint32Array((n + 1) * w)
-    for (let i = n - 1; i >= 0; i--) {
-      for (let j = m - 1; j >= 0; j--) {
-        L[i * w + j] = mx[i] === my[j] ? L[(i + 1) * w + j + 1] + 1 : Math.max(L[(i + 1) * w + j], L[i * w + j + 1])
-      }
-    }
-    let i = 0
-    let j = 0
-    while (i < n && j < m) {
-      if (mx[i] === my[j]) {
-        push(' ', mx[i])
-        i++
-        j++
-      } else if (L[(i + 1) * w + j] >= L[i * w + j + 1]) push('-', mx[i++])
-      else push('+', my[j++])
-    }
-    while (i < n) push('-', mx[i++])
-    while (j < m) push('+', my[j++])
   }
   for (let i = x.length - tail; i < x.length; i++) push(' ', x[i])
-  return ops
+  return { ops, aligned: Boolean(edits) || !mx.length || !my.length }
 }
 
 // Changed lines with two lines of context, each stretch under an `@@ -a +b @@`
@@ -219,11 +283,12 @@ function hunks(ops, context = 2) {
 
 // Compare two text snapshots. `changed` is the larger of the removed and added
 // line counts and `total` the longer text, so the percentage reads like the
-// pixel one: a quarter of the lines changed is 25.
+// pixel one: a quarter of the lines changed is 25. `aligned` is false when the
+// texts differ too much to line up, and the percentage then reads high.
 export function compareText(a, b) {
   const x = textLines(a)
   const y = textLines(b)
-  const ops = editScript(x, y)
+  const { ops, aligned } = editScript(x, y)
   const removed = ops.filter((o) => o.t === '-').length
   const added = ops.filter((o) => o.t === '+').length
   const changed = Math.max(removed, added)
@@ -236,6 +301,7 @@ export function compareText(a, b) {
     changed,
     total,
     percent: total ? percent(changed, total) : 0,
+    aligned,
     diff: hunks(ops).join('\n'),
   }
 }
