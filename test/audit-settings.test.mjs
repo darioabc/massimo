@@ -142,7 +142,7 @@ test('scripts that read baseline format 1 refuse a format 2 baseline by name', (
     for (const name of readdirSync(join(SCRIPTS, sub))) if (name.endsWith('.mjs')) copyFileSync(join(SCRIPTS, sub, name), join(older, sub, name))
   }
   const lib = join(older, 'lib', 'project.mjs')
-  writeFileSync(lib, readFileSync(lib, 'utf8').replace(/baseline: 2 \}/, 'baseline: 1 }'))
+  writeFileSync(lib, readFileSync(lib, 'utf8').replace(/baseline: 2\b/, 'baseline: 1'))
   for (const flag of ['--check', '--lower', '--baseline']) {
     const r = spawnSync(process.execPath, [join(older, 'audit.mjs'), flag, '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
     assert.equal(r.status, 1, flag)
