@@ -393,3 +393,22 @@ test("a csf lane reports stories.port, not the framework's default port", () => 
     csf.cleanup()
   }
 })
+
+test('a csf lane keeps the port its dev script sets, over stories.port', () => {
+  const csf = scratch('csf-lane')
+  try {
+    writeFileSync(join(csf.root, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'stories:dev': 'STORIES=1 vite --port 7000' }, dependencies: { react: '18' }, devDependencies: { '@ladle/react': '5', vite: '5' } }))
+    mkdirSync(join(csf.root, 'src', 'stories'), { recursive: true })
+    writeFileSync(join(csf.root, 'src', 'stories', 'index.ts'), 'export {}\n')
+    const path = join(csf.root, 'massimo.config.json')
+    const doc = JSON.parse(readFileSync(path, 'utf8'))
+    writeFileSync(path, JSON.stringify({ ...doc, stories: { ...doc.stories, port: 61101 } }))
+    const r = adopt(csf.root, ['--project-dir', csf.project])
+    assert.equal(r.status, 0, r.stderr)
+    const found = readJson(csf.project, 'adopt', 'inventory.json')
+    assert.equal(found.stories.lane.port, 7000)
+    assert.equal(found.assets.find((a) => a.id === 'lane:src/stories').port, 7000)
+  } finally {
+    csf.cleanup()
+  }
+})

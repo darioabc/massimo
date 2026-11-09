@@ -498,15 +498,16 @@ test('plan converts the Ladle tool once the lane is csf, and keeps it before; co
   assert.match(stories().assets[0].lines.join('\n'), /stay where they are, read in place by the csf lane/)
   assert.equal(stories().converted, undefined)
   const edits = join(ctx.project, 'adopt', 'stories', 'edits.md')
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   const r = convert(ctx)
   assert.equal(r.status, 0, r.stderr)
-  assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 0 })
+  assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 1 })
   // The tool goes, so convert also writes the edits it needs first.
   assert.match(readFileSync(edits, 'utf8'), /^# Edits before Ladle can go\n/)
   assert.match(r.stdout, /edits\.md \(\d+ open edits?, \d+ mentions? that still work/)
   // Planned again, the ledger keeps the counts.
   assert.equal(adopt(ctx, ['plan']).status, 0)
-  assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 0 })
+  assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 1 })
   // The retire dry run lists the tool as going.
   assert.match(adopt(ctx, ['retire', 'stories', '--dry-run']).stdout, /tool:ladle {2}convert/)
 })
@@ -663,4 +664,23 @@ test('--freeze raises a minScripts older than the csf lane', () => {
   writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), minScripts: '0.3.0' }, null, 2))
   assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).minScripts, '0.4.0')
+})
+
+test('the printed --freeze command quotes a path a shell would read differently', () => {
+  const ctx = fresh()
+  const odd = 'src/explorations/(wip)/Third.stories.tsx'
+  put(ctx, odd, "export default { title: 'Explorations / Third', meta: { exploration: 'Odd path.' } }\nexport const One = () => null\n")
+  const listed = convert(ctx)
+  assert.equal(listed.status, 0, listed.stderr)
+  assert.match(listed.stdout, /convert stories --freeze 'src\/explorations\/\(wip\)\/Third\.stories\.tsx'\n/)
+  assert.match(listed.stdout, /convert stories --freeze src\/explorations\/NewHeader\.stories\.tsx\n/)
+  assert.equal(convert(ctx, '--freeze', odd).status, 0)
+})
+
+test('convert stories does not read adopt/config.proposed.json, so a newer one does not stop it', () => {
+  const ctx = fresh()
+  mkdirSync(join(ctx.project, 'adopt'), { recursive: true })
+  writeFileSync(join(ctx.project, 'adopt', 'config.proposed.json'), JSON.stringify({ version: 2 }))
+  const r = convert(ctx)
+  assert.equal(r.status, 0, r.stderr)
 })
