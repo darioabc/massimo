@@ -8,12 +8,13 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { after, test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { compileGlobs } from '../scripts/lib/glob.mjs'
 import { repoFiles, workflowJob } from '../scripts/lib/inventory.mjs'
 import { ladleMeta, laneRegistry } from '../scripts/lib/lane.mjs'
 import { compareGraph, compareLane, compareTokens, readGraphDoc, readIndexDoc, readTokenInventory, settle, storyPairs, storyRoutes, textTable } from '../scripts/lib/verify.mjs'
 import { FIXTURES, SCRIPTS, readJson, scratch } from './helpers.mjs'
+import { startServer } from './sweep-server.mjs'
 
 const ctx = scratch('legacy')
 after(() => ctx.cleanup())
@@ -270,6 +271,10 @@ test('verify stories checks the lane, and passes once the lane has no problems',
 test('--pairs writes a pairs file from the manifest: each entry at light and dark, 390 and 1440, on its frame route', () => {
   assert.match(adopt('verify', 'stories', '--pairs', 'pairs.json').stderr, /--pairs <file> needs --a <base url> and --b <base url>/)
   assert.match(adopt('verify', 'stories', '--shoot').stderr, /--shoot runs the pairs file --pairs writes/)
+  // --sweep opens the states of a csf lane, so a manifest lane refuses it
+  const sweepManifest = adopt('verify', 'stories', '--sweep', 'http://a.test')
+  assert.equal(sweepManifest.status, 1)
+  assert.match(sweepManifest.stderr, /--sweep opens the states of a csf lane/)
   const r = adopt('verify', 'stories', '--pairs', 'pairs.json', '--a', 'http://a.test/', '--b', 'http://b.test', '--dom-tier', 'Foundations')
   assert.equal(r.status, 0, r.stderr)
   const doc = readJson(ctx.root, 'pairs.json')
@@ -768,12 +773,37 @@ test('an id the repo uses must resolve: one the tool had and the lane lost is a 
     assert.doesNotMatch(after2.stdout, /mention:docs\/old\.md/)
     assert.match(after2.stdout, /1 mention in historical docs no longer resolve/)
     assert.match(after2.stdout, /mention:e2e\/page\.spec\.ts:explorations--removed--default/)
+    // accept holds a mention difference, and verify then passes
+    const key = 'mention:e2e/page.spec.ts:explorations--removed--default'
+    assert.equal(csfAdopt('accept', 'stories', key, '--why', 'the spec is retired with the tool', '--against', 'ladle-meta.json').status, 0)
+    assert.equal(csfAdopt('accept', 'stories', 'id:explorations--removed--default', '--why', 'the page is retired', '--against', 'ladle-meta.json').status, 0)
+    const held = csfAdopt('verify', 'stories', '--against', 'ladle-meta.json')
+    assert.equal(held.status, 0, held.stdout)
+    assert.match(held.stdout, /accepted {2}mention:e2e\/page\.spec\.ts:explorations--removed--default /)
   } finally {
     writeFileSync(ledgerPath, saved)
     rmSync(join(csf.root, 'e2e'), { recursive: true, force: true })
     rmSync(join(csf.root, 'docs'), { recursive: true, force: true })
   }
 })
+
+test('without the tool\'s list, a mention no story has says so and does not claim the tool has it', () => {
+  csfWrite('e2e/free.spec.ts', "const lost = '/?story=explorations--removed--default&mode=preview'\n")
+  try {
+    const r = csfAdopt('verify', 'stories')
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /mention:e2e\/free\.spec\.ts:explorations--removed--default {2}line 1: no story of the lane has the id explorations--removed--default\n/)
+    assert.doesNotMatch(r.stdout, /the tool has the id explorations/)
+  } finally {
+    rmSync(join(csf.root, 'e2e'), { recursive: true, force: true })
+  }
+})
+
+let lane
+before(async () => {
+  lane = await startServer()
+})
+after(() => lane?.stop())
 
 test('--sweep opens every state of the lane on its route, and a state that fails is render:<id>', () => {
   csfMeta()
@@ -782,7 +812,7 @@ test('--sweep opens every state of the lane on its route, and a state that fails
   writeFileSync(join(pw, 'package.json'), JSON.stringify({ name: 'playwright' }))
   copyFileSync(join(FIXTURES, 'fake-playwright.cjs'), join(pw, 'index.js'))
   const log = join(csf.root, '..', 'sweep-log.jsonl')
-  const args = ['verify', 'stories', '--against', 'ladle-meta.json', '--sweep', 'http://lane.test', '--playwright', pw, '--workers', '2']
+  const args = ['verify', 'stories', '--against', 'ladle-meta.json', '--sweep', lane.url, '--playwright', pw, '--workers', '2']
   const ok = csfScript('adopt', args, { FAKE_LOG: log })
   assert.equal(ok.status, 0, ok.stdout + ok.stderr)
   const total = String(csfRegistry.order.length)
@@ -790,11 +820,24 @@ test('--sweep opens every state of the lane on its route, and a state that fails
   const gotos = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((c) => c.name === 'goto').map((c) => c.arg)
   assert.equal(gotos.length, csfRegistry.order.length)
   const first = csfRegistry.stories[FIRST]
-  assert.ok(gotos.includes(`http://lane.test/stories/${first.slug}/${first.state}?mode=preview`))
+  assert.ok(gotos.includes(`${lane.url}/stories/${first.slug}/${first.state}?mode=preview`))
   // one state never reaches ready
   const bad = csfScript('adopt', args, { FAKE_SWEEP_NOMATCH: `/${first.slug}/${first.state}?` })
   assert.equal(bad.status, 1)
   assert.match(bad.stdout, new RegExp(`  open {6}render:${FIRST} {2}html\\[data-story-ready\\] did not match within 15 seconds\\n`))
+  // accept holds a render difference, and verify then passes
+  const ledgerPath = join(csfProject, 'adopt', 'ledger.json')
+  const saved = readFileSync(ledgerPath, 'utf8')
+  try {
+    const nomatch = { FAKE_SWEEP_NOMATCH: `/${first.slug}/${first.state}?` }
+    const take = csfScript('adopt', ['accept', 'stories', `render:${FIRST}`, '--why', 'it never drew in the tool', ...args.slice(2)], nomatch)
+    assert.equal(take.status, 0, take.stdout + take.stderr)
+    const held = csfScript('adopt', args, nomatch)
+    assert.equal(held.status, 0, held.stdout)
+    assert.match(held.stdout, new RegExp(`accepted {2}render:${FIRST} `))
+  } finally {
+    writeFileSync(ledgerPath, saved)
+  }
   // the tool's own sweep excuses it, when that sweep was nearly all ready
   writeFileSync(join(csf.root, 'baseline.json'), JSON.stringify({ base: 'http://tool.test', total: 100, ready: 99, failed: [{ id: FIRST, why: 'it never drew' }] }))
   const excused = csfScript('adopt', [...args, '--sweep-baseline', 'baseline.json'], { FAKE_SWEEP_NOMATCH: `/${first.slug}/${first.state}?` })
@@ -802,11 +845,16 @@ test('--sweep opens every state of the lane on its route, and a state that fails
   assert.match(excused.stdout, new RegExp(`Excused, since the baseline failed it too \\(decide each\\): ${FIRST} \\(`))
   assert.deepEqual(cells(excused.stdout, 'states ready'), ['states ready', `${Number(total) - 1}/${total}`, '0', '1 excused by the baseline'])
   // no Playwright is one difference, never a pass
-  const none = csfAdopt('verify', 'stories', '--sweep', 'http://lane.test', '--playwright', join(csf.root, 'nothing-here'))
+  const none = csfAdopt('verify', 'stories', '--sweep', lane.url, '--playwright', join(csf.root, 'nothing-here'))
   assert.equal(none.status, 1)
   assert.match(none.stdout, /  open {6}sweep {2}shoot\.mjs found no Playwright/)
   // --sweep goes with stories alone
-  assert.match(csfAdopt('verify', 'graph', '--sweep', 'http://lane.test').stderr, /--sweep goes with verify stories/)
+  assert.match(csfAdopt('verify', 'graph', '--sweep', lane.url).stderr, /--sweep goes with verify stories/)
+  // a server that answers nothing is one difference, not one per state
+  const down = csfAdopt('verify', 'stories', '--sweep', 'http://127.0.0.1:1', '--playwright', pw)
+  assert.equal(down.status, 1)
+  assert.equal(down.stdout.split('\n').filter((l) => /^ {2}open /.test(l)).length, 1)
+  assert.match(down.stdout, /  open {6}sweep {2}shoot\.mjs could not run the sweep: massimo: no server answers at http:\/\/127\.0\.0\.1:1/)
 })
 
 test('--pairs on a csf lane writes a pair per state, scheme and size, with a route for each side', () => {
@@ -836,6 +884,7 @@ test('--pairs on a csf lane writes a pair per state, scheme and size, with a rou
 
 test('retire --dry-run on a converted tool lists the open edits, and exits 1 while one remains', () => {
   csfWrite('src/Thing.tsx', '// Mirrors .ladle/ladle.css\nexport const Thing = () => null\n')
+  csfWrite('e2e/lost.spec.ts', "const lost = '/?story=explorations--removed--default&mode=preview'\n")
   const ledgerPath = join(csfProject, 'adopt', 'ledger.json')
   const saved = readFileSync(ledgerPath, 'utf8')
   try {
@@ -848,15 +897,20 @@ test('retire --dry-run on a converted tool lists the open edits, and exits 1 whi
     assert.match(r.stdout, /  src\/Thing\.tsx:1 {2}comment {2}uses \.ladle\/ladle\.css\. Change: read the app's base CSS/)
     assert.match(r.stdout, /  package\.json:\d+ {2}code {2}uses script ladle, command ladle serve/)
     assert.match(r.stdout, /Not clean: \d+ edits of the repo's own are still open\./)
+    // without the tool's list the report says what to pass, and with it the note goes
+    assert.match(r.stdout, /id mentions? above resolves? nowhere in the lane: pass --against <meta\.json>/)
+    csfMeta()
+    assert.doesNotMatch(csfAdopt('retire', 'stories', '--dry-run', '--against', 'ladle-meta.json').stdout, /pass --against <meta\.json>/)
   } finally {
     writeFileSync(ledgerPath, saved)
+    rmSync(join(csf.root, 'e2e'), { recursive: true, force: true })
   }
 })
 
 test('a csf lane serves one state per document, and the pairs and routes know {state}', () => {
   assert.deepEqual(storyRoutes({ stories: { lane: 'csf' } }), { story: '/stories/{slug}/{state}', frame: null })
-  assert.deepEqual(storyRoutes({ stories: { lane: 'csf', url: 'http://localhost:61101/stories' } }), { story: '/stories/{slug}/{state}', frame: null })
-  assert.deepEqual(storyRoutes({ stories: { lane: 'csf', storyUrl: 'http://localhost:61101/s/{slug}/{state}' } }), { story: '/s/{slug}/{state}', frame: null })
+  assert.deepEqual(storyRoutes({ stories: { lane: 'csf', url: 'http://localhost:4650/stories' } }), { story: '/stories/{slug}/{state}', frame: null })
+  assert.deepEqual(storyRoutes({ stories: { lane: 'csf', storyUrl: 'http://localhost:4650/s/{slug}/{state}' } }), { story: '/s/{slug}/{state}', frame: null })
   // a manifest lane keeps its route
   assert.deepEqual(storyRoutes({ stories: { lane: 'manifest' } }), { story: '/stories/{slug}', frame: null })
   const states = [{ id: 'a--b--c', slug: 'a--b', state: 'c', levels: ['A', 'B'] }, { id: 'p--q--r', slug: 'p--q', state: 'r', levels: ['Pages', 'Q'] }, null]

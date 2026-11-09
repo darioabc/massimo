@@ -352,6 +352,19 @@ function repoEntries(root) {
 
 // What a sweep waits for when --ready is not given.
 export const SWEEP_READY = 'html[data-story-ready]'
+// Runs in the page: whether the ready element holds something drawn. For a
+// root marker such as `<html data-story-ready>`, which always holds the head
+// and the body, the story's mount is the page's own content: some child of
+// the body, other than a script or a style, that holds an element. For any
+// other element, it is a child of that element. It must not use anything
+// from this file, since the browser gets its text alone.
+export const SWEEP_FILLED = (selector) => {
+  const el = document.querySelector(selector)
+  if (!el) return false
+  if (el !== document.documentElement) return el.childElementCount > 0
+  const skip = ['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'LINK']
+  return Array.from(document.body?.children ?? []).some((c) => !skip.includes(c.tagName) && c.childElementCount > 0)
+}
 // The share of the baseline's states that must be ready before it can excuse
 // anything.
 export const SWEEP_FLOOR = 0.98
@@ -362,7 +375,7 @@ export const SWEEP_FLOOR = 0.98
 export function sweepOptions(flags) {
   const problems = []
   const base = typeof flags.sweep === 'string' ? flags.sweep.replace(/\/+$/, '') : ''
-  if (!isUrl(base)) problems.push('--sweep takes the base URL of a server, such as http://localhost:61101')
+  if (!isUrl(base)) problems.push('--sweep takes the base URL of a server, such as http://localhost:4650')
   const workers = flagNumber(flags.workers, 4)
   if (!Number.isInteger(workers) || workers < 1 || workers > 32) problems.push('--workers is a whole number from 1 to 32')
   const timeout = flagNumber(flags.timeout, 15)

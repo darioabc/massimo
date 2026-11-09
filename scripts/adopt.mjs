@@ -45,7 +45,10 @@
 //                                 --pairs, --a, --b and --shoot for a shot)
 //   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
 //                                 them; a file code depends on is refused
-//   adopt.mjs retire <class> --dry-run [--json]
+//   adopt.mjs retire <class> --dry-run [--json] [--against <meta.json>]
+//                                 (--against, for stories on a csf lane, is the tool's
+//                                 own list: it tells an id that was dead already from one
+//                                 the move loses)
 //                                 what retiring a class takes out and who still depends
 //                                 on it; exit 1 while a consumer remains outside the
 //                                 historical docs, or a generator that stays still
@@ -361,7 +364,11 @@ function verifyCsfLane(ledger) {
   const cover = mentionCoverage(scope, registry, oracle ? Object.keys(oracle) : null)
   const live = cover.missing.filter((m) => !historical.has(m.file))
   rows.push(['id mentions', '', `${cover.resolved}/${cover.mentions}`, String(live.length), cover.dead.length ? `${cover.dead.length} dead in the tool too` : ''])
-  for (const m of live) differences.push({ key: `mention:${m.file}:${m.mention}`, detail: `the tool has ${m.prefix ? 'ids that start with' : 'the id'} ${m.mention} and no story of the lane does`, shown: `line ${m.line}: the tool has ${m.prefix ? 'ids that start with' : 'the id'} ${m.mention} and no story of the lane does` })
+  for (const m of live) {
+    const what = m.prefix ? 'ids that start with' : 'the id'
+    const detail = oracle ? `the tool has ${what} ${m.mention} and no story of the lane does` : `no story of the lane has ${what} ${m.mention}`
+    differences.push({ key: `mention:${m.file}:${m.mention}`, detail, shown: `line ${m.line}: ${detail}` })
+  }
   if (cover.missing.length > live.length) notes.push(`${plural(cover.missing.length - live.length, 'mention')} in historical docs no longer resolve; they are left as they are.`)
   if (cover.dead.length > 0) notes.push(`Dead before the move (the tool's own ids never had them): ${cover.dead.map((m) => `${m.file}:${m.line} ${m.mention}`).join('; ')}.`)
   if (flags.sweep !== undefined) rows.push(...sweepLane(registry, differences, notes))
@@ -595,8 +602,7 @@ function passLine(cls, c) {
 
 // ── The tool's edits ────────────────────────────────────────────────────────
 
-// Every edit the repo must make before the story tool can go (the convert
-// command writes them to adopt/stories/edits.md through writeEditsFile), for the
+// Every edit the repo must make before the story tool can go, for the
 // ledger's tool assets that go (decision convert or retire), on a csf lane;
 // null when none does. Specs and docs that name ids are held against the
 // tool's own list when --against gives it.
@@ -615,14 +621,14 @@ function toolEditsFor(ledger, inv) {
     const tool = inv.stories.tools.find((t) => `tool:${t.tool}` === a.id)
     if (!tool) return []
     const consumers = inv.assets.find((x) => x.id === a.id)?.consumers ?? []
-    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`] })
+    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`] })
   })
   return edits.sort((x, y) => compare(x.file, y.file) || x.line - y.line)
 }
 
 // ── retire --dry-run ────────────────────────────────────────────────────────
 
-function retireReport(cls, plan) {
+function retireReport(cls, plan, { toldDead = true } = {}) {
   const lines = [`massimo adopt retire ${cls} --dry-run: ${cls} is ${plan.state}${STATES.indexOf(plan.state) < STATES.indexOf('cut-over') ? ', and retires only after cut-over' : ''}.`, '']
   if (plan.going.length === 0) return [...lines, `Nothing in ${cls} is marked retire or convert: it is all kept as the repo's own.`]
   lines.push(`Goes (${plan.going.length}: marked retire, or convert, whose place massimo's own output takes):`)
@@ -636,6 +642,8 @@ function retireReport(cls, plan) {
     lines.push('', `Edits to make first (${plan.edits.length}; ${plan.editsValid} more mentions still work on the lane${plan.editsHistorical ? `, ${plan.editsHistorical} are in historical docs` : ''}):`)
     for (const e of plan.edits) lines.push(`  ${e.file}:${e.line}  ${e.class}  uses ${e.uses}. Change: ${e.replacement}`)
     if (plan.edits.length === 0) lines.push('  none')
+    const unknown = plan.edits.filter((e) => /^id(?: prefix)? /.test(e.uses)).length
+    if (!toldDead && unknown > 0) lines.push('', `${plural(unknown, 'id mention')} above resolve${unknown === 1 ? 's' : ''} nowhere in the lane: pass --against <meta.json>, the tool's own list, to tell the ones that were dead already from the ones the move loses.`)
   }
   const line = (k) => `  ${k.class.padEnd(8)}  ${where(k)}  ${k.how}${k.via ? ` through ${k.via}` : ''}${k.writtenBy ? `, written by ${k.writtenBy}` : ''}  (${k.assets.join(', ')})`
   if (plan.writers.length) {
@@ -666,7 +674,8 @@ function checkVerifyFlags(name, cls) {
   if (flags.pairs !== undefined && cls !== undefined && cls !== 'stories') fail(`--pairs goes with ${name} stories`)
   if (flags.pairs !== undefined && (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string')) fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
   if (flags.sweep !== undefined && cls !== 'stories') fail(`--sweep goes with ${name} stories: it opens every state of the csf lane on the server it names`)
-  if (flags.sweep !== undefined && typeof flags.sweep !== 'string') fail('--sweep takes the base URL of the lane server, such as http://localhost:61101')
+  if (flags.sweep !== undefined && cls === 'stories' && config.stories.lane !== 'csf') fail('--sweep opens the states of a csf lane: stories.lane is not "csf" here')
+  if (flags.sweep !== undefined && typeof flags.sweep !== 'string') fail('--sweep takes the base URL of the lane server, such as http://localhost:4650')
   if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
 }
 
@@ -819,14 +828,14 @@ switch (command) {
   case 'retire': {
     needInit('retire')
     const [cls] = rest
-    if (!CLASSES.includes(cls)) fail(`usage: adopt.mjs retire <${CLASSES.join('|')}> --dry-run`)
+    if (!CLASSES.includes(cls)) fail(`usage: adopt.mjs retire <${CLASSES.join('|')}> --dry-run [--json] [--against <meta.json>]`)
     if (!truthy(flags['dry-run'])) fail(`retire only lists what retiring ${cls} takes out: run it with --dry-run. Deleting is the adopt skill's job, one commit per batch, on your OK.`)
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
     if (!ledger.classes[cls]) fail(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
     const inv = scan()
     const plan = retirePlan(ledger, cls, inv, { jobAt: (file, line) => workflowJob(readText(root, file), line), edits: cls === 'stories' ? toolEditsFor(ledger, inv) : null })
-    process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan).join('\n')}\n`)
+    process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan, { toldDead: typeof flags.against === 'string' }).join('\n')}\n`)
     if (notClean(plan)) process.exit(1)
     break
   }

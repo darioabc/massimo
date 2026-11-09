@@ -14,7 +14,8 @@
 //   The sweep: each of these is a comma-separated list of texts, and a page
 //   whose URL holds one of them behaves as named.
 //   FAKE_SWEEP_NOMATCH  the ready selector never matches
-//   FAKE_SWEEP_EMPTY    the ready element matches but holds no element
+//   FAKE_SWEEP_EMPTY    the ready element matches but holds no element (the
+//                       story's mount is empty; the sweep's own check decides)
 //   FAKE_SWEEP_ERROR    a page error fires while the page loads
 const { appendFileSync, writeFileSync } = require('node:fs')
 
@@ -101,9 +102,21 @@ const makePage = () => {
       log('waitForSelector', { selector, ...o })
       if (listed('FAKE_SWEEP_NOMATCH', current)) throw timeout('page.waitForSelector')
     },
+    // The predicate runs against a small document: <html> holding a head and
+    // a body, whose one child is the mount, empty under FAKE_SWEEP_EMPTY.
     async waitForFunction(fn, arg, o) {
       log('waitForFunction', { arg, ...o })
-      if (listed('FAKE_SWEEP_EMPTY', current)) throw timeout('page.waitForFunction')
+      const node = (tagName, children = []) => ({ tagName, children, childElementCount: children.length })
+      const mount = node('DIV', listed('FAKE_SWEEP_EMPTY', current) ? [] : [node('MAIN')])
+      const body = node('BODY', [node('SCRIPT'), mount])
+      const html = node('HTML', [node('HEAD'), body])
+      const had = globalThis.document
+      globalThis.document = { documentElement: html, body, querySelector: (sel) => (sel.startsWith('html') ? html : mount) }
+      try {
+        if (!fn(arg)) throw timeout('page.waitForFunction')
+      } finally {
+        globalThis.document = had
+      }
     },
     // Only the diff comes here; the settle step works frame by frame.
     async evaluate(fn, arg) {

@@ -6,11 +6,12 @@ import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { after, test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { FORMATS_READ, parseArgs } from '../scripts/lib/project.mjs'
 import {
   DETERMINISTIC,
   FREEZE_CSS,
+  SWEEP_FILLED,
   SWEEP_FLOOR,
   SWEEP_READY,
   compareText,
@@ -36,6 +37,7 @@ import {
   verdict,
 } from '../scripts/lib/shoot.mjs'
 import { FIXTURES, SCRIPTS } from './helpers.mjs'
+import { startServer } from './sweep-server.mjs'
 
 const base = mkdtempSync(join(tmpdir(), 'massimo-shoot-'))
 after(() => rmSync(base, { recursive: true, force: true }))
@@ -688,13 +690,20 @@ test('--playwright needs exactly one path', () => {
 const META = { about: { generator: 'ladle' }, stories: { 'a--one': {}, 'b--two': {}, 'c--three': {}, 'd--four': {} } }
 const metaFile = join(work, 'ids.json')
 writeFileSync(metaFile, JSON.stringify(META))
-const sweep = (args, env = {}) => shoot(['--sweep', 'http://x.test/', ...args, '--playwright', standIn], env)
+let server
+let site
+before(async () => {
+  server = await startServer()
+  site = server.url
+})
+after(() => server?.stop())
+const sweep = (args, env = {}) => shoot(['--sweep', `${site}/`, ...args, '--playwright', standIn], env)
 
 test('the sweep reads its flags whole, and the pairs format is still 1', () => {
   assert.equal(FORMATS_READ.pairs, 1)
-  const ok = sweepOptions({ sweep: 'http://localhost:61101/', legacy: true })
+  const ok = sweepOptions({ sweep: 'http://localhost:4650/', legacy: true })
   assert.deepEqual(ok.problems, [])
-  assert.deepEqual(ok.options, { base: 'http://localhost:61101', workers: 4, timeout: 15, ready: SWEEP_READY, legacy: true })
+  assert.deepEqual(ok.options, { base: 'http://localhost:4650', workers: 4, timeout: 15, ready: SWEEP_READY, legacy: true })
   assert.equal(SWEEP_READY, 'html[data-story-ready]')
   const flags = { sweep: 'http://x.test', workers: '2', timeout: '3.5', ready: '#root > div' }
   assert.deepEqual(sweepOptions(flags).options, { base: 'http://x.test', workers: 2, timeout: 3.5, ready: '#root > div', legacy: false })
@@ -738,8 +747,8 @@ test('a baseline excuses only what it also failed, and only when it reached 98% 
 test('--sweep --legacy opens every id from --ids-from in a fresh context, as Ladle serves it', () => {
   const r = sweep(['--legacy', '--ids-from', metaFile])
   assert.equal(r.status, 0, r.stderr)
-  assert.deepEqual(r.lines, [{ base: 'http://x.test', total: 4, ready: 4, failed: [], excused: [] }])
-  assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg).sort(), ['a--one', 'b--two', 'c--three', 'd--four'].map((id) => `http://x.test/?story=${id}&mode=preview`))
+  assert.deepEqual(r.lines, [{ base: site, total: 4, ready: 4, failed: [], excused: [] }])
+  assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg).sort(), ['a--one', 'b--two', 'c--three', 'd--four'].map((id) => `${site}/?story=${id}&mode=preview`))
   assert.equal(r.calls.filter((c) => c.name === 'newContext').length, 4)
   assert.equal(r.calls.filter((c) => c.name === 'contextClose').length, 4)
   assert.ok(r.calls.filter((c) => c.name === 'waitForSelector').every((c) => c.arg.selector === SWEEP_READY && c.arg.state === 'attached'))
@@ -751,7 +760,7 @@ test('--ready replaces the selector, and --routes names the ids and where each l
   const r = sweep(['--routes', routes, '--ready', '#root > .done', '--workers', '1'])
   assert.equal(r.status, 0, r.stderr)
   assert.equal(r.lines[0].total, 2)
-  assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg), ['http://x.test/stories/a/one?mode=preview', 'http://x.test/stories/b/two?mode=preview'])
+  assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg), [`${site}/stories/a/one?mode=preview`, `${site}/stories/b/two?mode=preview`])
   assert.ok(r.calls.filter((c) => c.name === 'waitForSelector').every((c) => c.arg.selector === '#root > .done'))
   // an id with no route fails and says so
   const some = sweep(['--routes', routes, '--ids-from', metaFile])
@@ -792,6 +801,50 @@ test('--sweep-baseline excuses what the baseline failed too, prints it, and excu
   assert.equal(low.lines[0].failed.length, 2)
   assert.deepEqual(low.lines[0].excused, [])
   assert.match(low.lines[0].baseline.note, /nothing is excused/)
+})
+
+// A document as the browser would hold it, for the check that runs in the page.
+const dom = (mountChildren, { marker = 'html' } = {}) => {
+  const node = (tagName, children = []) => ({ tagName, children, childElementCount: children.length })
+  const mount = node('DIV', mountChildren.map((t) => node(t)))
+  const body = node('BODY', [node('SCRIPT'), mount])
+  const html = node('HTML', [node('HEAD'), body])
+  return { documentElement: html, body, querySelector: (sel) => (sel === 'none' ? null : marker === 'html' ? html : mount) }
+}
+
+test('a root marker counts as ready only when the story\'s mount holds an element', () => {
+  const had = globalThis.document
+  try {
+    globalThis.document = dom([])
+    assert.equal(SWEEP_FILLED('html[data-story-ready]'), false, 'an empty mount under <html>')
+    assert.equal(SWEEP_FILLED('none'), false)
+    globalThis.document = dom(['MAIN'])
+    assert.equal(SWEEP_FILLED('html[data-story-ready]'), true)
+    // a wrapper selector asks of the wrapper itself
+    globalThis.document = dom([], { marker: 'mount' })
+    assert.equal(SWEEP_FILLED('#root'), false)
+    globalThis.document = dom(['MAIN'], { marker: 'mount' })
+    assert.equal(SWEEP_FILLED('#root'), true)
+  } finally {
+    globalThis.document = had
+  }
+})
+
+test('--sweep refuses a lane list in a newer format, and a server that answers nothing, before a browser starts', () => {
+  const newer = join(work, 'newer-meta.json')
+  writeFileSync(newer, JSON.stringify({ about: { generator: 'massimo', format: 2 }, stories: { 'a--one': {} } }))
+  const r = sweep(['--legacy', '--ids-from', newer])
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /newer-meta\.json is format 2/)
+  assert.match(r.stderr, /update massimo/i)
+  assert.deepEqual(r.calls, [])
+  // Ladle's own list has no format to refuse
+  writeFileSync(newer, JSON.stringify({ about: { generator: 'ladle', format: 9 }, stories: { 'a--one': {} } }))
+  assert.equal(sweep(['--legacy', '--ids-from', newer]).status, 0)
+  const down = shoot(['--sweep', 'http://127.0.0.1:1', '--legacy', '--ids-from', metaFile, '--playwright', standIn])
+  assert.equal(down.status, 2)
+  assert.match(down.stderr, /no server answers at http:\/\/127\.0\.0\.1:1/)
+  assert.deepEqual(down.calls, [])
 })
 
 test('--sweep refuses a bad call with exit 2 before a browser starts', () => {

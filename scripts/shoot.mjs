@@ -84,6 +84,7 @@ import {
   percent,
   pngSize,
   summarise,
+  SWEEP_FILLED,
   sweepOptions,
   sweepResult,
   sweepUrl,
@@ -412,25 +413,38 @@ function jsonFlag(name) {
   }
 }
 
+// The ids of a Ladle-shaped meta.json. One that massimo's own lane wrote, in
+// a format newer than these scripts read, stops the sweep with exit 2.
+function sweepIds(doc, where) {
+  if (doc?.about?.generator === 'massimo') refuseNewer('registry', doc.about.format, where, 2)
+  return idsOfMeta(doc)
+}
+
 // What the sweep needs, read before any browser starts: the options, the ids
-// and where each loads, and the baseline.
+// and where each loads, and the baseline. A server that answers nothing at
+// all stops it here, once, instead of failing every state on its own.
 async function readSweep() {
   const { options, problems } = sweepOptions(flags)
   if (!flags.legacy && !flags.routes) problems.push('--sweep needs --legacy (load /?story=<id>) or --routes <file> (a path for each id)')
   if (problems.length) fail(`usage: shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>] [--sweep-baseline <results.json>] [--workers 4] [--timeout 15]: ${problems.join('; ')}`, 2)
   const routes = flags.routes ? jsonFlag('routes') : {}
-  let ids
-  if (flags['ids-from']) ids = idsOfMeta(jsonFlag('ids-from'))
-  else if (flags.routes) ids = Object.keys(routes)
-  else {
+  const given = flags['ids-from'] ? jsonFlag('ids-from') : null
+  const baseline = flags['sweep-baseline'] ? jsonFlag('sweep-baseline') : null
+  let ids = given ? sweepIds(given, flags['ids-from']) : null
+  try {
+    await fetch(options.base, { signal: AbortSignal.timeout(Math.min(options.timeout * 1000, 10000)) })
+  } catch (err) {
+    fail(`no server answers at ${options.base} (${err.cause?.code ?? err.message})`, 2)
+  }
+  if (!ids && flags.routes) ids = Object.keys(routes)
+  else if (!ids) {
     try {
-      ids = idsOfMeta(await (await fetch(`${options.base}/meta.json`)).json())
+      ids = sweepIds(await (await fetch(`${options.base}/meta.json`)).json(), `${options.base}/meta.json`)
     } catch (err) {
       fail(`${options.base}/meta.json could not be read (${err.message}): name the ids with --ids-from <meta.json>`, 2)
     }
   }
   if (ids.length === 0) fail('the sweep found no ids to open', 2)
-  const baseline = flags['sweep-baseline'] ? jsonFlag('sweep-baseline') : null
   return { ...options, ids, routes, baseline }
 }
 
@@ -453,7 +467,7 @@ async function sweepOne(browser, id, url, { ready, timeout }) {
       return { id, ok: false, why: errors.length ? `page error: ${errors[0]}; ${why}` : why }
     }
     try {
-      await page.waitForFunction((sel) => (document.querySelector(sel)?.childElementCount ?? 0) > 0, ready, { timeout: Math.max(until - Date.now(), 1) })
+      await page.waitForFunction(SWEEP_FILLED, ready, { timeout: Math.max(until - Date.now(), 1) })
     } catch (err) {
       if (err.name !== 'TimeoutError') return { id, ok: false, why: err.message.split('\n')[0] }
       return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : `${ready} matched but holds no element` }
