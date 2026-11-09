@@ -745,6 +745,17 @@ test('a state fails when html[data-story-error] is set after it was ready, and t
   assert.equal(sweep(['--legacy', '--ids-from', metaFile, '--settle-ms', 'x']).status, 2)
 })
 
+test('the csf recipe never marks a state ready and failed at once, and keeps its shell code within 100 columns', () => {
+  const recipe = readFileSync(join(SCRIPTS, '..', 'skills', 'stories', 'recipes', 'vite-csf.md'), 'utf8')
+  const section = (name) => recipe.split(/^## /m).find((part) => part.startsWith(name))
+  const canvas = section('src/stories/Canvas.tsx')
+  assert.match(canvas, /function Failed[\s\S]*?removeAttribute\('data-story-ready'\)[\s\S]*?setAttribute\('data-story-error'/)
+  assert.match(canvas, /function Ready[\s\S]*?hasAttribute\('data-story-error'\)/)
+  const long = section('src/stories/Shell.tsx').split('\n').filter((l) => l.length > 100)
+  assert.deepEqual(long, [])
+  assert.match(recipe, /only one frame of a page holds focus/)
+})
+
 test('ids come from the stories keys of a Ladle-shaped meta.json, and a state loads where the flags say', () => {
   assert.deepEqual(idsOfMeta(META), ['a--one', 'b--two', 'c--three', 'd--four'])
   assert.deepEqual(idsOfMeta({}), [])
