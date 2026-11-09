@@ -19,8 +19,9 @@
 // commit. With --probe the class must be in the lane's CSS and not the app's.
 // --before names an earlier app build: the classes the app's CSS lost since
 // then must not occur in an app file. With neither, every class found only in
-// story files and story-only modules, and in no other file git keeps (the
-// app's CSS, docs and tests included), is looked up in the app's CSS.
+// story files, story-only modules and the lane's scaffold folder, and in no
+// other file git keeps (the app's CSS, docs and tests included), is looked up
+// in the app's CSS.
 //
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
@@ -30,7 +31,7 @@ import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildGraph } from './graph.mjs'
 import { compare, compileGlobs, walk } from './lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, sourceWords, storyOnlyModules } from './lib/lane-css.mjs'
+import { cssClasses, cssLayoutProblems, sourceWords, storyOnly } from './lib/lane-css.mjs'
 import { frozenProblems } from './lib/convert.mjs'
 import { laneRegistry } from './lib/lane.mjs'
 import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
@@ -162,10 +163,12 @@ function cssIn(dir) {
 // app's own, which imports the base CSS the lane imports. With no entry set,
 // it proposes app.css beside the base. Each path is written from the entry's
 // folder, since Tailwind reads a `@source` path from the file that declares it.
-export function layoutEdit(config, storyOnly) {
+// `scaffold` is the lane's scaffold folder, excluded whole, or null.
+export function layoutEdit(config, storyOnly, scaffold = null) {
   const appCss = config.stories.appCss ?? {}
   const base = typeof appCss.base === 'string' ? appCss.base : null
-  const excluded = [...storyOnly, ...config.stories.include]
+  const outside = storyOnly.filter((f) => scaffold === null || !f.startsWith(`${scaffold}/`))
+  const excluded = [...outside, ...(scaffold === null ? [] : [scaffold]), ...config.stories.include]
   if (base === null) {
     return [
       'The app must keep story-only files out of its CSS in an entry of its own (layout A), and stories.appCss names no base CSS:',
@@ -206,11 +209,14 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   const laneClasses = cssIn(lane)
 
   const include = compileGlobs(config.stories.include)
-  const storyOnly = new Set(storyOnlyModules({ root, config, files, resolver: createResolver(root, config) }))
+  const { modules, scaffold } = storyOnly({ root, config, files, resolver: createResolver(root, config) })
+  const storyOnlyFiles = new Set(modules)
+  const inScaffold = (file) => scaffold !== null && file.startsWith(`${scaffold}/`)
   // Tailwind takes a class from any file it reads for the app, so a word in
   // the app's own CSS, its docs or its tests is no leak (`appText`). A class
   // the app's CSS lost counts when the app's own code uses it (`appCode`).
-  // The build folders and the files git ignores are read by neither.
+  // The build folders and the files git ignores are read by neither. Every
+  // file of the lane's scaffold folder, its stylesheets included, is the lane's.
   const builds = [app, lane, before].filter(Boolean).map((d) => relative(root, d).split(sep).join('/'))
   const ignored = ignoredFiles(root, files)
   const storyWords = new Set()
@@ -219,7 +225,7 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   for (const file of files) {
     if (NOT_TEXT.test(file) || ignored.has(file) || builds.some((d) => file.startsWith(`${d}/`))) continue
     const test = isTestFile(file)
-    const inLane = !test && (isStoryFile(file) || include(file) || storyOnly.has(file))
+    const inLane = !test && (isStoryFile(file) || include(file) || storyOnlyFiles.has(file) || inScaffold(file))
     const code = !inLane && !test && APP_TEXT.test(file) && !/\.d\.[cm]?ts$/.test(file)
     let text
     try {
@@ -232,8 +238,9 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
       else appText.add(w)
       if (code && !appCode.has(w)) appCode.set(w, file)
     }
-    // A stylesheet's own selectors name classes the app's CSS defines itself.
-    if (!inLane && /\.(?:css|scss|sass|less|pcss)$/.test(file)) for (const c of cssClasses(text)) appText.add(c)
+    // A stylesheet's own selectors name classes its CSS defines itself: the
+    // app's, or for one of the lane's stylesheets, the lane's.
+    if (/\.(?:css|scss|sass|less|pcss)$/.test(file)) for (const c of cssClasses(text)) (inLane ? storyWords : appText).add(c)
   }
 
   let leaked = []
@@ -256,7 +263,7 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     else lines.push('ok: the app\'s CSS lost no class an app file uses')
   }
 
-  if (leaked.length > 0) lines.push('', ...layoutEdit(config, [...storyOnly].sort(compare)))
+  if (leaked.length > 0) lines.push('', ...layoutEdit(config, modules, scaffold))
   return { ok: leaked.length === 0 && lost.length === 0, lines }
 }
 

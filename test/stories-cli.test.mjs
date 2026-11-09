@@ -245,6 +245,33 @@ test('a class the app\'s own CSS, docs or tests hold is no leak, and neither is 
   assert.equal(leak(b).lines[0], "ok: no class only stories use is in the app's CSS")
 })
 
+// The lane's scaffold as the recipe writes it, in the folder of the HTML entry's module script.
+const SCAFFOLD = {
+  'stories.html': '<!doctype html>\n<html><body><div id="root"></div><script type="module" src="/src/stories/main.tsx"></script></body></html>\n',
+  'src/stories/main.tsx': `import Shell from './Shell'\nimport Canvas from './Canvas'\nexport { Shell, Canvas }\n`,
+  'src/stories/Shell.tsx': 'export default function Shell() { return <nav className="lane-nav" /> }\n',
+  'src/stories/Canvas.tsx': 'export default function Canvas() { return null }\n',
+  'src/stories/story.ts': 'export type Story = () => null\n',
+  'src/stories/frame.tsx': 'export default function Frame({ children }) { return <div className="story-surface">{children}</div> }\n',
+  'src/stories/stories.extra.css': '.story-page { background: white }\n',
+}
+
+test('the lane\'s scaffold folder is the lane\'s: a class only the frame or its CSS uses is a leak, and the edit excludes the folder', () => {
+  const both = `${APP_CSS}.story-surface { padding: 0 }\n.story-page { background: white }\n`
+  const b = builds({ appCss: both, laneCss: both })
+  write(b.root, SCAFFOLD)
+  b.files.push(...Object.keys(SCAFFOLD))
+  b.config.stories.frame = 'src/stories/frame.tsx'
+  b.config.stories.appCss = { base: 'src/styles/index.css', entry: 'src/styles/app.css' }
+  const r = leak(b)
+  assert.equal(r.ok, false)
+  assert.equal(r.lines[0], "leak: 2 classes only stories use are in the app's CSS: story-page, story-surface")
+  const edit = r.lines.slice(r.lines.indexOf('') + 1)
+  assert.ok(edit.includes('    @source not "../stories";'), edit.join('\n'))
+  assert.ok(!edit.some((l) => /"\.\.\/stories\/[^*]/.test(l)), 'no scaffold file on a line of its own')
+  assert.ok(edit.indexOf('    @source not "../pages/review/tableHarness.tsx";') < edit.indexOf('    @source not "../stories";'))
+})
+
 test('a leak of several classes counts them in words', () => {
   const both = `${APP_CSS}${STORY_CLASS}\n.h-77 { height: 1px }\n`
   const b = builds({ appCss: both, laneCss: both })
