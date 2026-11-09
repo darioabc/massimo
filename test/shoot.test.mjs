@@ -464,6 +464,25 @@ test('--pairs on two images prints a line per pair and a summary, and exits 0 wh
   assert.deepEqual(r.lines[1], { summary: true, pairs: 1, passed: 1, failed: 0, maxDiff: 0, ok: true })
 })
 
+test('--pairs --workers runs pairs side by side and prints them in the order given', () => {
+  const pairs = [
+    { name: 'slow-one', a: 'http://x.test/slow/a', b: 'http://x.test/slow/b', mode: 'dom' },
+    { name: 'fast-two', a: 'http://x.test/fast/a', b: 'http://x.test/fast/b', mode: 'dom' },
+  ]
+  const run = (workers) => pairsRun(pairs, ['--workers', workers], { FAKE_SLOW: '/slow/' })
+  const many = run('2')
+  assert.equal(many.status, 0, many.stderr)
+  assert.deepEqual(many.lines.slice(0, 2).map((l) => l.name), ['slow-one', 'fast-two'])
+  assert.equal(many.lines[2].pairs, 2)
+  const names = (r) => r.calls.map((c) => (c.name === 'goto' ? `goto ${c.arg.split('/')[3]}` : c.name)).filter((n) => n.startsWith('goto') || n === 'gotoEnd')
+  // with two workers the second pair starts its page before the first has finished loading
+  assert.ok(names(many).indexOf('goto fast') < names(many).indexOf('gotoEnd'), names(many).join())
+  const one = run('1')
+  assert.deepEqual(one.lines.slice(0, 2).map((l) => l.name), ['slow-one', 'fast-two'])
+  assert.ok(names(one).indexOf('goto fast') > names(one).indexOf('gotoEnd'), names(one).join())
+  assert.equal(run('0').status, 2)
+})
+
 test('--pairs exits 1 when a pair is over --max-diff, and the limit itself passes', () => {
   writeFileSync(join(work, 'q1.png'), png(2, 2))
   writeFileSync(join(work, 'q2.png'), png(2, 2))
@@ -703,13 +722,27 @@ test('the sweep reads its flags whole, and the pairs format is still 1', () => {
   assert.equal(FORMATS_READ.pairs, 1)
   const ok = sweepOptions({ sweep: 'http://localhost:4650/', legacy: true })
   assert.deepEqual(ok.problems, [])
-  assert.deepEqual(ok.options, { base: 'http://localhost:4650', workers: 4, timeout: 15, ready: SWEEP_READY, legacy: true })
+  assert.deepEqual(ok.options, { base: 'http://localhost:4650', workers: 4, timeout: 15, ready: SWEEP_READY, settleMs: 500, legacy: true })
   assert.equal(SWEEP_READY, 'html[data-story-ready]')
-  const flags = { sweep: 'http://x.test', workers: '2', timeout: '3.5', ready: '#root > div' }
-  assert.deepEqual(sweepOptions(flags).options, { base: 'http://x.test', workers: 2, timeout: 3.5, ready: '#root > div', legacy: false })
-  for (const bad of [{ sweep: true }, { sweep: 'x.test' }, { sweep: 'http://x.test', workers: '0' }, { sweep: 'http://x.test', workers: 'many' }, { sweep: 'http://x.test', timeout: '-1' }, { sweep: 'http://x.test', ready: true }]) {
+  const flags = { sweep: 'http://x.test', workers: '2', timeout: '3.5', ready: '#root > div', 'settle-ms': '0' }
+  assert.deepEqual(sweepOptions(flags).options, { base: 'http://x.test', workers: 2, timeout: 3.5, ready: '#root > div', settleMs: 0, legacy: false })
+  for (const bad of [{ sweep: true }, { sweep: 'x.test' }, { sweep: 'http://x.test', workers: '0' }, { sweep: 'http://x.test', workers: 'many' }, { sweep: 'http://x.test', timeout: '-1' }, { sweep: 'http://x.test', ready: true }, { sweep: 'http://x.test', 'settle-ms': '-1' }, { sweep: 'http://x.test', 'settle-ms': '1.5' }]) {
     assert.ok(sweepOptions(bad).problems.length > 0, JSON.stringify(bad))
   }
+})
+
+test('a state fails when html[data-story-error] is set after it was ready, and the settle wait is --settle-ms', () => {
+  const r = sweep(['--legacy', '--ids-from', metaFile, '--settle-ms', '40'], { FAKE_SWEEP_FAILED: 'b--two' })
+  assert.equal(r.status, 1)
+  assert.equal(r.lines[0].ready, 3)
+  assert.deepEqual(r.lines[0].failed, [{ id: 'b--two', why: 'html[data-story-error] is set: the state failed after it was ready' }])
+  const waits = r.calls.filter((c) => c.name === 'sweepSettle').map((c) => c.arg)
+  assert.deepEqual(waits, [40, 40, 40, 40])
+  // the default, and a page that never sets the attribute (a Ladle page)
+  const plain = sweep(['--legacy', '--ids-from', metaFile])
+  assert.equal(plain.status, 0)
+  assert.deepEqual([...new Set(plain.calls.filter((c) => c.name === 'sweepSettle').map((c) => c.arg))], [500])
+  assert.equal(sweep(['--legacy', '--ids-from', metaFile, '--settle-ms', 'x']).status, 2)
 })
 
 test('ids come from the stories keys of a Ladle-shaped meta.json, and a state loads where the flags say', () => {

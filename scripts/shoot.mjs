@@ -7,9 +7,9 @@
 //   shoot.mjs --url <url> --out <file.png> [--width 1280] [--height 800] [--full] [--scheme light|dark] [--wait 300] [--selector <css>] [--dom <file.txt>]
 //   shoot.mjs --batch <shots.json>      (array of { url, out, width, height, full, scheme, wait, selector, dom })
 //   shoot.mjs --diff <a.png> <b.png> --out <diff.png> [--threshold 0.05]
-//   shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05]
+//   shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 4]
 //   shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>]
-//             [--sweep-baseline <results.json>] [--workers 4] [--timeout 15]
+//             [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--settle-ms 500]
 //
 // --dom also saves what the page holds as text (its accessibility tree, or its
 // HTML on an older Playwright), for reviewers who read a render without a browser.
@@ -48,13 +48,17 @@
 // --sweep opens every story state of a server, each in a fresh browser context, and
 // prints { base, total, ready, failed: [{ id, why }], excused } as one JSON line. A state
 // passes when --ready (default html[data-story-ready]) matches, the matched element holds an
-// element child, and no page error fired before the timeout (seconds, default 15). The ids
+// element child, and no page error fired before the timeout (seconds, default 15). Then it
+// waits two animation frames and --settle-ms (default 500) and fails the state when
+// html[data-story-error] is set, which a state that fails in an effect sets. The ids
 // come from --ids-from (the stories keys of a Ladle-shaped meta.json), else from the server's
 // own /meta.json. --legacy loads each as /?story=<id>&mode=preview; --routes names a JSON
 // file of { "<id>": "<path>" } to load instead, and gives the ids when --ids-from does not.
 // --sweep-baseline takes the result of an earlier sweep: a failure it also had is excused,
 // but only if that baseline reached 98% ready; below that nothing is excused. --workers is
 // how many states load at once. Exit 1 when a state failed and was not excused.
+//
+// --pairs also takes --workers: how many pairs run at once (default 4), printed in file order.
 //
 // Exit codes:
 //   0  every pair is within --max-diff, or the shots and diff were made
@@ -85,6 +89,7 @@ import {
   pngSize,
   summarise,
   SWEEP_FILLED,
+  sweepSettle,
   sweepOptions,
   sweepResult,
   sweepUrl,
@@ -381,7 +386,7 @@ async function runPair(browser, pair, { out, threshold, maxDiff }) {
 // A pairs file that cannot be run stops here, before a browser starts, with exit
 // 2 so CI can tell a broken file from a pair over the limit.
 function readPairs() {
-  if (typeof flags.pairs !== 'string' || typeof flags.out !== 'string') fail('usage: shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05]', 2)
+  if (typeof flags.pairs !== 'string' || typeof flags.out !== 'string') fail('usage: shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 4]', 2)
   const file = resolve(flags.pairs)
   if (!existsSync(file)) fail(`no such pairs file: ${flags.pairs}`, 2)
   let doc
@@ -399,7 +404,9 @@ function readPairs() {
   if (!(maxDiff >= 0 && maxDiff <= 100)) fail('--max-diff is a percentage from 0 to 100', 2)
   const threshold = flagNumber(flags.threshold, 0.05)
   if (!(threshold >= 0 && threshold < 1)) fail('--threshold is a fraction from 0 up to, but not including, 1 (default 0.05); --max-diff is the percentage', 2)
-  return { pairs, out: resolve(flags.out), maxDiff, threshold }
+  const workers = flagNumber(flags.workers, 4)
+  if (!Number.isInteger(workers) || workers < 1 || workers > 32) fail('--workers is a whole number from 1 to 32', 2)
+  return { pairs, out: resolve(flags.out), maxDiff, threshold, workers }
 }
 
 // A JSON file named by a flag, or exit 2.
@@ -426,7 +433,7 @@ function sweepIds(doc, where) {
 async function readSweep() {
   const { options, problems } = sweepOptions(flags)
   if (!flags.legacy && !flags.routes) problems.push('--sweep needs --legacy (load /?story=<id>) or --routes <file> (a path for each id)')
-  if (problems.length) fail(`usage: shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>] [--sweep-baseline <results.json>] [--workers 4] [--timeout 15]: ${problems.join('; ')}`, 2)
+  if (problems.length) fail(`usage: shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>] [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--settle-ms 500]: ${problems.join('; ')}`, 2)
   const routes = flags.routes ? jsonFlag('routes') : {}
   const given = flags['ids-from'] ? jsonFlag('ids-from') : null
   const baseline = flags['sweep-baseline'] ? jsonFlag('sweep-baseline') : null
@@ -449,8 +456,9 @@ async function readSweep() {
 }
 
 // One state in a fresh browser context: ready, with an element inside the
-// ready element, and no page error before then.
-async function sweepOne(browser, id, url, { ready, timeout }) {
+// ready element, and after the settle wait no page error and no
+// html[data-story-error].
+async function sweepOne(browser, id, url, { ready, timeout, settleMs }) {
   if (url === null) return { id, ok: false, why: 'no route for this id' }
   const errors = []
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 } })
@@ -472,7 +480,14 @@ async function sweepOne(browser, id, url, { ready, timeout }) {
       if (err.name !== 'TimeoutError') return { id, ok: false, why: err.message.split('\n')[0] }
       return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : `${ready} matched but holds no element` }
     }
-    return errors.length ? { id, ok: false, why: `page error: ${errors[0]}` } : { id, ok: true }
+    let failed
+    try {
+      failed = await page.evaluate(sweepSettle, settleMs)
+    } catch (err) {
+      return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : err.message.split('\n')[0] }
+    }
+    if (errors.length) return { id, ok: false, why: `page error: ${errors[0]}` }
+    return failed ? { id, ok: false, why: 'html[data-story-error] is set: the state failed after it was ready' } : { id, ok: true }
   } catch (err) {
     return { id, ok: false, why: err.message.split('\n')[0] }
   } finally {
@@ -524,18 +539,26 @@ try {
     const { a, b, out, threshold } = jobs.diff
     process.stdout.write(`${JSON.stringify(await diff(browser, a, b, out, threshold))}\n`)
   } else if (jobs.pairs) {
-    const results = []
-    for (const pair of jobs.pairs.pairs) {
-      let line
-      try {
-        line = await runPair(browser, pair, jobs.pairs)
-      } catch (err) {
-        // one pair that cannot load must not hide the others
-        line = { name: pair.name, mode: pair.mode, ok: false, error: err.message }
+    // `workers` pairs at once; each line is printed once every pair before it has been
+    const results = new Array(jobs.pairs.pairs.length)
+    let next = 0
+    let printed = 0
+    const loop = async () => {
+      while (next < results.length) {
+        const at = next++
+        const pair = jobs.pairs.pairs[at]
+        let line
+        try {
+          line = await runPair(browser, pair, jobs.pairs)
+        } catch (err) {
+          // one pair that cannot load must not hide the others
+          line = { name: pair.name, mode: pair.mode, ok: false, error: err.message }
+        }
+        results[at] = line
+        while (printed < results.length && results[printed]) process.stdout.write(`${JSON.stringify(results[printed++])}\n`)
       }
-      results.push(line)
-      process.stdout.write(`${JSON.stringify(line)}\n`)
     }
+    await Promise.all(Array.from({ length: Math.min(jobs.pairs.workers, results.length) }, loop))
     const summary = summarise(results, jobs.pairs.maxDiff)
     process.stdout.write(`${JSON.stringify(summary)}\n`)
     if (!summary.ok) process.exitCode = 1

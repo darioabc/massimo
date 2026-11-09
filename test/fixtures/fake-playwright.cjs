@@ -17,6 +17,8 @@
 //   FAKE_SWEEP_EMPTY    the ready element matches but holds no element (the
 //                       story's mount is empty; the sweep's own check decides)
 //   FAKE_SWEEP_ERROR    a page error fires while the page loads
+//   FAKE_SWEEP_FAILED   the page is ready, then marks <html data-story-error>
+//   FAKE_SLOW           (also a list) goto takes 300 ms and logs gotoEnd
 const { appendFileSync, writeFileSync } = require('node:fs')
 
 const log = (name, arg) => {
@@ -93,6 +95,10 @@ const makePage = () => {
     async goto(url) {
       current = url
       log('goto', url)
+      if (listed('FAKE_SLOW', url)) {
+        await new Promise((done) => setTimeout(done, 300))
+        log('gotoEnd', url)
+      }
       if (listed('FAKE_SWEEP_ERROR', url)) handlers.pageerror?.(new Error('boom'))
     },
     on(event, fn) {
@@ -118,8 +124,13 @@ const makePage = () => {
         globalThis.document = had
       }
     },
-    // Only the diff comes here; the settle step works frame by frame.
+    // The sweep's settle step runs here and says whether the page is marked as failed.
+    // Otherwise only the diff comes here; the shot settle step works frame by frame.
     async evaluate(fn, arg) {
+      if (fn.name === 'sweepSettle') {
+        log('sweepSettle', arg)
+        return listed('FAKE_SWEEP_FAILED', current)
+      }
       log('diff', { threshold: arg.threshold })
       return {
         width: 2,

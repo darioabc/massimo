@@ -365,12 +365,24 @@ export const SWEEP_FILLED = (selector) => {
   const skip = ['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'LINK']
   return Array.from(document.body?.children ?? []).some((c) => !skip.includes(c.tagName) && c.childElementCount > 0)
 }
+// What a sweep waits after the ready selector matches, in milliseconds, before it
+// reads html[data-story-error]: a state can fail in an effect after it was marked
+// ready, and shows its error box without any page error.
+export const SWEEP_SETTLE_MS = 500
+// Runs in the page, after the ready selector matched: two animation frames, then
+// `ms`, then whether the document is marked as failed. Like SWEEP_FILLED it
+// must not use anything from this file.
+export async function sweepSettle(ms) {
+  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+  await new Promise((done) => setTimeout(done, ms))
+  return document.documentElement.hasAttribute('data-story-error')
+}
 // The share of the baseline's states that must be ready before it can excuse
 // anything.
 export const SWEEP_FLOOR = 0.98
 
 // The sweep's flags, read whole: `workers` and `timeout` (seconds) must be
-// positive numbers, and `--sweep` takes a base URL. Returns the options and
+// positive numbers, `settle-ms` a whole number from 0 to 10000, and `--sweep` takes a base URL. Returns the options and
 // the problems, so a typo is caught before a browser starts.
 export function sweepOptions(flags) {
   const problems = []
@@ -382,8 +394,10 @@ export function sweepOptions(flags) {
   if (!(timeout > 0)) problems.push('--timeout is a number of seconds above 0')
   const ready = flags.ready === undefined ? SWEEP_READY : flags.ready
   if (typeof ready !== 'string' || !ready) problems.push('--ready takes a CSS selector')
+  const settleMs = flagNumber(flags['settle-ms'], SWEEP_SETTLE_MS)
+  if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > 10000) problems.push('--settle-ms is a whole number of milliseconds from 0 to 10000')
   for (const key of ['ids-from', 'routes', 'sweep-baseline']) if (flags[key] !== undefined && (typeof flags[key] !== 'string' || !flags[key])) problems.push(`--${key} takes one file`)
-  return { options: { base, workers, timeout, ready, legacy: isOn(flags.legacy) }, problems }
+  return { options: { base, workers, timeout, ready, settleMs, legacy: isOn(flags.legacy) }, problems }
 }
 
 // The ids of a Ladle-shaped meta.json: its `stories` keys, in file order.
