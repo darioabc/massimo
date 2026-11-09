@@ -327,6 +327,15 @@ test('--shoot runs shoot.mjs on the pairs and folds each verdict in', () => {
   assert.match(none.stdout, /  open {6}shoot  shoot\.mjs found no Playwright: pass --playwright <path> to a checkout that has it\n/)
 })
 
+test('--workers reaches the shots, which run that many pairs at once', () => {
+  const pkg = join(ctx.root, '..', 'pw', 'node_modules', 'playwright')
+  const args = ['verify', 'stories', '--pairs', 'shots.json', '--a', 'http://a.test', '--b', 'http://b.test', '--shoot', '--playwright', pkg]
+  const bad = script('adopt', [...args, '--workers', '0'])
+  assert.equal(bad.status, 1)
+  assert.match(bad.stdout, /shoot\.mjs could not run the pairs: .*--workers is a whole number from 1 to 32/)
+  assert.equal(script('adopt', [...args, '--workers', '2']).status, 0)
+})
+
 test('accept takes the flags verify took, and a shot holds while the pair still differs the same way', () => {
   const pkg = join(ctx.root, '..', 'pw', 'node_modules', 'playwright')
   const shoot = ['--pairs', 'shots.json', '--a', 'http://a.test', '--b', 'http://b.test', '--shoot', '--playwright', pkg]
