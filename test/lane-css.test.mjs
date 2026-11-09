@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { walk } from '../scripts/lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, sourceNotLines, sourceWords, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
+import { cssClasses, cssLayoutProblems, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
 import { DEFAULTS, deepMerge } from '../scripts/lib/project.mjs'
 import { scratch } from './helpers.mjs'
 
@@ -81,6 +81,79 @@ test('a cycle nothing outside reaches, a type-only import and a file nobody impo
   })
   const only = storyOnlyModules(t)
   for (const f of ['src/a.ts', 'src/b.ts', 'src/orphan.ts', 'src/types.ts']) assert.ok(!only.includes(f), f)
+})
+
+test('a cycle that only stories reach is story-only whole, and one app code also reaches is not', () => {
+  const cycle = {
+    'src/pages/review/harnessA.tsx': `import { b } from './harnessB'\nexport const A = () => b\n`,
+    'src/pages/review/harnessB.tsx': `import { A } from './harnessA'\nexport const b = 1\nexport const useA = () => A\n`,
+    'src/pages/review/Cycle.stories.tsx': `import { A } from './harnessA'\nexport default { title: 'Pages / Cycle' }\nexport const Plain = () => A\n`,
+  }
+  const only = storyOnlyModules(lane(cycle))
+  for (const f of ['src/pages/review/harnessA.tsx', 'src/pages/review/harnessB.tsx']) assert.ok(only.includes(f), f)
+  const shared = storyOnlyModules(lane({ ...cycle, 'src/App.tsx': `import { b } from './pages/review/harnessB'\nexport const App = () => b\n` }))
+  for (const f of ['src/pages/review/harnessA.tsx', 'src/pages/review/harnessB.tsx']) assert.ok(!shared.includes(f), f)
+})
+
+// The lane's scaffold as the recipe writes it, in the folder of the HTML entry's module script.
+const SCAFFOLD = {
+  'stories.html': '<!doctype html>\n<html><body><!-- <script type="module" src="/src/old.tsx"></script> -->\n<script src="/src/stories/main.tsx?v=1" type="module"></script></body></html>\n',
+  'src/stories/main.tsx': `import Shell from './Shell'\nimport Canvas from './Canvas'\nexport { Shell, Canvas }\n`,
+  'src/stories/Shell.tsx': 'export default function Shell() { return null }\n',
+  'src/stories/Canvas.tsx': 'export default function Canvas() { return null }\n',
+  'src/stories/story.ts': 'export type Story = () => null\n',
+  'src/stories/frame.tsx': `import { surface } from '../frameParts'\nexport default function Frame({ children }) { return children }\nexport const s = surface\n`,
+  'src/frameParts.ts': 'export const surface = "story-surface"\n',
+}
+const framed = (c) => (c.stories.frame = 'src/stories/frame.tsx')
+
+test('the lane\'s scaffold folder and what only it imports are story-only', () => {
+  const found = storyOnly(lane(SCAFFOLD, framed))
+  assert.equal(found.scaffold, 'src/stories')
+  for (const f of ['src/stories/main.tsx', 'src/stories/Shell.tsx', 'src/stories/Canvas.tsx', 'src/stories/story.ts', 'src/stories/frame.tsx', 'src/frameParts.ts']) assert.ok(found.modules.includes(f), f)
+  assert.deepEqual(storyOnlyModules(lane(SCAFFOLD, framed)), found.modules)
+  // With no lane entry there is no scaffold folder, and the frame alone counts.
+  const bare = storyOnly(lane({ ...SCAFFOLD, 'stories.html': '<html></html>\n' }, framed))
+  assert.equal(bare.scaffold, null)
+  assert.ok(bare.modules.includes('src/stories/frame.tsx') && bare.modules.includes('src/frameParts.ts'))
+  assert.ok(!bare.modules.includes('src/stories/main.tsx'))
+})
+
+test('a folder that holds the app\'s own entry, or a file app code imports, is no scaffold folder', () => {
+  // The lane's entry script sits beside the app's, which nothing imports.
+  const beside = lane({
+    'stories.html': '<script type="module" src="/src/lane.tsx"></script>\n',
+    'index.html': '<script type="module" src="/src/main.tsx"></script>\n',
+    'src/lane.tsx': `import { LaneOnly } from './laneOnly'\nexport const lane = LaneOnly\n`,
+    'src/laneOnly.ts': 'export const LaneOnly = 1\n',
+    'src/main.tsx': `import { App } from './App'\nexport const main = App\n`,
+    'src/App.tsx': 'export const App = 1\n',
+  })
+  const found = storyOnly(beside)
+  assert.equal(found.scaffold, null)
+  assert.ok(found.modules.includes('src/lane.tsx') && found.modules.includes('src/laneOnly.ts'))
+  for (const f of ['src/main.tsx', 'src/App.tsx']) assert.ok(!found.modules.includes(f), f)
+
+  const imported = storyOnly(lane({ ...SCAFFOLD, 'src/App.tsx': `import Shell from './stories/Shell'\nexport const App = Shell\n` }, framed))
+  assert.equal(imported.scaffold, null)
+  assert.ok(!imported.modules.includes('src/stories/Shell.tsx'))
+  assert.ok(imported.modules.includes('src/stories/main.tsx'))
+})
+
+test('the scaffold folder is one warning when the entry CSS does not exclude it, and none when it does', () => {
+  const uncovered = lane({ ...SCAFFOLD, 'src/styles/base.css': BASE, 'src/styles/app.css': ENTRY }, (c) => {
+    c.stories = layout(c)
+    framed(c)
+  })
+  assert.deepEqual(cssLayoutProblems(uncovered), [
+    { rule: 'css-uncovered', file: 'src/frameParts.ts', detail: "only stories use it, but src/styles/app.css does not exclude it from the app's CSS", severity: 'warn' },
+    { rule: 'css-uncovered', file: 'src/stories', detail: "the lane's scaffold is here, but src/styles/app.css does not exclude it from the app's CSS", severity: 'warn' },
+  ])
+  const covered = lane({ ...SCAFFOLD, 'src/styles/base.css': BASE, 'src/styles/app.css': `${ENTRY}@source not "../stories";\n@source not "../frameParts.ts";\n` }, (c) => {
+    c.stories = layout(c)
+    framed(c)
+  })
+  assert.deepEqual(cssLayoutProblems(covered), [])
 })
 
 test('stories.storyOnly adds files the import graph cannot see', () => {

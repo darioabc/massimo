@@ -9,12 +9,14 @@
 // files; it writes nothing.
 
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, posix } from 'node:path'
+import { join, posix } from 'node:path'
 import { compare, compileGlobs, globToRegExp } from './glob.mjs'
 import { createResolver, extractImports, isStoryFile, isTestFile } from './source.mjs'
 
 const SOURCE_EXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro)$/
 const isSource = (file) => SOURCE_EXT.test(file) && !/\.d\.[cm]?ts$/.test(file)
+// The lane's HTML entry at the repo root, as the Vite plugin reads it by default.
+const LANE_HTML = 'stories.html'
 
 // Comments blanked out, newlines kept, so a line number still counts. A
 // string is skipped whole: a glob such as "gen/**/*.ts" holds a "/**/".
@@ -62,9 +64,29 @@ function notLinesOfGraph(root, cssFile, seen = new Set()) {
 // Whether any of the lines drops `file`: its glob matches the path, or names a folder above it.
 const excludedBy = (lines, file) => lines.some((l) => globToRegExp(l.glob).test(file) || file.startsWith(`${l.glob.replace(/\/+$/, '')}/`))
 
+// The module scripts an HTML page at the repo root loads, as repo-relative
+// paths. A page that is missing loads nothing.
+function moduleScripts(root, html) {
+  let text
+  try {
+    text = readFileSync(join(root, html), 'utf8')
+  } catch {
+    return []
+  }
+  const out = []
+  for (const m of text.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<script\b([^>]*)>/gi)) {
+    if (!/\btype\s*=\s*["']?module\b/i.test(m[1])) continue
+    const src = /\bsrc\s*=\s*(["'])([^"']+)\1/i.exec(m[1])?.[2].replace(/[?#].*$/, '')
+    if (!src || /^(?:[a-z][\w+.-]*:|\/\/)/i.test(src)) continue
+    out.push(src.startsWith('/') ? src.replace(/^\/+/, '') : posix.normalize(posix.join(posix.dirname(html), src)))
+  }
+  return out
+}
+
 // The import graph of the source files: who is a story or a test, what each
-// imports at run time, and the story-only set. A type-only import is not an
-// edge, since the app takes nothing from it at run time.
+// imports at run time, the story-only set, and the lane's scaffold folder. A
+// type-only import is not an edge, since the app takes nothing from it at
+// run time.
 function sourceGraph({ root, config, files, resolver }) {
   // The resolver is built on first use, so no files means no disk read.
   let built = null
@@ -100,33 +122,72 @@ function sourceGraph({ root, config, files, resolver }) {
     imports.set(file, targets)
     for (const target of targets) (importers.get(target) ?? importers.set(target, new Set()).get(target)).add(file)
   }
-  // The smallest set in which every member has a story or a member among its
-  // importers and all its importers are stories, tests or members: a module
-  // that app code also imports never gets in, a module only tests import is
-  // test support and stays out, and so does a cycle nothing outside reaches.
-  const only = new Set()
-  for (let grew = true; grew; ) {
-    grew = false
-    for (const file of sources) {
-      if (stories.has(file) || only.has(file)) continue
-      const from = [...(importers.get(file) ?? [])]
-      if (from.some((f) => own.has(f) || only.has(f)) && from.every((f) => stories.has(f) || only.has(f))) {
-        only.add(file)
-        grew = true
+  // Every module that story files and the lane's own files (`starts`) reach
+  // at run time through modules that are not stories or tests, less each
+  // one with an importer that is neither a story, a test nor still a member,
+  // until none is left to drop. So a module that app code also imports never
+  // gets in, nor does what only it imports; a module only tests import is
+  // test support and stays out; a cycle that only stories reach gets in
+  // whole, and a cycle nothing outside reaches stays out.
+  const storyOnlyFrom = (starts) => {
+    const only = new Set(starts.filter((f) => !stories.has(f)))
+    const queue = [...own, ...only]
+    while (queue.length > 0) {
+      for (const target of imports.get(queue.pop()) ?? []) {
+        if (stories.has(target) || only.has(target)) continue
+        only.add(target)
+        queue.push(target)
       }
     }
+    for (let shrank = true; shrank; ) {
+      shrank = false
+      for (const file of only) {
+        if ([...(importers.get(file) ?? [])].some((f) => !stories.has(f) && !only.has(f))) {
+          only.delete(file)
+          shrank = true
+        }
+      }
+    }
+    return only
   }
+
+  // The lane's own files: the module script of its HTML entry and the frame,
+  // and the scaffold folder that holds the script (`src/stories/` in the
+  // recipe), whose files are all the lane's. The folder is not taken when it
+  // is the repo root, holds the module script of another page at the root
+  // (the app's own entry, which nothing imports), or holds a file that app
+  // code imports at run time; then the script and the frame count alone.
+  const known = new Set(sources)
+  const scripts = known.size === 0 ? [] : moduleScripts(root, LANE_HTML).filter((f) => known.has(f))
+  const frame = typeof config?.stories?.frame === 'string' ? config.stories.frame.replace(/^\.?\/+/, '') : null
+  const seeds = [...scripts, ...(frame && known.has(frame) ? [frame] : [])]
+  const folder = scripts.length > 0 ? posix.dirname(scripts[0]) : '.'
+  const inFolder = (file) => file.startsWith(`${folder}/`)
+  const pages = (files ?? []).filter((f) => !f.includes('/') && /\.html?$/i.test(f) && f !== LANE_HTML)
+  let scaffold = folder !== '.' && !pages.some((page) => moduleScripts(root, page).some(inFolder)) ? folder : null
+  let only = scaffold === null ? null : storyOnlyFrom([...seeds, ...sources.filter(inFolder)])
+  if (scaffold !== null && !sources.filter(inFolder).every((f) => stories.has(f) || only.has(f))) scaffold = null
+  if (scaffold === null) only = storyOnlyFrom(seeds)
+
   const declared = compileGlobs(config?.stories?.storyOnly ?? [])
   for (const file of sources) if (!stories.has(file) && declared(file)) only.add(file)
-  return { sources, stories, imports, only }
+  return { sources, stories, imports, only, scaffold }
 }
 
-// Source files that are not stories or tests and are imported only by
-// stories, tests or other such files, at least one of them a story or such a
-// file, plus whatever `stories.storyOnly` globs add, as sorted repo-relative
-// paths. `files` is every repo file.
+// What only stories use, as { modules, scaffold }. `modules` holds, as
+// sorted repo-relative paths, the source files that are not stories or tests
+// and that story files or the lane's own files reach, imported by nothing
+// else (see above), plus whatever `stories.storyOnly` globs add. `scaffold`
+// is the lane's scaffold folder, every file of which is the lane's, or null.
+// `files` is every repo file.
+export function storyOnly({ root, config, files, resolver } = {}) {
+  const graph = sourceGraph({ root, config, files, resolver })
+  return { modules: [...graph.only].sort(compare), scaffold: graph.scaffold }
+}
+
+// The modules of `storyOnly`, as sorted repo-relative paths.
 export function storyOnlyModules({ root, config, files, resolver } = {}) {
-  return [...sourceGraph({ root, config, files, resolver }).only].sort(compare)
+  return storyOnly({ root, config, files, resolver }).modules
 }
 
 // What is wrong with the CSS layout, as { rule, file, detail } (and
@@ -134,7 +195,8 @@ export function storyOnlyModules({ root, config, files, resolver } = {}) {
 // `stories.appCss` names the base CSS.
 //   css-base        the base CSS, or a sheet it imports, holds a `@source not`
 //   css-app-import  app code imports a story-only module, or a file the entry CSS excludes
-//   css-uncovered   (warn) a story-only module the entry CSS does not exclude
+//   css-uncovered   (warn) a story-only module, or a file of the lane's
+//                   scaffold folder, the entry CSS does not exclude
 export function cssLayoutProblems({ root, config, files, resolver } = {}) {
   const appCss = config?.stories?.appCss
   if (!appCss || typeof appCss.base !== 'string') return []
@@ -154,8 +216,14 @@ export function cssLayoutProblems({ root, config, files, resolver } = {}) {
     if (!existsSync(join(root, entry))) add('css-base', entry, 'it does not exist, so the app has no entry CSS')
     const lines = notLinesOfGraph(root, entry)
     excluded = (file) => excludedBy(lines, file)
+    // The scaffold folder is one warning, since one line excludes it.
+    const scaffold = graph.scaffold
+    const inScaffold = (file) => scaffold !== null && file.startsWith(`${scaffold}/`)
+    if (graph.sources.some((file) => inScaffold(file) && !graph.stories.has(file) && !excluded(file))) {
+      add('css-uncovered', scaffold, `the lane's scaffold is here, but ${entry} does not exclude it from the app's CSS`, 'warn')
+    }
     for (const file of [...graph.only].sort(compare)) {
-      if (!excluded(file)) add('css-uncovered', file, `only stories use it, but ${entry} does not exclude it from the app's CSS`, 'warn')
+      if (!inScaffold(file) && !excluded(file)) add('css-uncovered', file, `only stories use it, but ${entry} does not exclude it from the app's CSS`, 'warn')
     }
   }
   for (const file of graph.sources) {
