@@ -101,7 +101,7 @@ import {
   retirePlan,
   statusTable,
 } from './lib/adopt.mjs'
-import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch } from './lib/convert.mjs'
+import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch, shellPath } from './lib/convert.mjs'
 import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
@@ -811,7 +811,6 @@ function convertStories() {
   readRecords()
   refuseNewerFile(join(projectDir, 'adopt', 'stories', 'redirects.json'), 'redirects', 'format', 'adopt/stories/redirects.json')
   refuseNewerFile(workPath('removal.json'), 'removal', 'format', 'adopt/stories/work/removal.json')
-  refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
   const ledger = readLedger()
   const inv = goingTools(ledger).length > 0 && existsSync(inventoryPath(projectDir)) ? readInventory() : null
   const registry = csfRegistry()
@@ -866,7 +865,7 @@ function convertStories() {
   }
 
   const out = [`massimo adopt convert stories: ${plural(summary.files, 'record')} (${plural(summary.states, 'state')}), ${plural(candidates.length + summary.frozen, 'frozen file')} (${summary.frozen} pinned, ${candidates.length} to confirm), ${plural(summary.argsFiles.length, 'file')} with args, ${plural(summary.parametersStories.length, 'story', 'stories')} with parameters.`]
-  if (candidates.length > 0) out.push('', 'Frozen candidates, each a default export that sets a banner meta key:', ...candidates.map((c) => `  ${c.file}  (${c.key})`), 'Pin the ones that are design targets, then run convert stories again so the patch leaves them alone:', ...candidates.map((c) => `  ${scriptCommand(root, projectDir, 'adopt', `convert stories --freeze ${c.file}`)}`))
+  if (candidates.length > 0) out.push('', 'Frozen candidates, each a default export that sets a banner meta key:', ...candidates.map((c) => `  ${c.file}  (${c.key})`), 'Pin the ones that are design targets, then run convert stories again so the patch leaves them alone:', ...candidates.map((c) => `  ${scriptCommand(root, projectDir, 'adopt', `convert stories --freeze ${shellPath(c.file)}`)}`))
   if (summary.argsFiles.length > 0) out.push('', 'Files that keep args or argTypes at run time, for a hand pass:', ...listed(summary.argsFiles.map((f) => `  ${f}`)))
   if (summary.parametersStories.length > 0) out.push('', 'Stories that set parameters, which the canvas does not read, for a hand pass:', ...listed(summary.parametersStories.map((h) => `  ${h.file}  ${h.story}`)))
   if (summary.wholeFiles.length > 0) out.push('', 'Files without a single type import from the tool, compared as a whole, for a hand pass:', ...listed(summary.wholeFiles.map((h) => `  ${h.file}  ${h.detail}`)))

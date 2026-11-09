@@ -161,6 +161,9 @@ export function freezeEntry(root, file, since) {
   return { file, sha256: fileSha(root, file), since }
 }
 
+// A path as a shell takes it: quoted when it holds anything but plain path characters.
+export const shellPath = (p) => (/^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`)
+
 // Frozen files that changed since they were pinned, as { rule, file, detail }.
 // A file that is gone is a retired design target and no problem.
 export function frozenProblems(root, config) {
@@ -172,7 +175,7 @@ export function frozenProblems(root, config) {
     }
     const now = fileSha(root, f.file)
     if (now === null || now === f.sha256) continue
-    out.push({ rule: 'story-frozen', file: f.file, detail: `it is a design target pinned since ${f.since ?? 'an unknown date'} and it has changed: restore it, or pin the new text with convert stories --refreeze ${f.file}` })
+    out.push({ rule: 'story-frozen', file: f.file, detail: `it is a design target pinned since ${f.since ?? 'an unknown date'} and it has changed: restore it, or pin the new text with convert stories --refreeze ${shellPath(f.file)}` })
   }
   return out
 }
@@ -196,7 +199,7 @@ export function refreeze(root, config, file, { since } = {}) {
 // when the file is not a story file of the lane, is not there, or is pinned.
 export function freeze(root, config, registry, file, { since } = {}) {
   const list = config?.stories?.frozen ?? []
-  if (list.some((f) => f.file === file)) throw new Error(`${file} is already in stories.frozen: convert stories --refreeze ${file} pins it again`)
+  if (list.some((f) => f.file === file)) throw new Error(`${file} is already in stories.frozen: convert stories --refreeze ${shellPath(file)} pins it again`)
   if (!registry?.files?.[file]) throw new Error(`${file} is not a story file of the lane: stories.include matches ${Object.keys(registry?.files ?? {}).length} files`)
   const entry = freezeEntry(root, file, since)
   if (entry.sha256 === null) throw new Error(`${file} is not there, so there is nothing to pin`)
