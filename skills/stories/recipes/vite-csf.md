@@ -2,7 +2,7 @@
 
 For a repo whose stories are CSF files in Ladle's form (a default export with the title, one named export per state) and that has opted in with `adopt.mjs config --write --lane csf`. The story files stay where they are and are never copied. massimo's Vite plugin reads them at dev and build time, works out the registry (every state's id, route and merged meta), and serves the lane from it, so no route table is checked in and the app's CSS is imported, never copied. A lane for any other repo, Storybook's included, follows `vite.md`.
 
-The lane runs beside the old tool until every printed edit is made: its own port, its own config, its own output folder. Ladle's links keep working on it, since `/?story=<id>` renders in place.
+The lane runs beside the old tool until every printed edit is made: its own port, its own config, its own output folder. Ladle's links keep working on it, since `/?story=<id>` renders in place. It mounts in `<div id="ladle-root">`, Ladle's own root element, so specs and scripts that wait on `#ladle-root` keep working too.
 
 ## How it works
 
@@ -96,7 +96,7 @@ The opt-in proposes most of this from the old tool's config; check it before sca
     <title>Stories</title>
   </head>
   <body data-massimo-stories>
-    <div id="root"></div>
+    <div id="ladle-root"></div>
     <script type="module" src="/src/stories/main.tsx"></script>
   </body>
 </html>
@@ -178,7 +178,7 @@ function page() {
   return <Shell url={url} />
 }
 
-const root = createRoot(document.getElementById('root') as HTMLElement)
+const root = createRoot(document.getElementById('ladle-root') as HTMLElement)
 root.render(page())
 
 // One state per document: unmount on the way out, so a story's cleanups run
@@ -957,7 +957,7 @@ node <project>/scripts/stories.mjs leak --app dist --lane dist-stories
 
 Use the app's real build output folder if it is not `dist`. It fails when a class found only in story files, story-only modules and the lane's scaffold folder (the folder of the module script `stories.html` loads) reaches the app's CSS, and prints the CSS edit that keeps them out, the scaffold folder as one line, with every path written from the entry CSS it names. `leak` refuses an output folder git does not ignore.
 
-The scan goes by words, so a class that a package's stylesheet or a CSS plugin gives the app, under a name only stories use, shows up too. Settle one with a probe: add a story-only class to a story, rebuild both, and run `leak --probe '<class>'`, which passes when the class is in the lane's CSS and not the app's. After moving the exclusions, keep the app build from before the move and run `leak --before <that folder>`: it lists every class the app's CSS dropped, grouped by where its name occurs, and fails if an app file uses one. Put the list in the CSS change for review: app code that builds a class name at run time, such as `` `gap-${n}` ``, needs a class it never names, so the check cannot see that loss, and the class shows in the list under whichever files did name it.
+The scan goes by words, so a class that a package's stylesheet or a CSS plugin gives a rule of its own, unscoped, under a name only stories use, shows up too; one the package scopes under its own class, or names beside another class in a component's selector, does not. Settle one with a probe: add a story-only class to a story, rebuild both, and run `leak --probe '<class>'`, which passes when the class is in the lane's CSS and not the app's. After moving the exclusions, keep the app build from before the move and run `leak --before <that folder>`: it lists every class whose own rule the app's CSS dropped, grouped by where its name occurs, and fails if an app file uses one. Put the list in the CSS change for review: app code that builds a class name at run time, such as `` `gap-${n}` ``, needs a class it never names, so the check cannot see that loss, and the class shows in the list under whichever files did name it.
 
 ## Gotchas
 
