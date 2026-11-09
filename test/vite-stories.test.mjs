@@ -24,11 +24,13 @@ import {
   laneBanner,
   laneFiles,
   laneProps,
+  laneRepoFiles,
   laneSwitches,
   massimoStories,
   tsconfigAliases,
   typesLine,
 } from '../scripts/lib/vite-stories.mjs'
+import { repoFiles } from '../scripts/stories.mjs'
 import { SCRIPTS, golden, scratch } from './helpers.mjs'
 
 const HTML = '<!doctype html><html><body><div id="root"></div><script type="module" src="/src/stories/main.tsx"></script></body></html>\n'
@@ -520,6 +522,30 @@ test('the story files: the include globs under the root, minus tests and ignored
     const files = laneFiles(t.root, config, { ignore: ['dist-stories'] })
     assert.equal(files.length, 7)
     assert.ok(!files.some((f) => f.includes('.test.') || f.startsWith('dist-stories') || f.startsWith('node_modules')))
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('the build output is left out by its path, so a folder of the same name elsewhere still counts, in the plugin and in stories.mjs', () => {
+  const t = lane({ outDir: 'gallery/stories' })
+  try {
+    write(t.root, 'src/gallery/Step.stories.tsx', "export default { title: 'Patterns / Build step' }\nexport const Plain = () => null\n")
+    write(t.root, 'gallery/stories/src/Old.stories.tsx', "export default { title: 'Patterns / Old' }\nexport const Plain = () => null\n")
+    const { plugin } = started(t.root)
+    const text = plugin.load(plugin.resolveId(VIRTUAL_ID))
+    assert.ok(text.includes('"src/gallery/Step.stories.tsx": () =>'))
+    assert.ok(!text.includes('gallery/stories/src/Old.stories.tsx'))
+    const config = deepMerge(DEFAULTS, JSON.parse(readFileSync(join(t.root, 'massimo.config.json'), 'utf8')))
+    const files = laneFiles(t.root, config)
+    assert.ok(files.includes('src/gallery/Step.stories.tsx'))
+    assert.ok(!files.some((f) => f.startsWith('gallery/stories/')))
+    assert.deepEqual(laneFiles(t.root, config, { outDir: join(t.root, 'gallery/stories') }), files)
+    assert.deepEqual(repoFiles(t.root, config), laneRepoFiles(t.root, config))
+    assert.ok(repoFiles(t.root, config).includes('src/gallery/Step.stories.tsx'))
+    // An output folder outside the repo leaves nothing out.
+    assert.ok(!laneRepoFiles(t.root, config).includes('gallery/stories/src/Old.stories.tsx'))
+    assert.ok(laneRepoFiles(t.root, config, { outDir: join(t.root, '..', 'out') }).includes('gallery/stories/src/Old.stories.tsx'))
   } finally {
     t.cleanup()
   }

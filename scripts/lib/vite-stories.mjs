@@ -176,11 +176,21 @@ const INLINED = [laneBanner, laneSwitches, laneAttributes, laneProps]
 
 // ── The registry and the virtual module ─────────────────────────────────────
 
+// Every repo file the lane reads, as sorted repo-relative paths: the walk
+// past the config's ignored folders, less the lane build's output folder.
+// `outDir` is repo-relative or absolute, `stories.outDir` by default; only
+// that path is left out, never a folder of the same name elsewhere.
+export function laneRepoFiles(root, config, { ignore = [], outDir = config.stories?.outDir ?? DEFAULT_OUT_DIR } = {}) {
+  const rel = toPosix(relative(root, resolve(root, outDir))).replace(/\/+$/, '')
+  const out = rel === '' || rel === '..' || rel.startsWith('../') || isAbsolute(rel) ? null : rel
+  return walk(root, { ignore: [...(config.ignore ?? []), ...ignore] }).filter((f) => out === null || !(f === out || f.startsWith(`${out}/`)))
+}
+
 // The repo's story files, as sorted repo-relative paths: what the include
-// globs match under `root`, test files left out.
-export function laneFiles(root, config, { ignore = [] } = {}) {
+// globs match among the lane's repo files, test files left out.
+export function laneFiles(root, config, options = {}) {
   const include = compileGlobs(config.stories?.include ?? [])
-  return walk(root, { ignore: [...(config.ignore ?? []), ...ignore] }).filter((f) => include(f) && !isTestFile(f))
+  return laneRepoFiles(root, config, options).filter((f) => include(f) && !isTestFile(f))
 }
 
 const viewport = (v) => ({ label: String(v?.label ?? ''), width: Number(v?.width) || 0, height: Number(v?.height) || 0 })
@@ -332,7 +342,7 @@ export function massimoStories(options = {}) {
   }
   const registry = () => {
     if (!lane.registry) {
-      lane.files ??= new Set(laneFiles(lane.root, lane.config, { ignore: [lane.outDir ? relPath(lane.root, lane.outDir).split('/')[0] : DEFAULT_OUT_DIR] }))
+      lane.files ??= new Set(laneFiles(lane.root, lane.config, { outDir: lane.outDir ?? DEFAULT_OUT_DIR }))
       lane.registry = laneRegistry({ root: lane.root, config: lane.config, files: [...lane.files], read })
     }
     return lane.registry

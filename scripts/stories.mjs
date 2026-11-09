@@ -36,7 +36,7 @@ import { frozenProblems } from './lib/convert.mjs'
 import { laneRegistry } from './lib/lane.mjs'
 import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
 import { createResolver, isStoryFile, isTestFile } from './lib/source.mjs'
-import { typesLine } from './lib/vite-stories.mjs'
+import { laneRepoFiles, typesLine } from './lib/vite-stories.mjs'
 
 const LANES = ['native', 'manifest', 'csf']
 const APP_TEXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|html|mdx)$/
@@ -85,10 +85,10 @@ export function gitIgnoredFiles(root, files) {
   return new Set(r.stdout.toString().split('\0').filter(Boolean))
 }
 
-// Every repo file the lane reads: the walk minus the lane build's output folder.
+// Every repo file the lane reads: the walk minus the lane build's output
+// folder, as the Vite plugin reads them.
 export function repoFiles(root, config) {
-  const out = (config.stories.outDir ?? '').replace(/^\.\//, '').replace(/\/+$/, '')
-  return walk(root, { ignore: config.ignore }).filter((f) => !out || !(f === out || f.startsWith(`${out}/`)))
+  return laneRepoFiles(root, config)
 }
 
 export function registryOf(root, config, files) {
