@@ -33,9 +33,9 @@ test('CSF3: the meta a const holds, object stories with their name, args and arg
     metaSpan: { start: 5, end: 11 },
     typeImports: [{ start: 1, end: 55, spec: '@storybook/react', names: ['Meta', 'StoryObj'] }],
     stories: [
-      { export: 'Primary', storyName: null, meta: null, args: true, argTypes: false, parameters: false, span: { start: 14, end: 14 } },
-      { export: 'Large', storyName: 'Big one', meta: null, args: false, argTypes: true, parameters: false, span: { start: 15, end: 15 } },
-      { export: 'Computed', storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: { start: 17, end: 17 } },
+      { export: 'Primary', local: 'Primary', storyName: null, meta: null, args: true, argTypes: false, parameters: false, span: { start: 14, end: 14 } },
+      { export: 'Large', local: 'Large', storyName: 'Big one', meta: null, args: false, argTypes: true, parameters: false, span: { start: 15, end: 15 } },
+      { export: 'Computed', local: 'Computed', storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: { start: 17, end: 17 } },
     ],
     args: true,
     argTypes: true,
@@ -71,9 +71,9 @@ test('CSF2 and Ladle: function stories, storyName and args set after them, expor
   assert.deepEqual(csf.component, { name: 'Tile', from: '../Card' })
   assert.deepEqual(csf.meta, { meta: { exploration: true } })
   assert.deepEqual(csf.stories, [
-    { export: 'Plain', storyName: 'Plain card', meta: null, args: false, argTypes: false, parameters: false, span: { start: 9, end: 9 } },
-    { export: 'Wide', storyName: null, meta: { width: 900 }, args: true, argTypes: false, parameters: false, span: { start: 11, end: 11 } },
-    { export: 'Secret', storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: { start: 16, end: 16 } },
+    { export: 'Plain', local: 'Plain', storyName: 'Plain card', meta: null, args: false, argTypes: false, parameters: false, span: { start: 9, end: 9 } },
+    { export: 'Wide', local: 'Wide', storyName: null, meta: { width: 900 }, args: true, argTypes: false, parameters: false, span: { start: 11, end: 11 } },
+    { export: 'Secret', local: 'Hidden', storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: { start: 16, end: 16 } },
   ])
   assert.deepEqual(csf.unreadable, [
     { story: null, field: null, detail: 'it passes on every export of ./more, which are not listed' },

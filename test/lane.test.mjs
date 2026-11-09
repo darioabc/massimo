@@ -162,6 +162,32 @@ test('an exported class is a state, and its span runs to the end of its body', (
   assert.deepEqual(registry.stories['pages--legacy--panel'].span, { start: 5, end: 9 })
 })
 
+// Where a storyName or a story meta is set, beyond the plain case.
+const ASSIGNED = {
+  // Set on the declared name, and exported under another.
+  'src/Local.stories.tsx': "export default { title: 'Pages / Local' }\n\nconst Inner = () => null\nInner.storyName = 'Renamed inside'\nInner.meta = { width: 1 }\n\nexport { Inner as Outer }\n",
+  // Set inside a function, not by the module's own statements.
+  'src/Nested.stories.tsx': "export default { title: 'Pages / Nested' }\n\nexport const Plain = () => null\n\nfunction setup() {\n  Plain.storyName = 'Set in a function'\n  Plain.meta = { width: 1 }\n}\nsetup()\n",
+  // Indented, but still one of the module's own statements.
+  'src/Indented.stories.tsx': "export default { title: 'Pages / Indented' }\n\nexport const A = () => null\n  A.storyName = 'Indented name'\n",
+  // Set twice.
+  'src/Twice.stories.tsx': "export default { title: 'Pages / Twice' }\n\nexport const A = () => null\nA.storyName = 'First'\nA.storyName = 'Second'\nA.meta = { width: 1 }\nA.meta = { width: 2 }\n",
+}
+
+test('a storyName or meta counts where Ladle reads it: by exported name, at the top level, the last one', () => {
+  const registry = fromText(ASSIGNED, { ids: 'ladle' })
+  assert.deepEqual(registry.problems, [])
+  assert.deepEqual(Object.fromEntries(Object.values(registry.stories).map((s) => [s.id, s.meta])), {
+    'pages--local--outer': {},
+    'pages--nested--plain': {},
+    'pages--indented--indented-name': {},
+    'pages--twice--second': { width: 2 },
+  })
+  // Under export ids the renamed story keeps what its declared name was given.
+  const local = fromText(ASSIGNED).stories['pages--local--outer']
+  assert.deepEqual([local.name, local.meta], ['Renamed inside', { width: 1 }])
+})
+
 test("under Ladle ids, an unreadable storyName and an export Ladle refuses are problems", () => {
   const registry = fromText({ 'src/X.stories.tsx': "export default { title: 'Pages / X' }\nexport const A = () => null\nA.storyName = label\nexport const B__C = () => null\n" }, { ids: 'ladle' })
   assert.deepEqual(registry.problems.map((p) => p.detail), [

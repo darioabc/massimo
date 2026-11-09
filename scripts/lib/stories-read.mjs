@@ -507,14 +507,15 @@ function namedExports(code, blanked) {
 // (Ladle's file-level meta is `meta.meta`), `metaSpan` the lines of the
 // statement that holds the default export's object, `typeImports` every
 // type-only import as { start, end, spec, names } (offsets), `stories` is
-// [{ export, storyName, meta, args, argTypes, parameters, span }] in file
-// order, and `unreadable` lists what was left out as { story, field,
+// [{ export, local, storyName, meta, args, argTypes, parameters, span }] in
+// file order, and `unreadable` lists what was left out as { story, field,
 // detail }, `story` being null for the default export or the whole file.
-// A span is { start, end }, the first and last line (1-based) of what Ladle
-// counts as the export: the declaration after `export`, or its name in an
-// export list. A story's `meta` is the literal fields of `Story.meta = {...}`,
-// or null when it sets none. A title left out is null: Storybook then takes
-// it from the path.
+// `local` is the name the story is declared with, which differs from
+// `export` in `export { Inner as Outer }`. A span is { start, end }, the
+// first and last line (1-based) of what Ladle counts as the export: the
+// declaration after `export`, or its name in an export list. A story's
+// `meta` is the literal fields of `Story.meta = {...}`, or null when it sets
+// none. A title left out is null: Storybook then takes it from the path.
 export function readCsf(text, file = 'x.stories.tsx') {
   const code = stripComments(text, file)
   const blanked = stringsBlanked(text, code, file)
@@ -556,10 +557,16 @@ export function readCsf(text, file = 'x.stories.tsx') {
   const { found, stars, more } = namedExports(code, blanked)
   for (const from of stars) skip(null, null, `it passes on every export of ${from}, which are not listed`)
   for (const name of more) skip(name, null, `${name} is declared with more names in one statement, and the names after it are not listed`)
-  const assigned = (name, prop) => new RegExp(`(?<![\\w$.])${escapeName(name)}\\.${prop}\\s*=(?!=)\\s*`).exec(blanked)
+  // The assignment `name.prop = ` that counts, as Ladle reads it: the last
+  // one among the module's own statements, since a later one replaces it. A
+  // statement of the module's own sits at the left margin, where Prettier
+  // puts it, or is indented with no `{` open around it; one inside a function
+  // or a block is not read.
+  const ownStatement = (m) => !/^\s/.test(m[0]) || [...blanked.slice(0, m.index)].reduce((depth, c) => depth + (c === '{') - (c === '}'), 0) <= 0
+  const assigned = (name, prop) => [...blanked.matchAll(new RegExp(`^[ \\t]*${escapeName(name)}\\.${prop}\\s*=(?!=)\\s*`, 'gm'))].filter(ownStatement).pop() ?? null
   for (const { name, local, from, start, end } of found) {
     if (name === '__namedExportsOrder' || (only && !only.includes(name)) || except?.includes(name)) continue
-    const story = { export: name, storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: spanOf(start, end) }
+    const story = { export: name, local, storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: spanOf(start, end) }
     if (from) {
       skip(name, null, `${name} is re-exported from ${from}`)
       out.stories.push(story)

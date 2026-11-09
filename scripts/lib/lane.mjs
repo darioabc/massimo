@@ -70,10 +70,15 @@ export function laneRegistry({ root, config, files, read } = {}) {
     registry.files[file] = record
     const group = (registry.slugs[slug] ??= { title: csf.title, files: [], ids: [] })
     group.files.push(file)
-    csf.stories.forEach((s, index) => {
+    csf.stories.forEach((story, index) => {
+      // Ladle looks a storyName and a meta up by the exported name, so under
+      // its ids a story exported under another name than the one it is
+      // declared with (`export { Inner as Outer }`) takes neither.
+      const renamed = rule === 'ladle' && story.local !== story.export
+      const s = renamed ? { ...story, storyName: null, meta: null } : story
       if (rule === 'ladle') {
         if (s.export.includes('__')) problem(file, `Ladle refuses the export ${s.export}, since it keeps "__" for its own encoding`)
-        if (csf.unreadable.some((u) => u.story === s.export && u.field === 'storyName')) problem(file, `the id of ${s.export} comes from its storyName, which is not statically readable`)
+        if (!renamed && csf.unreadable.some((u) => u.story === s.export && u.field === 'storyName')) problem(file, `the id of ${s.export} comes from its storyName, which is not statically readable`)
       }
       const state = stateSlug(s, rule)
       const id = `${slug}--${state}`
