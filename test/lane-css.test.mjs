@@ -248,6 +248,18 @@ test('sourceWords splits on whitespace, quotes and JSX punctuation but keeps uti
   for (const w of ['w-[13.37rem]', 'p-4', 'md:flex', 'a', 'b']) assert.ok(words.has(w), w)
 })
 
+test('sourceWords finds a class whose square brackets hold a quote, an = or a >, and makes no class of code', () => {
+  const words = sourceWords(
+    [
+      '<div className="[&>div]:static data-[state=open]:block hover:[mask-type:luminance]" />',
+      `const tip = cn('has-[[data-open=true]]:flex', \`before:content-[''] \${wide ? 'w-[13.37rem]' : ''}\`)`,
+      `const v = rows['key'] ?? items[i>0 ? 1 : 0]; const f = (a: Array<string[]>) => a[0] === "x" ? [a=b] : c`,
+    ].join('\n'),
+  )
+  for (const w of ['[&>div]:static', 'data-[state=open]:block', 'hover:[mask-type:luminance]', 'has-[[data-open=true]]:flex', "before:content-['']", 'w-[13.37rem]']) assert.ok(words.has(w), w)
+  for (const w of ["rows['key']", "['key']", 'items[i>0', 'string[]>', '[a=b]']) assert.ok(!words.has(w), w)
+})
+
 // Tailwind 4's own output, minified, as a build writes it.
 const UTILITIES = [
   String.raw`/*! tailwindcss v4 | MIT License */@layer theme{:root,:host{--spacing:.25rem}}`,

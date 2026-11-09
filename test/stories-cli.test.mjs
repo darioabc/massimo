@@ -363,6 +363,29 @@ test('leak --before lists every class the app\'s CSS dropped, by where its name 
   ])
 })
 
+test('leak --before finds a class whose square brackets hold a quote, an = or a > in the file that names it', () => {
+  const b = builds()
+  write(b.root, {
+    'build/before/assets/app.css': [
+      APP_CSS,
+      String.raw`.\[\&\>div\]\:static>div{position:static}.data-\[state\=open\]\:block[data-state=open]{display:block}`,
+      String.raw`.has-\[\[data-open\=true\]\]\:flex:has([data-open=true]){display:flex}.before\:content-\[\'\'\]:before{content:var(--tw-content);--tw-content:""}`,
+    ].join('\n'),
+    'src/Sticky.stories.tsx': `export default { title: 'Foundations / Sticky' }\nexport const Bar = () => <div className="[&>div]:static data-[state=open]:block" />\n`,
+    'src/Panel.tsx': `export const Panel = () => <div className={\`has-[[data-open=true]]:flex before:content-['']\`} />\n`,
+  })
+  b.files.push('src/Sticky.stories.tsx', 'src/Panel.tsx')
+  const r = leak(b, { before: join(b.root, 'build/before') })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.lines, [
+    "dropped: 4 classes the build before had are not in the app's CSS",
+    "  app code uses 2: before:content-[''], has-[[data-open=true]]:flex",
+    '  only story files and story-only modules name 2: [&>div]:static, data-[state=open]:block',
+    REVIEW,
+    "lost: the app's CSS no longer has 2 classes an app file uses: before:content-[''] (src/Panel.tsx), has-[[data-open=true]]:flex (src/Panel.tsx)",
+  ])
+})
+
 test('leak refuses a folder git does not ignore, and a path that is not a folder', () => {
   const b = builds()
   const seen = []

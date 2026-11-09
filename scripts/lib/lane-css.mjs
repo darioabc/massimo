@@ -413,8 +413,21 @@ export function ownClasses(cssText) {
   return out
 }
 
+// A class with square brackets, as Tailwind reads one inside a class
+// string: from the start of a word, each bracket opening the word or
+// following `-`, `:`, `@`, `/` or `!`, holding anything but whitespace,
+// with one level of brackets inside, as in `has-[[data-open=true]]:flex`.
+const BRACKETED = /(?<![^\s"'`{}=;<>|\\$])(?:[^\s"'`{}=;<>|\\$[\]]*[-:@/!])?\[(?:[^\s[\]]|\[[^\s[\]]*\])+\](?:[^\s"'`{}=;<>|\\$[\]]*[-:@/!]\[(?:[^\s[\]]|\[[^\s[\]]*\])+\])*[^\s"'`{}=;<>|\\$[\]]*/g
+
 // The words in a source file that could be class names: whatever sits
-// between whitespace, quotes, brackets of JSX and template syntax.
+// between whitespace, quotes, brackets of JSX and template syntax, and each
+// class with square brackets whole, whose brackets may hold a quote, an `=`
+// or a `>`, as in `data-[state=open]:block` or `before:content-['']`. A word
+// that opens with a bracket counts when it is an arbitrary property or
+// variant (a colon inside or right after the brackets), so an array or an
+// index in code makes no word.
 export function sourceWords(text) {
-  return new Set(text.split(/[\s"'`{}=;<>|\\$]+/).filter(Boolean))
+  const words = new Set(text.split(/[\s"'`{}=;<>|\\$]+/).filter(Boolean))
+  for (const [word] of text.matchAll(BRACKETED)) if (!word.startsWith('[') || /^\[[^\]]*:|\]:/.test(word)) words.add(word)
+  return words
 }
