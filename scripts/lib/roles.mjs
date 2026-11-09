@@ -113,3 +113,11 @@ export function placeFile(file, source, declared, taxonomy) {
 // The tier order: the taxonomy's when it has one, else massimo's default.
 export const DEFAULT_TIERS = ['Foundations', 'Primitives', 'Patterns', 'Shells', 'Pages', 'Explorations']
 export const tierOrder = (config) => (Array.isArray(config?.graph?.taxonomy?.tiers) && config.graph.taxonomy.tiers.length > 0 ? config.graph.taxonomy.tiers : DEFAULT_TIERS)
+
+// The roots a story title may start with. A csf lane's `stories.policy.roots`
+// names them when they differ from the node tiers; with none set they are
+// the tier order.
+export const storyRoots = (config) => {
+  const roots = config?.stories?.policy?.roots
+  return Array.isArray(roots) && roots.length > 0 ? roots : tierOrder(config)
+}
