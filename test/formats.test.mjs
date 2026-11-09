@@ -211,15 +211,15 @@ test('loadConfig accepts any lane value, so the scripts that cannot use it say s
   }
 })
 
-test('the lane module returns an empty registry until the reader lands', () => {
+test('the lane module returns an empty registry for no story files', () => {
   const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
   assert.deepEqual(registry, { format: 1, ids: 'export', stories: {}, order: [], home: null, slugs: {}, files: {}, problems: [] })
   assert.deepEqual(lane.ladleMeta(registry), { about: { generator: 'massimo', format: 1 }, stories: {} })
   assert.deepEqual(lane.redirectTable(registry, []), {})
 })
 
-test('the hash helpers return empty strings until they are filled', () => {
-  assert.deepEqual([lane.normalHash('', null), lane.spanHash('', { start: 0, end: 0 })], ['', ''])
+test('a span hash of nothing is empty', () => {
+  assert.equal(lane.spanHash('', { start: 0, end: 0 }), '')
 })
 
 test('the route helpers give empty results for empty input', () => {
