@@ -257,8 +257,10 @@ const plainCss = (cssText) =>
   cssText.replace(/\\[\s\S]|\/\*[\s\S]*?\*\/|(["'])(?:\\[\s\S]|(?!\1)[^\\\n])*\1|\burl\((?!\s*["'])(?:\\[\s\S]|[^)\\])*\)/gi, (m, quote) => (m[0] === '\\' ? m : quote ? '""' : m[0] === '/' ? ' ' : 'url()'))
 
 // The class names a selector names, anywhere in it, unescaped. An escape or
-// an attribute selector is passed over whole, so neither starts a name.
-const CLASS = new RegExp(String.raw`${ESCAPE}|\[(?:${ESCAPE}|[^\]\\])*\]|\.(${IDENT})`, 'g')
+// an attribute selector is passed over whole, so neither starts a name. An
+// escape inside the brackets is passed over one character at a time, so a
+// bracket that never closes costs no more than its length.
+const CLASS = new RegExp(String.raw`${ESCAPE}|\[(?:\\[\s\S]|[^\]\\])*\]|\.(${IDENT})`, 'g')
 const classesIn = (selector) => [...selector.matchAll(CLASS)].filter((m) => m[1]).map((m) => unescape(m[1]))
 
 // The style rules of a stylesheet, in order, as { prelude, parent, ats }:

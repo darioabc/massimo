@@ -243,6 +243,14 @@ test('cssClasses reads class selectors, unescaped, and nothing from values, urls
   assert.deepEqual([...cssClasses(css)].sort(), ['2xl:p-2', 'a', 'btn', 'btn-lg', 'icon', 'inner', 'md:p-4', 'nested', 'sm:flex', 'w-[13.37rem]'])
 })
 
+test('cssClasses reads a bracket that never closes before escaped class names in time that grows with its length', () => {
+  // A Sass comment is not blanked, so the bracket in it reaches the selector.
+  const css = `// see [docs\n.icon-${'\\31 0'.repeat(14)}{color:red}`
+  const start = Date.now()
+  assert.deepEqual([...cssClasses(css)], [`icon-${'10'.repeat(14)}`])
+  assert.ok(Date.now() - start < 500, `${Date.now() - start} ms`)
+})
+
 test('sourceWords splits on whitespace, quotes and JSX punctuation but keeps utility syntax', () => {
   const words = sourceWords(`<div className={\`w-[13.37rem] \${on ? 'p-4' : "md:flex"}\`} data-x="a b" />`)
   for (const w of ['w-[13.37rem]', 'p-4', 'md:flex', 'a', 'b']) assert.ok(words.has(w), w)
