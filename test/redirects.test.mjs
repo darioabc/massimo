@@ -198,6 +198,23 @@ test('only the type import the removal patch rewrites is skipped: a value import
   assert.match(found([{ file: 'src/Mixed.stories.tsx' }])[0].replacement, /legacy types file keeps/)
 })
 
+test('a frozen file\'s type import is valid only when the legacy types file declares every name it imports', () => {
+  const frozenAt = (imports) => {
+    put('src/Pinned.stories.tsx', `import type { ${imports} } from '@ladle/react'\nexport default { title: 'Primitives / Pinned' } satisfies StoryDefault\nexport const Plain: Story = () => null\n`)
+    const withPinned = [...files, 'src/Pinned.stories.tsx']
+    const live = laneRegistry({ root: ctx.root, config, files: withPinned.filter(compileGlobs(config.stories.include)), read })
+    return toolEdits({ consumers: [], packages: ['@ladle/react'], registry: live, tool, historical: [], read, files: withPinned, frozen: [{ file: 'src/Pinned.stories.tsx' }] }).find((e) => e.file === 'src/Pinned.stories.tsx' && e.line === 1)
+  }
+  assert.equal(frozenAt('Story').status, 'valid')
+  const open = frozenAt('Story, StoryDecorator')
+  assert.equal(open.status, 'open')
+  assert.match(open.replacement, /export StoryDecorator from the types file/)
+  // once the patch has written the legacy file, its own exports are the names
+  put('src/stories/legacy-story-types.d.ts', "declare module '@ladle/react' {\n  export type Story = () => null\n  export type StoryDecorator = () => null\n}\n")
+  assert.equal(frozenAt('Story, StoryDecorator').status, 'valid')
+  assert.equal(frozenAt('Story, Args').status, 'open')
+})
+
 test('the legacy types file the removal patch adds is not an edit, and a path into the tool\'s package is', () => {
   const legacy = "// The story types that files still importing @ladle/react use. Written by massimo\ndeclare module '@ladle/react' {\n  export type Story = () => null\n}\n"
   put('src/stories/legacy-story-types.d.ts', legacy)

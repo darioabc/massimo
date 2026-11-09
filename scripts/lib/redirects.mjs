@@ -7,7 +7,7 @@
 // every id that starts with it.
 
 import { join } from 'node:path'
-import { LEGACY_TYPES_FILE } from './convert.mjs'
+import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LEGACY_TYPES_FILE, checkTypesFile } from './convert.mjs'
 import { compare } from './glob.mjs'
 import { writeFileAtomic } from './project.mjs'
 import { isStoryFile, isTestFile, stripComments } from './source.mjs'
@@ -210,6 +210,8 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // own ids when known, `skip` folders to leave out (the project folder) and
 // `frozen` the config's frozen entries, whose files the removal patch leaves,
 // and `legacyTypes` the file the patch adds for them, which is not an edit.
+// A frozen file's type import is valid only when the legacy types file
+// declares every name it imports; otherwise it stays open.
 export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [], legacyTypes = LEGACY_TYPES_FILE } = {}) {
   if (!tool || typeof read !== 'function') return []
   const name = tool.tool ?? tool.name
@@ -219,6 +221,12 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   const ids = idSet(registry)
   const oracle = Array.isArray(oracleIds) ? new Set(oracleIds) : null
   const pinned = new Set(frozen.map((f) => f.file ?? f))
+  const declared = () => {
+    const there = read(legacyTypes)
+    if (there) return new Set([...there.matchAll(/\bexport\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))
+    return new Set(checkTypesFile(read(DEFAULT_TYPES_FILE) || DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE).names)
+  }
+  let declaredNames = null
 
   const pathRes = [...dirs, ...(tool.config ?? []).filter((f) => !f.includes('/'))].map((p) => new RegExp(`(?<![\\w.-])(${escapeRe(p)}(?![\\w-])(?:/[^\\s'"\`)>,;]*)?)`))
   // The scripts that run the tool, and the package scripts that run one of
@@ -251,7 +259,12 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
     // The lines of the one type import the removal patch rewrites, or in a
     // frozen file the one it leaves for the legacy types file to declare.
     const patched = registry?.files?.[file]?.typeImport
-    const kept = pinned.has(file)
+    let kept = false
+    if (patched && pinned.has(file)) {
+      declaredNames ??= declared()
+      kept = patched.names.every((n) => declaredNames.has(n))
+    }
+    const missing = patched && pinned.has(file) && !kept ? patched.names.filter((n) => !declaredNames.has(n)) : []
     const patchedLines = new Set()
     if (patched) {
       const from = text.slice(0, patched.start).split('\n').length
@@ -293,9 +306,14 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       for (const re of packageRes) {
         const m = re.exec(l)
         if (!m) continue
+        if (patchedLines.has(n) && missing.length > 0) {
+          hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: `export ${missing.join(', ')} from the types file and run convert stories again, so the legacy types file declares ${missing.length === 1 ? 'it' : 'them'}` })
+          used = true
+          continue
+        }
         if (patchedLines.has(n)) {
           used = true
-          if (kept) hit(n, { kind: 'valid', uses: `package ${m[1]}`, replacement: 'nothing: the file is frozen, and the legacy types file keeps this import declared' })
+          if (pinned.has(file)) hit(n, { kind: 'valid', uses: `package ${m[1]}`, replacement: 'nothing: the file is frozen, and the legacy types file keeps this import declared' })
           else hit(n, { kind: 'skip' })
           continue
         }
