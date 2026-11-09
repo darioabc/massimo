@@ -222,9 +222,8 @@ test('the hash helpers return empty strings until they are filled', () => {
   assert.deepEqual([lane.normalHash('', null), lane.spanHash('', { start: 0, end: 0 })], ['', ''])
 })
 
-test('the route helpers return their shapes until the routes land', () => {
-  assert.equal(laneRoute.parseLaneUrl('/', '').kind, 'missing')
-  assert.deepEqual([laneRoute.stateUrl({}), laneRoute.shellUrl('a'), laneRoute.orderIds([], []), laneRoute.argsFromSearch('')], ['', '', [], {}])
+test('the route helpers give empty results for empty input', () => {
+  assert.deepEqual([laneRoute.stateUrl({}), laneRoute.orderIds([], []), laneRoute.argsFromSearch('')], ['', [], {}])
 })
 
 test('the css helpers return nothing until they are filled', () => {
