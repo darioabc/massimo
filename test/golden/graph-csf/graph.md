@@ -23,7 +23,7 @@ The story files are read in place: 7 files, with 13 states. A story covers a nod
 
 - Direct: 3 · seen only inside a parent's story: 0 · none: 1.
 
-The checks: `story-files` (every story file can be read in full and no two states share an id, and with `stories.policy.cleanIds` every id has one folder per title part), `story-title` (with `stories.policy`: the roots, the number of parts, the text of title parts and state names, the name a story beside a node takes, and title prefixes), `story-own` (`stories.policy.ownStory`: a node has a story of its own), `story-banner` (`stories.policy.bannerByRoot`: a root's files carry its banner key and no other file does) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, all but the last fail the run; the audit ratchets `no-story`.
+The checks: `story-files` (every story file can be read in full and no two states share an id, and with `stories.policy.cleanIds` every id has one folder per title part), `story-title` (with `stories.policy`: the roots, the number of parts, the text of title parts and state names, the name a story beside a node takes, and title prefixes), `story-own` (`stories.policy.ownStory`: a node has a story of its own), `story-banner` (`stories.policy.bannerByRoot`: a root's files carry its banner key and no other file does) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, all but the last fail the run; `no-story` is reported and never fails it.
 
 - `no-story` · `src/components/Field.tsx` · no direct story
 - `story-files` · `src/components/Button.stories.tsx` · LogIn: the id primitives--actions--button--log--in-button splits into 5 levels instead of 4
