@@ -5,6 +5,7 @@
 // never guessed.
 
 import { parseArrayAt, parseObjectAt } from './jsobject.mjs'
+import { ladleFileId, ladleStoryId, ladleTitleId } from './ladle-ids.mjs'
 import { stringLiterals, stripComments } from './source.mjs'
 
 // The fields a manifest entry may carry, beyond any of the lane's own:
@@ -345,20 +346,87 @@ function stringsBlanked(text, code, file) {
 const moduleIn = (code, m) => /(['"])([^'"\n]+)\1\s*$/.exec(code.slice(m.index, m.index + m[0].length))?.[2] ?? null
 
 // The object a CSF file default-exports: an inline literal, or the const it
-// names. null when there is no default export, { expr } when it is not a
-// literal. `blanked` is `code` with its strings blanked, where the export is
-// looked for.
+// names, as { value, at } with `at` the offset of the statement that holds
+// the object. `value` is null when there is no default export, { expr } when
+// it is not a literal. `blanked` is `code` with its strings blanked, where
+// the export is looked for.
 function csfDefault(text, code, blanked) {
   const m = /(?<![\w$.])export\s+default\s+\(?\s*/.exec(blanked)
   const named = /(?<![\w$.])export\s*\{[^}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/.exec(blanked)
-  if (!m && !named) return null
+  if (!m && !named) return { value: null, at: null }
   const after = m ? m.index + m[0].length : -1
-  if (m && blanked[after] === '{') return parseObjectAt(text, after)
+  if (m && blanked[after] === '{') return { value: parseObjectAt(text, after), at: m.index }
   const name = m ? IDENT.exec(blanked.slice(after))?.[0] : named[1]
-  if (!name) return { expr: code.slice(after).split('\n')[0].trim() }
+  if (!name) return { value: { expr: code.slice(after).split('\n')[0].trim() }, at: m.index }
   const decl = new RegExp(`(?<![\\w$.])(?:const|let|var)\\s+${escapeName(name)}\\s*(?::[^=;]*)?=\\s*\\(?\\s*`).exec(blanked)
-  if (decl && blanked[decl.index + decl[0].length] === '{') return parseObjectAt(text, decl.index + decl[0].length)
-  return { expr: name }
+  if (decl && blanked[decl.index + decl[0].length] === '{') return { value: parseObjectAt(text, decl.index + decl[0].length), at: decl.index }
+  return { value: { expr: name }, at: m ? m.index : named.index }
+}
+
+// A line at the left margin that opens a statement of its own: a keyword, or
+// an assignment to a property (`Primary.storyName = ...`).
+const STATEMENT_START = /^(?:(?:export|import|const|let|var|function|class|type|interface|enum|declare)\b|[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\s*=(?!=))/
+
+// The offset just past the statement that starts at `from` in `blanked`: its
+// `;` outside brackets, or its last code before a line at the left margin
+// that starts another statement. A line break at depth 0 ends it too, unless
+// the next line is indented or carries the expression on (`/>`, `.then`).
+// Prettier's layout is assumed, which is what keeps a stray apostrophe in
+// JSX text from running a statement to the end of the file.
+function statementEnd(blanked, from) {
+  let depth = 0
+  let last = from
+  for (let i = from; i < blanked.length; i++) {
+    const c = blanked[i]
+    if (c === '\n') {
+      LINE_GAP.lastIndex = i + 1
+      LINE_GAP.test(blanked)
+      const j = LINE_GAP.lastIndex
+      if (j >= blanked.length) break
+      const next = blanked.slice(j, j + 120)
+      if (blanked[j - 1] === '\n' && (STATEMENT_START.test(next) || (depth <= 0 && !CONTINUES.test(next)))) break
+      i = j - 1
+    } else if (!/\s/.test(c)) {
+      if ('([{'.includes(c)) depth++
+      else if (')]}'.includes(c)) depth--
+      else if (c === ';' && depth <= 0) return i + 1
+      last = i + 1
+    }
+  }
+  return last
+}
+
+// The 1-based line of each offset in `text`.
+function lineIndex(text) {
+  const starts = [0]
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i + 1)
+  return (offset) => {
+    let lo = 0
+    let hi = starts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (starts[mid] <= offset) lo = mid
+      else hi = mid - 1
+    }
+    return lo + 1
+  }
+}
+
+// Every type-only import, as { start, end, spec, names }: `start` is the
+// offset of `import` and `end` the offset just past the specifier's closing
+// quote; `names` are the names imported, as the module exports them
+// (`default` and `*` for a default or namespace import).
+function typeImportsOf(code, blanked) {
+  const out = []
+  for (const m of blanked.matchAll(/(?<![\w$.])import\s+(type\s+)?([\w$*\s{},]+?)\s*\bfrom\s*(['"])[^'"\n]*\3/g)) {
+    const braced = /\{([\s\S]*)\}/.exec(m[2])?.[1].split(',').map((s) => s.trim()).filter(Boolean) ?? []
+    const head = m[2].replace(/\{[\s\S]*\}/, '').replace(/,\s*$/, '').trim()
+    if (!m[1] && (head || braced.length === 0 || !braced.every((b) => /^type\s/.test(b)))) continue
+    const names = head ? [/^\*/.test(head) ? '*' : 'default'] : []
+    for (const item of braced) names.push(item.replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim())
+    out.push({ start: m.index, end: m.index + m[0].length, spec: moduleIn(code, m), names })
+  }
+  return out
 }
 
 // Whether the declaration whose name ends at `i` declares more names in the
@@ -392,26 +460,32 @@ function declaresMore(blanked, i) {
 }
 
 // The names a module exports beyond its default, in file order, as
-// { name, local, at, from }: `local` is the name inside the module, and
-// `from` the module a re-export comes from. `stars` lists the modules an
-// `export * from` passes on whole, and `more` the exported declarations that
-// go on to declare other names in the same statement. Exports are looked
-// for in `blanked`, the code with its strings blanked.
+// { name, local, at, from, start, end }: `local` is the name inside the
+// module, `from` the module a re-export comes from, and `start` and `end`
+// the offsets of what Ladle takes as the export's source: the declaration
+// after `export`, or the one name in an export list. `stars` lists the
+// modules an `export * from` passes on whole, and `more` the exported
+// declarations that go on to declare other names in the same statement.
+// Exports are looked for in `blanked`, the code with its strings blanked.
 function namedExports(code, blanked) {
   const found = []
   const more = []
-  const add = (name, local, at, from = null) => {
-    if (name && name !== 'default' && !found.some((f) => f.name === name)) found.push({ name, local, at, from })
+  const add = (name, local, at, from, start, end) => {
+    if (name && name !== 'default' && !found.some((f) => f.name === name)) found.push({ name, local, at, from, start, end })
   }
   for (const m of blanked.matchAll(/(?<![\w$.])export\s+(?:declare\s+)?(?:async\s+)?(const|let|var|function\*?)\s+([A-Za-z_$][\w$]*)/g)) {
-    add(m[2], m[2], m.index)
+    const start = m.index + /^export\s+(?:declare\s+)?/.exec(m[0])[0].length
+    add(m[2], m[2], m.index, null, start, statementEnd(blanked, start))
     if (!m[1].startsWith('function') && declaresMore(blanked, m.index + m[0].length)) more.push(m[2])
   }
   for (const m of blanked.matchAll(/(?<![\w$.])export\s*\{([^}]*)\}\s*(?:from\s*(['"])[^'"\n]*\2)?/g)) {
+    let offset = m.index + m[0].indexOf('{') + 1
     for (const part of m[1].split(',')) {
+      const start = offset + part.length - part.trimStart().length
+      offset += part.length + 1
       if (/^\s*type\s/.test(part)) continue
       const [local, name = local] = part.split(/\s+as\s+/).map((s) => s.trim())
-      add(name, local, m.index, m[2] ? moduleIn(code, m) : null)
+      add(name, local, m.index, m[2] ? moduleIn(code, m) : null, start, start + part.trim().length)
     }
   }
   const stars = [...blanked.matchAll(/(?<![\w$.])export\s*\*\s*(?:as\s+[\w$]+\s*)?from\s*(['"])[^'"\n]*\1/g)].map((m) => moduleIn(code, m))
@@ -421,24 +495,36 @@ function namedExports(code, blanked) {
 // A CSF file (Component Story Format: Storybook's, which Ladle reads too)
 // read as text. The default export gives the title, the component and the
 // rest of the meta; every named export is a story, with its storyName (or a
-// CSF3 object's `name`) and whether it sets args or argTypes. Returns
-//   { title, component, meta, stories, args, argTypes, unreadable }
+// CSF3 object's `name`), Ladle's story-level `meta`, and whether it sets
+// args, argTypes or parameters. Returns
+//   { title, component, meta, metaSpan, typeImports, stories, args, argTypes, unreadable }
 // where `component` is { name, from } (the identifier and the module it is
-// imported from), `meta` holds the default export's other literal fields,
-// `stories` is [{ export, storyName, args, argTypes }] in file order, and
-// `unreadable` lists what was left out as { story, field, detail }, `story`
-// being null for the default export or the whole file. A title left out is
-// null: Storybook then takes it from the path.
+// imported from), `meta` holds the default export's other literal fields
+// (Ladle's file-level meta is `meta.meta`), `metaSpan` the lines of the
+// statement that holds the default export's object, `typeImports` every
+// type-only import as { start, end, spec, names } (offsets), `stories` is
+// [{ export, storyName, meta, args, argTypes, parameters, span }] in file
+// order, and `unreadable` lists what was left out as { story, field,
+// detail }, `story` being null for the default export or the whole file.
+// A span is { start, end }, the first and last line (1-based) of what Ladle
+// counts as the export: the declaration after `export`, or its name in an
+// export list. A story's `meta` is the literal fields of `Story.meta = {...}`,
+// or null when it sets none. A title left out is null: Storybook then takes
+// it from the path.
 export function readCsf(text, file = 'x.stories.tsx') {
   const code = stripComments(text, file)
   const blanked = stringsBlanked(text, code, file)
-  const out = { title: null, component: null, meta: {}, stories: [], args: false, argTypes: false, unreadable: [] }
+  const out = { title: null, component: null, meta: {}, metaSpan: null, typeImports: [], stories: [], args: false, argTypes: false, unreadable: [] }
   const skip = (story, field, detail) => out.unreadable.push({ story, field, detail })
   if (/(?<![\w$.])storiesOf\s*\(/.test(blanked)) {
     skip(null, null, 'it uses storiesOf(), which adds its stories at run time')
     return out
   }
-  const meta = csfDefault(text, code, blanked)
+  const lineOf = lineIndex(text)
+  const spanOf = (start, end) => ({ start: lineOf(start), end: lineOf(Math.max(start, end - 1)) })
+  out.typeImports = typeImportsOf(code, blanked)
+  const { value: meta, at: metaAt } = csfDefault(text, code, blanked)
+  if (metaAt !== null) out.metaSpan = spanOf(metaAt, statementEnd(blanked, metaAt))
   let only = null
   let except = null
   if (meta === null) skip(null, null, 'it has no default export, so it is not a CSF file')
@@ -466,10 +552,10 @@ export function readCsf(text, file = 'x.stories.tsx') {
   const { found, stars, more } = namedExports(code, blanked)
   for (const from of stars) skip(null, null, `it passes on every export of ${from}, which are not listed`)
   for (const name of more) skip(name, null, `${name} is declared with more names in one statement, and the names after it are not listed`)
-  const assigned = (name, prop) => new RegExp(`(?<![\\w$.])${escapeName(name)}\\.${prop}\\s*=\\s*`).exec(blanked)
-  for (const { name, local, from } of found) {
+  const assigned = (name, prop) => new RegExp(`(?<![\\w$.])${escapeName(name)}\\.${prop}\\s*=(?!=)\\s*`).exec(blanked)
+  for (const { name, local, from, start, end } of found) {
     if (name === '__namedExportsOrder' || (only && !only.includes(name)) || except?.includes(name)) continue
-    const story = { export: name, storyName: null, args: false, argTypes: false }
+    const story = { export: name, storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: spanOf(start, end) }
     if (from) {
       skip(name, null, `${name} is re-exported from ${from}`)
       out.stories.push(story)
@@ -487,6 +573,7 @@ export function readCsf(text, file = 'x.stories.tsx') {
       }
       story.args = 'args' in object
       story.argTypes = 'argTypes' in object
+      story.parameters = 'parameters' in object
     }
     // CSF2 and Ladle set them on the export after it.
     const storyName = assigned(local, 'storyName')
@@ -495,13 +582,82 @@ export function readCsf(text, file = 'x.stories.tsx') {
       if (s === null) skip(name, 'storyName', 'storyName is not statically readable')
       else story.storyName = s
     }
+    // Ladle's story-level meta, which it lays over the default export's.
+    const metaAssigned = assigned(local, 'meta')
+    if (metaAssigned) {
+      const at = metaAssigned.index + metaAssigned[0].length
+      const value = blanked[at] === '{' ? parseObjectAt(text, at) : null
+      if (!value) skip(name, 'meta', 'meta is not statically readable')
+      else {
+        story.meta = {}
+        for (const [key, v] of Object.entries(value)) {
+          if (unreadableIn(v)) skip(name, 'meta', `meta.${key} is not statically readable`)
+          else story.meta[key] = v
+        }
+        if (value.__spreads) skip(name, 'meta', `meta spreads ${value.__spreads.join(', ')} into it`)
+      }
+    }
     story.args ||= Boolean(assigned(local, 'args'))
     story.argTypes ||= Boolean(assigned(local, 'argTypes'))
+    story.parameters ||= Boolean(assigned(local, 'parameters'))
     out.args ||= story.args
     out.argTypes ||= story.argTypes
     out.stories.push(story)
   }
   return out
+}
+
+// What keeps a CSF file's states from being listed in full: the file, its
+// default export or its title cannot be read, its story filter is not a
+// list, or a statement declares more names than the reader lists. A story
+// re-exported from another module is listed, so it is not one of them.
+export const listFaults = (csf) =>
+  csf.unreadable.filter((u) => (u.field === null && !(u.story !== null && / is re-exported from /.test(u.detail))) || ['title', ...META_LISTS].includes(u.field))
+
+// ── Ids for the csf lane ────────────────────────────────────────────────────
+
+// Lower-case words of letters and digits, joined by hyphens.
+const hyphenWords = (s) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join('-')
+
+// A name broken into words at each change of case and at anything that is
+// not a letter or digit: `ShadeOverTall` is Shade Over Tall, and `URLField`
+// is URL Field.
+const caseWords = (name) =>
+  name
+    .replace(/(\p{Ll}|\p{N})(\p{Lu})/gu, '$1 $2')
+    .replace(/(\p{Lu}+)(\p{Lu}\p{Ll})/gu, '$1 $2')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+
+// The slug of a title. Under `ladle` it is Ladle's own, so `Patterns /
+// Account / Log-In panel` is `patterns--account--log-in-panel`; under
+// `export`, each part is its lower-case words joined by `-`, and the parts
+// are joined by `--`.
+export function titleSlug(title, rule = 'export') {
+  if (rule === 'ladle') return ladleTitleId(title)
+  return title.split('/').map(hyphenWords).filter(Boolean).join('--')
+}
+
+// The slug of a file that declares no title, from its name up to the first dot.
+export function fileSlug(file, rule = 'export') {
+  if (rule === 'ladle') return ladleFileId(file)
+  return caseWords(file.split('/').pop().split('.')[0]).join('-').toLowerCase()
+}
+
+// The state part of an id. Under `ladle` it is Ladle's: the storyName when
+// there is one, else the export. Under `export` it is the export's words.
+export function stateSlug({ export: name, storyName = null }, rule = 'export') {
+  if (rule === 'ladle') return ladleStoryId(storyName || name)
+  return caseWords(name).join('-').toLowerCase()
+}
+
+// A state's name: its storyName, else its export in words with the first
+// capitalised and the rest lower-case, all-capital words kept (`Shade over
+// tall`, `URL field`).
+export function stateName({ export: name, storyName = null }) {
+  if (storyName) return storyName
+  const words = caseWords(name).map((w, i) => (i === 0 || (w.length > 1 && w === w.toUpperCase()) ? w : w.toLowerCase()))
+  return words.join(' ').replace(/^./, (c) => c.toUpperCase())
 }
 
 // Where the tag whose attributes start at `i` ends, as { selfClosing }, past

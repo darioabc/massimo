@@ -30,10 +30,12 @@ test('CSF3: the meta a const holds, object stories with their name, args and arg
     title: 'Primitives/Button',
     component: { name: 'Button', from: './Button' },
     meta: { tags: ['autodocs'] },
+    metaSpan: { start: 5, end: 11 },
+    typeImports: [{ start: 1, end: 55, spec: '@storybook/react', names: ['Meta', 'StoryObj'] }],
     stories: [
-      { export: 'Primary', storyName: null, args: true, argTypes: false },
-      { export: 'Large', storyName: 'Big one', args: false, argTypes: true },
-      { export: 'Computed', storyName: null, args: false, argTypes: false },
+      { export: 'Primary', storyName: null, meta: null, args: true, argTypes: false, parameters: false, span: { start: 14, end: 14 } },
+      { export: 'Large', storyName: 'Big one', meta: null, args: false, argTypes: true, parameters: false, span: { start: 15, end: 15 } },
+      { export: 'Computed', storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: { start: 17, end: 17 } },
     ],
     args: true,
     argTypes: true,
@@ -69,9 +71,9 @@ test('CSF2 and Ladle: function stories, storyName and args set after them, expor
   assert.deepEqual(csf.component, { name: 'Tile', from: '../Card' })
   assert.deepEqual(csf.meta, { meta: { exploration: true } })
   assert.deepEqual(csf.stories, [
-    { export: 'Plain', storyName: 'Plain card', args: false, argTypes: false },
-    { export: 'Wide', storyName: null, args: true, argTypes: false },
-    { export: 'Secret', storyName: null, args: false, argTypes: false },
+    { export: 'Plain', storyName: 'Plain card', meta: null, args: false, argTypes: false, parameters: false, span: { start: 9, end: 9 } },
+    { export: 'Wide', storyName: null, meta: { width: 900 }, args: true, argTypes: false, parameters: false, span: { start: 11, end: 11 } },
+    { export: 'Secret', storyName: null, meta: null, args: false, argTypes: false, parameters: false, span: { start: 16, end: 16 } },
   ])
   assert.deepEqual(csf.unreadable, [
     { story: null, field: null, detail: 'it passes on every export of ./more, which are not listed' },
@@ -105,11 +107,88 @@ test('an export written inside a string is not one, and a statement that declare
   assert.deepEqual(readCsf("export default {}\nexport { D } from './d'\n", 'x.stories.ts').unreadable, [{ story: 'D', field: null, detail: 'D is re-exported from ./d' }])
 })
 
+// What the csf lane reads beyond the story list: the lines each export spans
+// (Ladle's locStart and locEnd), its own meta and parameters, the default
+// export's lines, and the type imports a conversion rewrites.
+const LANE = `import type { Story, StoryDefault } from '@ladle/react'
+import { type Row, type Column } from './table'
+import { Table, type Sort } from './table'
+import type Theme from './theme'
+
+export default {
+  title: 'Patterns / Table',
+  meta: { width: 0 },
+} satisfies StoryDefault
+
+export const Plain: Story = () => <Table />
+
+export const Tall: Story = () => (
+  <Table rows={50}>
+    <p>Rows (fifty of them</p>
+  </Table>
+)
+Tall.storyName = 'Tall table'
+Tall.meta = { width: 375, note: 'kept' }
+Tall.parameters = { width: 1440 }
+
+export const Bare: Story = () => <Table
+  dense
+/>;
+
+export function Loose() {
+  return <Table />
+}
+
+const Shared = () => <Table />
+const Other = () => <Table />
+export { Shared, Other as Renamed }
+`
+
+test('the csf lane: spans as Ladle counts them, story meta, parameters and the default export lines', () => {
+  const csf = readCsf(LANE, 'Table.stories.tsx')
+  assert.deepEqual(csf.metaSpan, { start: 6, end: 9 })
+  assert.deepEqual(csf.meta, { meta: { width: 0 } })
+  assert.deepEqual(
+    csf.stories.map((s) => [s.export, s.span.start, s.span.end]),
+    [['Plain', 11, 11], ['Tall', 13, 17], ['Bare', 22, 24], ['Loose', 26, 28], ['Shared', 32, 32], ['Renamed', 32, 32]],
+  )
+  const tall = csf.stories.find((s) => s.export === 'Tall')
+  assert.deepEqual([tall.storyName, tall.meta, tall.parameters], ['Tall table', { width: 375, note: 'kept' }, true])
+  assert.deepEqual(csf.unreadable, [])
+})
+
+test('type-only imports, with the offsets of the statement and the names it brings in', () => {
+  const { typeImports } = readCsf(LANE, 'Table.stories.tsx')
+  assert.deepEqual(typeImports.map(({ spec, names }) => [spec, names]), [
+    ['@ladle/react', ['Story', 'StoryDefault']],
+    ['./table', ['Row', 'Column']],
+    ['./theme', ['default']],
+  ])
+  assert.equal(LANE.slice(typeImports[0].start, typeImports[0].end), "import type { Story, StoryDefault } from '@ladle/react'")
+  assert.equal(LANE.slice(typeImports[2].start, typeImports[2].end), "import type Theme from './theme'")
+})
+
+test('a story meta that is not a literal is said, and a comparison is not an assignment', () => {
+  const csf = readCsf("export default { title: 'X' }\nexport const A = () => null\nA.meta = base\nexport const B = () => null\nB.meta = { ...base, width: 0 }\nexport const C = () => null\nC.meta = { width: size, note: 'n' }\nexport const D = () => null\nconsole.log(D.meta === undefined)\nD.parameters = { width: 375 }\n", 'x.stories.tsx')
+  assert.deepEqual(csf.stories.map((s) => [s.export, s.meta, s.parameters]), [['A', null, false], ['B', { width: 0 }, false], ['C', { note: 'n' }, false], ['D', null, true]])
+  assert.deepEqual(csf.unreadable, [
+    { story: 'A', field: 'meta', detail: 'meta is not statically readable' },
+    { story: 'B', field: 'meta', detail: 'meta spreads base into it' },
+    { story: 'C', field: 'meta', detail: 'meta.width is not statically readable' },
+  ])
+})
+
 test('strings inside a template keep every later offset where it was', () => {
   // A template's `${}` holds strings of its own, which must be blanked once.
   const csf = readCsf("export default { title: 'X' }\nconst cls = (on) => `btn ${on ? 'btn-on' : 'btn-off'}`\nexport const A = () => <b className={cls(true)} />\nA.storyName = 'First'\n", 'x.stories.tsx')
-  assert.equal(csf.stories[0].storyName, 'First')
+  assert.deepEqual([csf.stories[0].storyName, csf.stories[0].span], ['First', { start: 3, end: 3 }])
   assert.deepEqual(csf.unreadable, [])
+})
+
+test('a regular expression after the default export does not stop the reader', () => {
+  const csf = readCsf("export default { title: 'X', meta: { width: 0 } }\nconst KEY = /^sb-.+-auth-token$/\nexport const A = () => null\n", 'x.stories.tsx')
+  assert.deepEqual(csf.meta, { meta: { width: 0 } })
+  assert.deepEqual(csf.stories.map((s) => s.export), ['A'])
 })
 
 const HISTOIRE = `<script setup>
