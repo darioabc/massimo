@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+A csf story lane for repos whose stories are CSF files, with a converter and proof against the tool it replaces. The entry is written when the release is cut.
+
 ## 0.3.0
 
 Adopt the design-system setup a repo already has, instead of generating a second one beside it. massimo reads the repo's own story lane, header keys, graph, ratchet and token inventory through its config, runs beside them until both agree, then takes over one class at a time. After updating, run `init.mjs --update-scripts`. A project that sets none of the new keys gets the same graph, audit and token outputs as before.
