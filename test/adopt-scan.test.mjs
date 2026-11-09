@@ -13,7 +13,9 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { planLedger } from '../scripts/lib/adopt.mjs'
 import { walk } from '../scripts/lib/glob.mjs'
-import { headerCensus, headerEntries, headerReaders, inventoryMarkdown, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
+import { headerCensus, headerEntries, headerReaders, inventoryMarkdown, laneRecord, markupBlanked, proposeRole, workflowText } from '../scripts/lib/inventory.mjs'
+import { laneRegistry } from '../scripts/lib/lane.mjs'
+import { DEFAULTS, deepMerge } from '../scripts/lib/project.mjs'
 import { SCRIPTS, read, readJson, scratch } from './helpers.mjs'
 
 const ctx = scratch('legacy')
@@ -348,7 +350,7 @@ test('story tools: CSF files read statically, and what is not readable is listed
     const r = adopt(root, ['--json'])
     assert.equal(r.status, 0, r.stderr)
     const out = JSON.parse(r.stdout)
-    assert.deepEqual(out.stories.tools, [{ tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle', 'ladle:build'], port: 61000, files: 3, stories: 2, withArgs: 1, notReadable: 2 }])
+    assert.deepEqual(out.stories.tools, [{ tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle', 'ladle:build'], port: 61000, files: 3, stories: 2, withArgs: 1, notReadable: 2, settings: { stories: null, storyOrder: null, defaultStory: null, port: null, widths: null, outDir: null } }])
     const button = out.stories.files.find((f) => f.file === 'src/Button.stories.tsx')
     assert.deepEqual([button.title, button.stories, button.args], ['Primitives / Button', ['Solid fill', 'Sized'], true])
     assert.match(out.stories.files.find((f) => f.file === 'src/Old.stories.tsx').unreadable[0], /storiesOf/)
@@ -357,4 +359,17 @@ test('story tools: CSF files read statically, and what is not readable is listed
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('a csf lane counts its files and states through the registry', () => {
+  const lane = { dir: 'src/stories', gate: 'package.json scripts', index: null, manifest: null, devScript: null, port: null }
+  const sources = {
+    'src/A.stories.tsx': "export default { title: 'Pages / A' }\nexport const One = () => null\nexport const Two = () => null\n",
+    'src/B.stories.tsx': "export default { title: 'Pages / B' }\nexport const One = () => null\nOne.storyName = name\n",
+  }
+  const config = deepMerge(DEFAULTS, { stories: { lane: 'csf', ids: 'ladle' } })
+  const registry = laneRegistry({ root: '.', config, files: Object.keys(sources), read: (f) => sources[f] })
+  assert.equal(laneRecord('.', ['src/stories/index.ts'], {}, lane, () => '').states, 0)
+  const record = laneRecord('.', ['src/stories/index.ts'], {}, lane, () => '', registry)
+  assert.deepEqual([record.states, record.statesNotReadable, record.csf], [3, 1, { files: 2, states: 3 }])
 })

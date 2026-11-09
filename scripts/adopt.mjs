@@ -9,10 +9,14 @@
 //                                 <project>/adopt/inventory.json and inventory.md
 //   adopt.mjs plan                the ledger (adopt/ledger.json) and the proposed
 //                                 config (adopt/config.proposed.json), from the inventory
-//   adopt.mjs config [--write]    the proposed config as a diff against
+//   adopt.mjs config [--write] [--lane csf]
+//                                 the proposed config as a diff against
 //                                 massimo.config.json; --write merges it in, adding
 //                                 keys and never overwriting a value you set (a config
-//                                 with comments is left for you to edit by hand)
+//                                 with comments is left for you to edit by hand).
+//                                 --lane csf is the opt-in for a Ladle repo: the csf
+//                                 lane, Ladle's own settings and the frozen design
+//                                 targets, from the saved inventory
 //   adopt.mjs status [--json]     the ledger as a table
 //   adopt.mjs mark <class> <state> [--batch <id>] [--force]
 //                                 move a class one state on; never past a blocker;
@@ -35,6 +39,16 @@
 //                                 is refused. It takes the flags verify takes, for a
 //                                 difference only they produce (--against, and
 //                                 --pairs, --a, --b and --shoot for a shot)
+//   adopt.mjs convert stories [--check] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]
+//                                 for a Ladle repo on the csf lane: one record per story
+//                                 file under <project>/adopt/stories/work/, the frozen
+//                                 design targets proposed, the redirect map
+//                                 (adopt/stories/redirects.json) and the removal patch
+//                                 that points each unfrozen file's type import at --types
+//                                 (default src/stories/story.ts). --check proves every file
+//                                 is unchanged outside that import and every frozen file
+//                                 matches its sha256; --refreeze pins a frozen file again;
+//                                 --ids-from reads the old ids from Ladle's meta.json
 //   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
 //                                 them; a file code depends on is refused
 //   adopt.mjs retire <class> --dry-run [--json]
@@ -44,12 +58,13 @@
 //                                 writes what goes. It never deletes: the skill does,
 //                                 on your OK
 //
-// Read-only towards the repo: only massimo.config.json (config --write), the
-// files under <project>/adopt/, a pairs file (verify --pairs) and shots
-// (verify --shoot) are written. Shared flags: --root, --config, --project-dir.
+// Read-only towards the repo: only massimo.config.json (config --write and
+// convert stories --refreeze), the files under <project>/adopt/, a pairs file
+// (verify --pairs) and shots (verify --shoot) are written. Shared flags:
+// --root, --config, --project-dir.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ALL_KINDS, compareLegacy, notMeasured, offendersOf, parseMap, runAudit } from './audit.mjs'
@@ -69,11 +84,15 @@ import {
   planLedger,
   proposeConfig,
   proposedPath,
+  raiseMinScripts,
   retirePlan,
   statusTable,
 } from './lib/adopt.mjs'
+import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freezeEntry, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch } from './lib/convert.mjs'
+import { compare, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
-import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, writeFileAtomic } from './lib/project.mjs'
+import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
+import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, writeFileAtomic } from './lib/project.mjs'
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
@@ -523,6 +542,163 @@ function checkVerifyFlags(name, cls) {
   if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
 }
 
+// ── convert stories ─────────────────────────────────────────────────────────
+
+const workPath = (...parts) => join(projectDir, 'adopt', 'stories', 'work', ...parts)
+const readSource = (f) => readFileSync(join(root, f), 'utf8')
+const pkgJson = () => readJson(join(root, 'package.json'), {}) ?? {}
+
+// The csf registry of the repo as `effective` configures it, with the ids
+// rule of the config unless `ids` says another.
+function csfRegistry(effective = config, ids = effective.stories.ids) {
+  const stories = ids === effective.stories.ids ? effective : deepMerge(structuredClone(effective), { stories: { ids } })
+  const files = expandGlobs(root, stories.stories.include ?? [], [], [], scanFiles(stories, pkgJson()))
+  return laneRegistry({ root, config: stories, files, read: readSource })
+}
+
+// The files `config --lane csf` proposes to freeze: the candidates in the
+// config the proposal would leave, not yet in its stories.frozen.
+function frozenProposal(inv, current) {
+  const base = proposeConfig(inv, config, { lane: 'csf' })
+  const effective = deepMerge(structuredClone(DEFAULTS), mergeAdding(current, base).merged)
+  const pinned = new Set(effective.stories.frozen.map((f) => f.file))
+  return frozenCandidates(csfRegistry(effective), effective.stories.policy, { root, read: readSource })
+    .filter((c) => !pinned.has(c.file))
+    .map((c) => freezeEntry(root, c.file, today()))
+}
+
+// Every record under work/records, read and refused when a newer massimo wrote it.
+function readRecords() {
+  const dir = workPath('records')
+  const out = []
+  const visit = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => compare(a.name, b.name))) {
+      const path = join(d, e.name)
+      if (e.isDirectory()) visit(path)
+      else if (e.name.endsWith('.json')) {
+        let record
+        try {
+          record = JSON.parse(readFileSync(path, 'utf8'))
+        } catch (err) {
+          fail(`${rel(root, path)} is not valid JSON: ${err.message}: run convert stories again`)
+        }
+        refuseNewer('conversion', record?.format, rel(root, path))
+        out.push(record)
+      }
+    }
+  }
+  if (existsSync(dir)) visit(dir)
+  return out.sort((a, b) => compare(a.file, b.file))
+}
+
+const listed = (lines, max = 12) => (lines.length > max ? [...lines.slice(0, max), `  and ${lines.length - max} more`] : lines)
+
+function convertCheck() {
+  const records = readRecords()
+  if (records.length === 0) fail(`no records under ${shown('stories/work/records')}: run ${scriptCommand(root, projectDir, 'adopt', 'convert stories')} first`)
+  const frozen = config.stories.frozen
+  const pins = frozenProblems(root, config)
+  const result = checkRecords(records, { root, frozen })
+  const lines = [`massimo adopt convert stories --check: ${plural(records.length, 'record')} against the files now; ${plural(result.frozen, 'frozen file')} against ${plural(frozen.length, 'pinned sha256')}.`]
+  for (const p of pins) lines.push(`  ${p.file ?? '(an entry)'}: ${p.detail}`)
+  for (const p of result.problems) lines.push(`  ${p.file}: ${p.detail}`)
+  if (result.wholeFiles.length > 0) lines.push('', `Compared as a whole, for a hand pass (${result.wholeFiles.length}):`, ...listed(result.wholeFiles.map((f) => `  ${f}`)))
+  const open = pins.length + result.problems.length
+  lines.push('', open > 0 ? `Fails: ${plural(open, 'file')} changed beyond the type import.` : 'Passes: every file is unchanged outside its type import, and every frozen file matches.')
+  process.stdout.write(`${lines.join('\n')}\n`)
+  if (open > 0) process.exit(1)
+}
+
+function convertRefreeze(file) {
+  const path = repoFile(file)
+  if (!path) fail(`${file} is not in the repo`)
+  let result
+  try {
+    result = refreeze(root, config, path, { since: today() })
+  } catch (e) {
+    fail(e.message)
+  }
+  const text = readFileSync(configPath, 'utf8')
+  if (text !== stripJsonComments(text)) fail(`${rel(root, configPath)} has comments (or trailing commas), which a rewrite would drop: set sha256 to ${result.new} and since to ${result.since} in stories.frozen by hand`)
+  const raw = readJson(configPath, {}) ?? {}
+  raw.stories = { ...raw.stories, frozen: result.frozen }
+  raiseMinScripts(raw, [])
+  writeFileAtomic(configPath, `${JSON.stringify(raw, null, text.match(/^[ \t]+(?=")/m)?.[0] ?? '  ')}\n`)
+  process.stdout.write(`${path}: pinned ${result.old ?? 'nothing'} -> ${result.new}, since ${result.since}\n`)
+}
+
+function convertStories() {
+  if (config.stories.lane !== 'csf') fail(`convert stories is for the csf lane: stories.lane is "${config.stories.lane}". ${scriptCommand(root, projectDir, 'adopt', 'config --write --lane csf')} opts a Ladle repo in`)
+  if (flags.refreeze === true || flags.types === true) fail('usage: adopt.mjs convert stories [--check] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]: --refreeze and --types take a file')
+  if (typeof flags.refreeze === 'string') return convertRefreeze(flags.refreeze)
+  if (truthy(flags.check)) return convertCheck()
+  readRecords()
+  refuseNewerFile(join(projectDir, 'adopt', 'stories', 'redirects.json'), 'redirects', 'format', 'adopt/stories/redirects.json')
+  refuseNewerFile(workPath('removal.json'), 'removal', 'format', 'adopt/stories/work/removal.json')
+  refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
+  const ledger = readLedger()
+  const registry = csfRegistry()
+  if (Object.keys(registry.files).length === 0) fail(`stories.include matches no story file (${(config.stories.include ?? []).join(', ') || 'it is empty'}): set it to the glob your story files match`)
+  if (registry.problems.length > 0) {
+    fail(`the registry has ${plural(registry.problems.length, 'problem')}, so its ids and routes would be a guess: ${registry.problems.slice(0, 3).map((p) => `${p.file ?? 'config'}: ${p.detail}`).join('; ')}`)
+  }
+  // The types the story files import once the tool goes.
+  const typesFlag = typeof flags.types === 'string' ? flags.types : null
+  const typesFile = typesFlag === null ? DEFAULT_TYPES_FILE : repoFile(typesFlag)
+  if (!typesFile) fail(`--types ${typesFlag} is not in the repo`)
+  const typesThere = existsSync(join(root, typesFile))
+  if (typesFlag !== null && !typesThere) fail(`--types ${typesFlag} is not there`)
+  const typesText = typesThere ? readSource(typesFile) : DEFAULT_STORY_TYPES
+  const typesCheck = checkTypesFile(typesText, typesFile)
+  if (typesCheck.problems.length > 0) fail(`${typesFile} cannot stand in for the tool's types, since it holds more than non-relative import type lines and export type declarations: ${typesCheck.problems.join('; ')}`)
+  const frozen = config.stories.frozen
+  const records = conversionRecords(registry, { root, frozen, typesFile, read: readSource })
+  const summary = recordsSummary(records)
+  const edits = removalEdits(registry, { root, typesFile, typesText, frozen, read: readSource })
+  const pinned = new Set(frozen.map((f) => f.file))
+  const candidates = frozenCandidates(registry, config.stories.policy, { root, read: readSource }).filter((c) => !pinned.has(c.file))
+  // Old id to new route: Ladle's own ids when the lane takes them, else the ids
+  // Ladle would give, or those in the meta.json of a Ladle build.
+  let old = registry.order
+  if (typeof flags['ids-from'] === 'string') {
+    const doc = readJson(resolve(root, flags['ids-from']), null)
+    if (!doc?.stories) fail(`--ids-from ${flags['ids-from']} is not Ladle's meta.json: it has no stories`)
+    old = doc.stories
+  } else if (registry.ids !== 'ladle') old = ladleMeta(csfRegistry(config, 'ladle')).stories
+  const redirects = redirectTable(registry, old)
+
+  // Records, the removal edits and the patch, under work/, which git never sees.
+  writeFileAtomic(workPath('.gitignore'), '*\n')
+  rmSync(workPath('records'), { recursive: true, force: true })
+  for (const r of records) writeJson(workPath('records', `${r.file}.json`), r)
+  const edited = edits.filter((e) => !e.create).length
+  writeJson(workPath('removal.json'), { format: REMOVAL_FORMAT, generatedBy: 'massimo adopt', tool: LADLE_MODULE, types: typesFile, edits })
+  writeFileAtomic(workPath('removal.patch'), removalPatch(edits, readSource))
+  writeJson(join(projectDir, 'adopt', 'stories', 'redirects.json'), { format: 1, generatedBy: 'massimo adopt', ids: registry.ids, redirects })
+
+  // The candidates go in the proposed config, for config --write to store.
+  if (candidates.length > 0) {
+    const proposed = existsSync(proposedPath(projectDir)) ? readJson(proposedPath(projectDir), { version: 1 }) : { version: 1 }
+    refuseNewer('config', proposed.version, 'adopt/config.proposed.json')
+    writeJson(proposedPath(projectDir), { ...proposed, stories: { ...proposed.stories, frozen: candidates.map((c) => freezeEntry(root, c.file, today())) } })
+  }
+  if (ledger?.classes?.stories) {
+    ledger.classes.stories.converted = { at: today(), files: summary.files, states: summary.states, frozen: summary.frozen }
+    writeJson(ledgerPath(projectDir), ledger)
+  }
+
+  const out = [`massimo adopt convert stories: ${plural(summary.files, 'record')} (${plural(summary.states, 'state')}), ${plural(candidates.length + summary.frozen, 'frozen file')} (${summary.frozen} pinned, ${candidates.length} to confirm), ${plural(summary.argsFiles.length, 'file')} with args, ${plural(summary.parametersStories.length, 'story', 'stories')} with parameters.`]
+  if (candidates.length > 0) out.push('', 'Frozen candidates, each a default export that sets a banner meta key:', ...candidates.map((c) => `  ${c.file}  (${c.key})`), `Confirm them with ${scriptCommand(root, projectDir, 'adopt', 'config --write')}, which stores them in stories.frozen, then run convert stories again so the patch leaves them alone.`)
+  if (summary.argsFiles.length > 0) out.push('', 'Files that keep args or argTypes at run time, for a hand pass:', ...listed(summary.argsFiles.map((f) => `  ${f}`)))
+  if (summary.parametersStories.length > 0) out.push('', 'Stories that set parameters, which the canvas does not read, for a hand pass:', ...listed(summary.parametersStories.map((h) => `  ${h.file}  ${h.story}`)))
+  if (summary.wholeFiles.length > 0) out.push('', 'Files without a single type import from the tool, compared as a whole, for a hand pass:', ...listed(summary.wholeFiles.map((h) => `  ${h.file}  ${h.detail}`)))
+  const expected = records.filter((r) => r.typeImport?.spec === LADLE_MODULE && !r.frozen).length
+  if (edited < expected) out.push('', `${plural(expected - edited, 'file')} keep${expected - edited === 1 ? 's' : ''} the tool's import, since ${typesFile} lacks a name ${expected - edited === 1 ? 'it' : 'they'} import.`)
+  if (!typesThere) out.push('', `${typesFile} is not there yet: the patch points at it, and the declaration uses the default story types the lane scaffold writes there.`)
+  out.push('', `Wrote ${shown('stories/work/records')} (${plural(records.length, 'file')}), ${shown('stories/work/removal.patch')} (${plural(edited, 'edit')}, applied with git apply from the repo root), removal.json and ${shown('stories/redirects.json')} (${plural(Object.keys(redirects).length, 'id')}).`)
+  process.stdout.write(`${out.join('\n')}\n`)
+}
+
 switch (command) {
   case 'scan': {
     const inv = scan()
@@ -542,7 +718,7 @@ switch (command) {
   case 'plan': {
     needInit('plan')
     const inv = readInventory()
-    const ledger = planLedger(inv, readLedger())
+    const ledger = planLedger(inv, readLedger(), { config })
     refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
     writeJson(ledgerPath(projectDir), ledger)
     writeJson(proposedPath(projectDir), proposeConfig(inv, config))
@@ -554,11 +730,21 @@ switch (command) {
   }
   case 'config': {
     needInit('config')
-    if (!existsSync(proposedPath(projectDir))) fail(`no ${shown('config.proposed.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
-    const proposed = readJson(proposedPath(projectDir), {})
-    refuseNewer('config', proposed.version, 'adopt/config.proposed.json')
     const current = readJson(configPath, {}) ?? {}
-    const { merged, changes } = mergeAdding(current, proposed)
+    let proposed
+    if (flags.lane !== undefined) {
+      // The opt-in: the csf lane, from the saved inventory and Ladle's own settings.
+      if (flags.lane !== 'csf') fail('usage: adopt.mjs config [--write] [--lane csf]; csf is the only lane --lane takes')
+      const inv = readInventory()
+      if (!inv.stories.tools.some((t) => t.tool === 'ladle')) fail('--lane csf converts a Ladle repo, and scan finds no Ladle here')
+      proposed = proposeConfig(inv, config, { lane: 'csf', frozen: frozenProposal(inv, current) })
+    } else {
+      if (!existsSync(proposedPath(projectDir))) fail(`no ${shown('config.proposed.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
+      proposed = readJson(proposedPath(projectDir), {})
+      refuseNewer('config', proposed.version, 'adopt/config.proposed.json')
+    }
+    const { merged, changes: found } = mergeAdding(current, proposed)
+    const changes = raiseMinScripts(merged, found)
     const lines = changeLines(changes)
     process.stdout.write(lines.length ? `${lines.join('\n')}\n` : 'massimo.config.json already holds everything proposed\n')
     if (truthy(flags.write)) {
@@ -648,6 +834,12 @@ switch (command) {
     process.stdout.write(`${line}\n`)
     break
   }
+  case 'convert': {
+    needInit('convert')
+    if (rest[0] !== 'stories' || rest.length > 1) fail('usage: adopt.mjs convert stories [--check] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]')
+    convertStories()
+    break
+  }
   case 'historical': {
     needInit('historical')
     const ledger = readLedger()
@@ -683,5 +875,5 @@ switch (command) {
     break
   }
   default:
-    fail(`unknown command "${command}". Commands: scan, plan, config, status, mark, verify, accept, historical, retire.`)
+    fail(`unknown command "${command}". Commands: scan, plan, config, status, mark, verify, accept, convert, historical, retire.`)
 }

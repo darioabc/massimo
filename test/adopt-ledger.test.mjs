@@ -331,3 +331,22 @@ test('merging adds what is missing, replaces a default, extends a list and keeps
   // A glob written with its braces in another order is the same glob.
   assert.deepEqual(mergeAdding({ stories: { include: ['s/**/*.{tsx,astro}'] } }, { stories: { include: ['s/**/*.{astro,tsx}'] } }).changes, [])
 })
+
+test('the Ladle tool converts under the csf lane, and Ladle without it and Storybook keep their story files', () => {
+  const inv = readJson(project, 'adopt', 'inventory.json')
+  const tool = (name) => ({ tool: name, config: [`.${name}/config.mjs`], scripts: [name], port: null, files: 2, stories: 3, withArgs: 1, notReadable: 0 })
+  const plan = (name, config) => {
+    const more = { ...inv, stories: { ...inv.stories, tools: [tool(name)] }, assets: [...inv.assets, { id: `tool:${name}`, class: 'stories', kind: 'tool', paths: [`.${name}/`], consumers: [] }] }
+    return planLedger(more, null, { date: 'd0', config }).classes.stories.assets.find((a) => a.id === `tool:${name}`)
+  }
+  const csf = { stories: { lane: 'csf' } }
+  const ladle = plan('ladle', csf)
+  assert.deepEqual([ladle.decision, ladle.loss], ['convert', 'carried'])
+  assert.match(ladle.lines.join('\n'), /Its 3 stories in 2 files stay where they are, read in place by the csf lane/)
+  assert.match(ladle.lines.join('\n'), /1 file uses args or argTypes, which stay in the file and apply at run time/)
+  for (const [name, config] of [['ladle', undefined], ['ladle', { stories: { lane: 'manifest' } }], ['storybook', csf]]) {
+    const kept = plan(name, config)
+    assert.deepEqual([kept.decision, kept.loss], ['keep', 'carried'], name)
+    assert.match(kept.lines.join('\n'), /Moving them to the native lane is a later step/)
+  }
+})
