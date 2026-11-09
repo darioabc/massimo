@@ -205,6 +205,31 @@ test('leak without a probe checks every class only stories use, escaped selector
   assert.ok(!r.lines[0].includes('p-4'))
 })
 
+test('a class a file outside the stories names in a comment, after a selector\'s dot, is the app\'s, as Tailwind reads it', () => {
+  const b = builds({ appCss: `${APP_CSS}.mt-10 { margin-top: 2.5rem }\n`, laneCss: `${APP_CSS}${STORY_CLASS}\n.mt-10 { margin-top: 2.5rem }\n` })
+  write(b.root, { 'src/Tall.stories.tsx': `export default { title: 'Foundations / Tall' }\nexport const Tall = () => <div className="mt-10" />\n` })
+  const files = [...b.files, 'src/Tall.stories.tsx']
+  assert.equal(leak({ ...b, files }).lines[0], "leak: 1 class only stories use is in the app's CSS: mt-10")
+  write(b.root, { 'tools/lib/notes.mjs': '// a sheet that scopes one, as in `.widget .mt-10`, holds none\n' })
+  assert.deepEqual(leak({ ...b, files: [...files, 'tools/lib/notes.mjs'] }), { ok: true, lines: ["ok: no class only stories use is in the app's CSS"] })
+})
+
+test('a class only the lane\'s own stylesheet defines leaks even when a test or a doc names it', () => {
+  const PROBE = '.dir-probe { outline: 1px solid red }\n'
+  const b = builds({ appCss: `${APP_CSS}${PROBE}`, laneCss: `${APP_CSS}${STORY_CLASS}\n${PROBE}` })
+  write(b.root, {
+    'src/stories/stories.extra.css': `${PROBE}.frame .p-4 { padding: 0 }\n`,
+    'src/styles/direction.test.ts': "expect(css.includes('.dir-probe')).toBe(false)\n",
+    'docs/rtl.md': 'The lane paints `.dir-probe` around a state.\n',
+  })
+  const files = [...b.files, 'src/stories/stories.extra.css', 'src/styles/direction.test.ts', 'docs/rtl.md']
+  const scaffold = { ...b.config, stories: { ...b.config.stories, include: [...b.config.stories.include, 'src/stories/**'] } }
+  assert.equal(leak({ ...b, files, config: scaffold }).lines[0], "leak: 1 class only stories use is in the app's CSS: dir-probe")
+  // the app's own sheet naming it makes it the app's; p-4, which the lane only scopes, stays the app's
+  write(b.root, { 'src/styles/index.css': PROBE })
+  assert.equal(leak({ ...b, files: [...files, 'src/styles/index.css'], config: scaffold }).ok, true)
+})
+
 test('a leak prints the edit that keeps the exclusions out of the base CSS', () => {
   const b = builds({ appCss: `${APP_CSS}${STORY_CLASS}\n` })
   b.config.stories.appCss = { base: 'src/styles/index.css', entry: 'src/styles/app.css' }

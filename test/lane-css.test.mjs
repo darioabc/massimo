@@ -268,6 +268,14 @@ test('sourceWords finds a class whose square brackets hold a quote, an = or a >,
   for (const w of ["rows['key']", "['key']", 'items[i>0', 'string[]>', '[a=b]']) assert.ok(!words.has(w), w)
 })
 
+test('sourceWords reads a class as Tailwind does after a selector\'s dot, in parentheses and before a comma or a stop', () => {
+  const words = sourceWords('// as in `.widget .mt-10`, (gap-2) or py-3, and pt-1.\nconst x = \'.a,.b\'')
+  for (const w of ['.mt-10', 'mt-10', 'widget', 'gap-2', 'py-3', 'pt-1', 'a', 'b']) assert.ok(words.has(w), w)
+  // a word with square brackets stays whole
+  assert.ok(sourceWords('see (w-[1px,2px]).').has('(w-[1px,2px]).'))
+  assert.ok(!sourceWords('see (w-[1px,2px]).').has('w-[1px'))
+})
+
 // Tailwind 4's own output, minified, as a build writes it.
 const UTILITIES = [
   String.raw`/*! tailwindcss v4 | MIT License */@layer theme{:root,:host{--spacing:.25rem}}`,

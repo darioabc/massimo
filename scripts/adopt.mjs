@@ -104,6 +104,7 @@ import {
 import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch, shellPath } from './lib/convert.mjs'
 import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
+import { recipeFiles } from './lib/lane-css.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
 import { stateUrl } from './lib/lane-route.mjs'
 import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, writeFileAtomic } from './lib/project.mjs'
@@ -649,7 +650,7 @@ function toolEditsFor(ledger, inv, ids = undefined) {
     const tool = inv.stories.tools.find((t) => `tool:${t.tool}` === a.id)
     if (!tool) return []
     const consumers = inv.assets.find((x) => x.id === a.id)?.consumers ?? []
-    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`] })
+    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`], lane: recipeFiles(root) })
   })
   return edits.sort((x, y) => compare(x.file, y.file) || x.line - y.line)
 }

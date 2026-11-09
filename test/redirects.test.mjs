@@ -10,6 +10,7 @@ import { after, test } from 'node:test'
 import { retirePlan } from '../scripts/lib/adopt.mjs'
 import { compileGlobs } from '../scripts/lib/glob.mjs'
 import { readText, repoFiles } from '../scripts/lib/inventory.mjs'
+import { recipeFiles } from '../scripts/lib/lane-css.mjs'
 import { laneRegistry } from '../scripts/lib/lane.mjs'
 import { loadConfig } from '../scripts/lib/project.mjs'
 import { editsMarkdown, editsSummary, idMentions, mentionCoverage, openEdits, toolEdits, toolPackages, writeEditsFile } from '../scripts/lib/redirects.mjs'
@@ -327,4 +328,20 @@ test('retire counts the open edits in place of the tool\'s own consumers, and a 
   const jobs = retirePlan(ledger, 'stories', ci, { edits, jobAt: () => ({ id: 'stories', name: 'Stories' }) })
   assert.deepEqual(jobs.jobs, [{ file: '.github/workflows/ci.yml', line: 4, job: 'stories', name: 'Stories', via: ['ladle'] }])
   assert.equal(jobs.consumers.length, 0)
+})
+
+test('a frozen file and the files the lane\'s recipe writes are not listed for the tool\'s name as a word', () => {
+  put('src/Kept.stories.tsx', "// Built for Ladle, kept as it was.\nexport default { title: 'Primitives / Kept' }\n")
+  put('stories.html', '<div id="ladle-root"></div>\n<script type="module" src="/src/stories/main.tsx"></script>\n')
+  put('src/stories/main.tsx', "// Ladle's own links render here.\n")
+  put('src/stories/frame.tsx', "// What the Ladle provider did, done here.\n")
+  const added = ['src/Kept.stories.tsx', 'src/stories/frame.tsx', 'src/stories/main.tsx', 'stories.html']
+  const prose = (opts = {}) =>
+    toolEdits({ consumers: [], packages: ['@ladle/react'], registry, tool, historical: [], read, files: [...files, ...added], ...opts })
+      .filter((e) => e.status === 'prose' && added.includes(e.file))
+      .map((e) => e.file)
+  assert.deepEqual(prose(), added)
+  assert.deepEqual(recipeFiles(ctx.root), ['src/stories/main.tsx', 'stories.html'])
+  // the project's own frame keeps its line
+  assert.deepEqual(prose({ frozen: [{ file: 'src/Kept.stories.tsx', sha256: 'x' }], lane: recipeFiles(ctx.root) }), ['src/stories/frame.tsx'])
 })

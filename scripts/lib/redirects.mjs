@@ -211,8 +211,11 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // `frozen` the config's frozen entries, whose files the removal patch leaves,
 // and `legacyTypes` the file the patch adds for them, which is not an edit.
 // A frozen file's type import is valid only when the legacy types file
-// declares every name it imports; otherwise it stays open.
-export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [], legacyTypes = LEGACY_TYPES_FILE } = {}) {
+// declares every name it imports; otherwise it stays open. `lane` lists the
+// files the lane's recipe writes as they are (see recipeFiles), which name
+// the tool on purpose. Neither those nor a frozen file, which stays byte for
+// byte, are listed for the tool's name as a word.
+export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [], legacyTypes = LEGACY_TYPES_FILE, lane = [] } = {}) {
   if (!tool || typeof read !== 'function') return []
   const name = tool.tool ?? tool.name
   if (!name) return []
@@ -221,6 +224,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   const ids = idSet(registry)
   const oracle = Array.isArray(oracleIds) ? new Set(oracleIds) : null
   const pinned = new Set(frozen.map((f) => f.file ?? f))
+  const noProse = new Set([...pinned, ...lane])
   const declared = () => {
     const there = read(legacyTypes)
     if (there) return new Set([...there.matchAll(/\bexport\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))
@@ -330,7 +334,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
         hit(n, { kind: 'valid', uses: `port ${tool.port}`, replacement: 'nothing, while stories.port is this port; set it when the tool goes' })
         used = true
       }
-      if (!used && wordRe.test(l)) hit(n, { kind: 'prose', uses: `the word ${cap}`, replacement: 'reword it or leave it' })
+      if (!used && !noProse.has(file) && wordRe.test(l)) hit(n, { kind: 'prose', uses: `the word ${cap}`, replacement: 'reword it or leave it' })
     }
     if (idScope(file)) {
       for (const m of idMentions(text, registry)) {

@@ -255,6 +255,10 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   const ignored = ignoredFiles(root, files)
   const storyWords = new Set()
   const appText = new Set()
+  // The classes the lane's own stylesheets hold by a rule of their own, and
+  // the classes the app's stylesheets name.
+  const laneRules = new Set()
+  const appSheets = new Set()
   const appCode = new Map()
   for (const file of files) {
     if (NOT_TEXT.test(file) || ignored.has(file) || builds.some((d) => file.startsWith(`${d}/`))) continue
@@ -274,7 +278,16 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     }
     // A stylesheet's own selectors name classes its CSS defines itself: the
     // app's, or for one of the lane's stylesheets, the lane's.
-    if (/\.(?:css|scss|sass|less|pcss)$/.test(file)) for (const c of cssClasses(text)) (inLane ? storyWords : appText).add(c)
+    if (/\.(?:css|scss|sass|less|pcss)$/.test(file)) {
+      for (const c of cssClasses(text)) {
+        if (inLane) storyWords.add(c)
+        else {
+          appText.add(c)
+          appSheets.add(c)
+        }
+      }
+      if (inLane) for (const c of ownClasses(text)) laneRules.add(c)
+    }
   }
 
   let leaked = []
@@ -286,7 +299,12 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     // A scan by words: a class a package's stylesheet or a CSS plugin gives the
     // app a rule of its own for, under a name only stories use, shows here
     // too; --probe settles one.
-    leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
+    // A word elsewhere never excuses a class a stylesheet of the lane's
+    // holds by a rule of its own and none of the app's names: Tailwind makes
+    // no rule of a word it has no utility for, so that rule came from the
+    // lane's sheet.
+    const appsOwn = (w) => appSheets.has(w) || (appText.has(w) && !laneRules.has(w))
+    leaked = [...storyWords].filter((w) => !appsOwn(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
     if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class', 'classes')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
     else lines.push('ok: no class only stories use is in the app\'s CSS')
   }

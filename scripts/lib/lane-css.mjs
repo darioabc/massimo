@@ -83,6 +83,21 @@ function moduleScripts(root, html) {
   return out
 }
 
+// The files the vite-csf recipe writes as they are, which name the tool they
+// replace on purpose (its root element, its ids, its links): the lane's HTML
+// entry and Vite config at the root, and the shell, canvas, story types and
+// declarations beside the entry's module script, as repo-relative paths, the
+// ones that exist only. A project's own files there, such as the frame, are
+// not among them.
+const RECIPE_FILES = ['main.tsx', 'Shell.tsx', 'Canvas.tsx', 'story.ts', 'massimo.d.ts']
+export function recipeFiles(root) {
+  const [script] = moduleScripts(root, LANE_HTML)
+  if (!script) return []
+  const folder = posix.dirname(script)
+  const inFolder = RECIPE_FILES.map((f) => (folder === '.' ? f : `${folder}/${f}`))
+  return [LANE_HTML, 'vite.stories.config.ts', ...inFolder].filter((f) => existsSync(join(root, f))).sort(compare)
+}
+
 // The import graph of the source files: who is a story or a test, what each
 // imports at run time, the story-only set, and the lane's scaffold folder. A
 // type-only import is not an edge, since the app takes nothing from it at
@@ -435,7 +450,7 @@ export function cssClasses(cssText) {
 // The classes a stylesheet holds, unescaped, as a Set: each class that has a
 // rule of its own (see ownIn), at the top level or inside @media, @supports,
 // @layer or @container. A class a package's sheet scopes under its own, as
-// in `.widget .mt-10`, or a component library names beside another, as in
+// in `.widget .note`, or a component library names beside another, as in
 // `.tooltip.tooltip-open`, is not held. A class whose name carries a variant
 // (an escaped colon, as in `.md\:p-4` or `.\[\&\>div\]\:static`) is held
 // beside the classes its variant names and inside any at-rule (see
@@ -459,15 +474,27 @@ export function ownClasses(cssText) {
 // with one level of brackets inside, as in `has-[[data-open=true]]:flex`.
 const BRACKETED = /(?<![^\s"'`{}=;<>|\\$])(?:[^\s"'`{}=;<>|\\$[\]]*[-:@/!])?\[(?:[^\s[\]]|\[[^\s[\]]*\])+\](?:[^\s"'`{}=;<>|\\$[\]]*[-:@/!]\[(?:[^\s[\]]|\[[^\s[\]]*\])+\])*[^\s"'`{}=;<>|\\$[\]]*/g
 
+// A word as Tailwind also reads it: a selector's dot, an opening parenthesis
+// and the punctuation that ends a phrase are no part of a class, so
+// `.p-N`, `(p-N)` and `p-N,` each name p-N too. A word with square
+// brackets is left whole, since its brackets may hold any of them.
+const bareWords = (word) => (word.includes('[') ? [] : word.split(',')).map((w) => w.replace(/^[.(]+/, '').replace(/[.,:)]+$/, '')).filter((w) => w !== '' && w !== word)
+
 // The words in a source file that could be class names: whatever sits
-// between whitespace, quotes, brackets of JSX and template syntax, and each
-// class with square brackets whole, whose brackets may hold a quote, an `=`
-// or a `>`, as in `data-[state=open]:block` or `before:content-['']`. A word
-// that opens with a bracket counts when it is an arbitrary property or
-// variant (a colon inside or right after the brackets), so an array or an
-// index in code makes no word.
+// between whitespace, quotes, brackets of JSX and template syntax, each also
+// as Tailwind reads it (see bareWords), and each class with square brackets
+// whole, whose brackets may hold a quote, an `=` or a `>`, as in
+// `data-[state=open]:block` or `before:content-['']`. A word that opens with
+// a bracket counts when it is an arbitrary property or variant (a colon
+// inside or right after the brackets), so an array or an index in code
+// makes no word.
 export function sourceWords(text) {
-  const words = new Set(text.split(/[\s"'`{}=;<>|\\$]+/).filter(Boolean))
+  const words = new Set()
+  for (const word of text.split(/[\s"'`{}=;<>|\\$]+/)) {
+    if (word === '') continue
+    words.add(word)
+    for (const bare of bareWords(word)) words.add(bare)
+  }
   for (const [word] of text.matchAll(BRACKETED)) if (!word.startsWith('[') || /^\[[^\]]*:|\]:/.test(word)) words.add(word)
   return words
 }
