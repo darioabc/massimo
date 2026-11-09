@@ -17,9 +17,10 @@
 //
 // leak refuses a build folder git does not ignore, so a build never reaches a
 // commit. With --probe the class must be in the lane's CSS and not the app's.
-// Without it, every class found only in story files and story-only modules is
-// looked up in the app's CSS. --before names an earlier app build: the
-// classes the app's CSS lost since then must not occur in an app file.
+// --before names an earlier app build: the classes the app's CSS lost since
+// then must not occur in an app file. With neither, every class found only in
+// story files and story-only modules, and in no other file git keeps (the
+// app's CSS, docs and tests included), is looked up in the app's CSS.
 //
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
@@ -38,6 +39,8 @@ import { typesLine } from './lib/vite-stories.mjs'
 
 const LANES = ['native', 'manifest', 'csf']
 const APP_TEXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|html|mdx)$/
+// Files no class name comes from: images, fonts, media, archives and lock files.
+const NOT_TEXT = /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|psd|woff2?|ttf|otf|eot|mp3|mp4|m4a|wav|ogg|webm|mov|pdf|zip|gz|tgz|br|wasm|lockb)$|(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/i
 
 // The first line the scaffold's type file carries, as the plugin writes it.
 export { typesLine }
@@ -54,6 +57,14 @@ export function gitIgnored(root, dir) {
   if (r.status === 0) return true
   if (r.status === 1) return false
   return null
+}
+
+// The files among `files` that git ignores, as a Set; empty when git cannot say.
+export function gitIgnoredFiles(root, files) {
+  if (files.length === 0) return new Set()
+  const r = spawnSync('git', ['check-ignore', '--stdin', '-z'], { cwd: root, input: `${files.join('\0')}\0`, maxBuffer: 64 * 1024 * 1024 })
+  if (r.status !== 0) return new Set()
+  return new Set(r.stdout.toString().split('\0').filter(Boolean))
 }
 
 // Every repo file the lane reads: the walk minus the lane build's output folder.
@@ -178,7 +189,9 @@ export function layoutEdit(config, storyOnly) {
 }
 
 // Compare an app build's CSS with a lane build's. Returns { ok, lines }.
-export function leakReport({ root, config, files = repoFiles(root, config), app, lane, probe = null, before = null, isIgnored = gitIgnored }) {
+// `isIgnored` checks a build folder and `ignoredFiles` lists the repo files
+// git ignores; both can be replaced in a test.
+export function leakReport({ root, config, files = repoFiles(root, config), app, lane, probe = null, before = null, isIgnored = gitIgnored, ignoredFiles = gitIgnoredFiles }) {
   const lines = []
   const folders = [['--app', app], ['--lane', lane], ...(before ? [['--before', before]] : [])]
   for (const [flag, dir] of folders) {
@@ -194,11 +207,20 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
 
   const include = compileGlobs(config.stories.include)
   const storyOnly = new Set(storyOnlyModules({ root, config, files, resolver: createResolver(root, config) }))
+  // Tailwind takes a class from any file it reads for the app, so a word in
+  // the app's own CSS, its docs or its tests is no leak (`appText`). A class
+  // the app's CSS lost counts when the app's own code uses it (`appCode`).
+  // The build folders and the files git ignores are read by neither.
+  const builds = [app, lane, before].filter(Boolean).map((d) => relative(root, d).split(sep).join('/'))
+  const ignored = ignoredFiles(root, files)
   const storyWords = new Set()
-  const appWords = new Map()
+  const appText = new Set()
+  const appCode = new Map()
   for (const file of files) {
-    if (!APP_TEXT.test(file) || isTestFile(file) || /\.d\.[cm]?ts$/.test(file)) continue
-    const inLane = isStoryFile(file) || include(file) || storyOnly.has(file)
+    if (NOT_TEXT.test(file) || ignored.has(file) || builds.some((d) => file.startsWith(`${d}/`))) continue
+    const test = isTestFile(file)
+    const inLane = !test && (isStoryFile(file) || include(file) || storyOnly.has(file))
+    const code = !inLane && !test && APP_TEXT.test(file) && !/\.d\.[cm]?ts$/.test(file)
     let text
     try {
       text = readFileSync(join(root, file), 'utf8')
@@ -207,8 +229,11 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     }
     for (const w of sourceWords(text)) {
       if (inLane) storyWords.add(w)
-      else if (!appWords.has(w)) appWords.set(w, file)
+      else appText.add(w)
+      if (code && !appCode.has(w)) appCode.set(w, file)
     }
+    // A stylesheet's own selectors name classes the app's CSS defines itself.
+    if (!inLane && /\.(?:css|scss|sass|less|pcss)$/.test(file)) for (const c of cssClasses(text)) appText.add(c)
   }
 
   let leaked = []
@@ -216,16 +241,18 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     if (!laneClasses.has(probe)) return { ok: false, lines: [`the class ${probe} is not in the lane's CSS, so this probe proves nothing`] }
     if (appClasses.has(probe)) leaked = [probe]
     lines.push(leaked.length > 0 ? `leak: ${probe} is in the app's CSS` : `ok: ${probe} is in the lane's CSS and not the app's`)
-  } else {
-    leaked = [...storyWords].filter((w) => !appWords.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
+  } else if (!before) {
+    // A scan by words: a class a package's stylesheet or a CSS plugin gives the
+    // app, under a name only stories use, shows here too; --probe settles one.
+    leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
     if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class', 'classes')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
     else lines.push('ok: no class only stories use is in the app\'s CSS')
   }
 
   let lost = []
   if (before) {
-    lost = [...cssIn(before)].filter((c) => !appClasses.has(c) && appWords.has(c)).sort(compare)
-    if (lost.length > 0) lines.push(`lost: the app's CSS no longer has ${plural(lost.length, 'class', 'classes')} an app file uses: ${lost.slice(0, 20).map((c) => `${c} (${appWords.get(c)})`).join(', ')}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`)
+    lost = [...cssIn(before)].filter((c) => !appClasses.has(c) && appCode.has(c)).sort(compare)
+    if (lost.length > 0) lines.push(`lost: the app's CSS no longer has ${plural(lost.length, 'class', 'classes')} an app file uses: ${lost.slice(0, 20).map((c) => `${c} (${appCode.get(c)})`).join(', ')}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`)
     else lines.push('ok: the app\'s CSS lost no class an app file uses')
   }
 
