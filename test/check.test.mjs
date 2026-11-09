@@ -106,7 +106,7 @@ test('a csf lane adds a stories check after graph, and no other lane does', () =
   assert.match(ok.stdout, /^pass {2}stories {2}node \.\.\/project\/scripts\/stories\.mjs --check$/m)
 
   // A second story with an id that is taken fails the stories line, and its output shows under it.
-  // The graph reads the same lane, so its line fails too.
+  // The new file also leaves graph.json behind, so the graph line fails too.
   writeFileSync(join(ctx.root, 'src', 'Again.stories.tsx'), "export default { title: 'Foundations / Welcome' }\nexport const StartHere = () => null\n")
   const bad = run('check', ctx)
   assert.equal(bad.status, 1)

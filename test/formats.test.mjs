@@ -225,7 +225,7 @@ test('the route helpers give empty results for empty input', () => {
   assert.deepEqual([laneRoute.stateUrl({}), laneRoute.orderIds([], []), laneRoute.argsFromSearch('')], ['', [], {}])
 })
 
-test('the css helpers return nothing until they are filled', () => {
+test('the css helpers return nothing for no input', () => {
   assert.deepEqual([laneCss.storyOnlyModules(), laneCss.sourceNotLines('', 'a.css'), laneCss.cssLayoutProblems()], [[], [], []])
 })
 
@@ -234,7 +234,7 @@ test('the redirect helpers give empty results for empty input', () => {
   assert.deepEqual([redirects.idMentions('', registry), redirects.mentionCoverage([], registry, []), redirects.toolEdits()], [[], { files: 0, mentions: 0, resolved: 0, missing: [], dead: [] }, []])
 })
 
-test('the Vite plugin is a named object until it is filled', () => {
+test('the Vite plugin is named massimo-stories', () => {
   assert.equal(viteStories.massimoStories().name, 'massimo-stories')
 })
 
