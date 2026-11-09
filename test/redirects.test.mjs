@@ -24,7 +24,7 @@ const put = (file, text) => {
 
 put('package.json', JSON.stringify({
   name: 'fixture',
-  scripts: { ladle: 'ladle serve --port 61300', 'ladle:build': 'ladle build', 'check:ladle-coverage': 'node scripts/coverage.mjs', test: 'node --test' },
+  scripts: { ladle: 'ladle serve --port 61300', 'ladle:build': 'ladle build', 'check:ladle-coverage': 'npm run ladle:build && node scripts/coverage.mjs', test: 'node --test' },
   devDependencies: { '@ladle/react': '^5.1.1' },
 }, null, 2))
 put('.ladle/config.mjs', "export default { stories: 'src/**/*.stories.tsx' }\n")
@@ -114,7 +114,8 @@ test('a mention resolves when an id has it or, for a prefix, one id starts with 
 test('toolEdits lists the folder, scripts, package and port a file uses, line by line', () => {
   assert.deepEqual(at('package.json', 5), { file: 'package.json', line: 5, class: 'code', uses: 'script ladle:build, command ladle build', replacement: "remove it, or point it at the lane; run the lane's dev and build scripts instead", status: 'open' })
   assert.match(at('package.json', 4).uses, /^script ladle, command ladle serve/)
-  assert.equal(at('package.json', 6).uses, 'script check:ladle-coverage')
+  // a script that runs one of the tool's scripts is the tool's too
+  assert.equal(at('package.json', 6).uses, 'script ladle:build, script check:ladle-coverage')
   assert.equal(at('package.json', 10).uses, 'package @ladle/react')
   assert.equal(at('package.json', 10).status, 'open')
   assert.equal(at('.github/workflows/ci.yml', 4).class, 'ci')
@@ -164,13 +165,83 @@ test('an id that resolves still works, a missing one blocks, a dead one is repor
 })
 
 test('a port is still valid on the lane, and a story file\'s type import is the removal patch\'s', () => {
-  put('src/Other.stories.tsx', ["import type { Story } from '@ladle/react'", "// uses the @ladle/react decorators too", "export default { title: 'Primitives / Other' }", ''].join('\n'))
-  const more = toolEdits({ consumers: [], packages: ['@ladle/react'], registry, tool, historical: [], read, files: [...files, 'src/Other.stories.tsx'] })
+  put('src/Other.stories.tsx', ["import type { Story } from '@ladle/react'", "// uses the @ladle/react decorators too", "export default { title: 'Primitives / Other' }", 'export const Plain: Story = () => null', ''].join('\n'))
+  const withOther = [...files, 'src/Other.stories.tsx']
+  const fresh = laneRegistry({ root: ctx.root, config, files: withOther.filter(compileGlobs(config.stories.include)), read })
+  const more = toolEdits({ consumers: [], packages: ['@ladle/react'], registry: fresh, tool, historical: [], read, files: withOther })
   assert.ok(!more.some((e) => e.file === 'src/Other.stories.tsx' && e.line === 1))
   assert.equal(more.find((e) => e.file === 'src/Other.stories.tsx' && e.line === 2).status, 'open')
   put('docs/ports.md', 'Dev server on http://localhost:61300/stories.\n')
   const ported = toolEdits({ consumers: [], packages: [], registry, tool, historical: [], read, files: [...files, 'docs/ports.md'] })
   assert.deepEqual(ported.find((e) => e.file === 'docs/ports.md'), { file: 'docs/ports.md', line: 1, class: 'docs', uses: 'port 61300', replacement: 'nothing, while stories.port is this port; set it when the tool goes', status: 'valid' })
+})
+
+test('only the type import the removal patch rewrites is skipped: a value import, a second type import and a frozen file are open', () => {
+  const text = [
+    "import type { Story } from '@ladle/react'",
+    "import { action } from '@ladle/react'",
+    'import type {',
+    '  StoryDefault,',
+    "} from '@ladle/react'",
+    "export default { title: 'Primitives / Mixed' } satisfies StoryDefault",
+    'export const Plain: Story = () => null',
+    '',
+  ].join('\n')
+  put('src/Mixed.stories.tsx', text)
+  const withMixed = [...files, 'src/Mixed.stories.tsx']
+  const live = laneRegistry({ root: ctx.root, config, files: withMixed.filter(compileGlobs(config.stories.include)), read })
+  const found = (frozen = []) => toolEdits({ consumers: [], packages: ['@ladle/react'], registry: live, tool, historical: [], read, files: withMixed, frozen }).filter((e) => e.file === 'src/Mixed.stories.tsx')
+  // the registry names the first type import of Story or StoryDefault: line 1
+  assert.deepEqual(found().map((e) => [e.line, e.status, e.uses]), [[2, 'open', 'package @ladle/react'], [5, 'open', 'package @ladle/react']])
+  // a frozen file keeps its import, so the patch leaves it and it is open too
+  assert.deepEqual(found([{ file: 'src/Mixed.stories.tsx' }]).map((e) => e.line), [1, 2, 5])
+})
+
+test('a package script is the tool\'s only when it runs one of the tool\'s scripts, directly or through another', () => {
+  const pkg = JSON.stringify({
+    scripts: {
+      ladle: 'ladle serve',
+      'ladle:build': 'ladle build',
+      'ladle:pages': 'npm run ladle:build && cp -r build pages',
+      'ladle:all': 'yarn ladle:pages',
+      'e2e:ladle': 'playwright test --config=playwright.ladle.config.ts',
+      test: 'node --test',
+    },
+  }, null, 2)
+  const readWith = (f) => (f === 'package.json' ? pkg : f === 'ci.md' ? 'Run npm run e2e:ladle, then npm run ladle:all in CI\n' : read(f))
+  const found = toolEdits({ consumers: [], packages: [], registry, tool, historical: [], read: readWith, files: [...files, 'ci.md'] })
+  const line = (key) => pkg.split('\n').findIndex((l) => l.includes(`"${key}"`)) + 1
+  assert.equal(found.find((e) => e.file === 'package.json' && e.line === line('ladle:pages')).uses, 'script ladle:build, script ladle:pages')
+  assert.match(found.find((e) => e.file === 'package.json' && e.line === line('ladle:all')).uses, /script ladle:all/)
+  // a browser test named for the tool does not block, in package.json or where it is run
+  assert.deepEqual(found.find((e) => e.file === 'package.json' && e.line === line('e2e:ladle')), { file: 'package.json', line: line('e2e:ladle'), class: 'prose', uses: 'the word Ladle', replacement: 'reword it or leave it', status: 'prose' })
+  const doc = found.find((e) => e.file === 'ci.md')
+  assert.equal(doc.uses, 'script ladle:all')
+  assert.ok(!openEdits(found).some((e) => /e2e:ladle/.test(e.uses)))
+})
+
+test('a vite.config mention of the tool\'s folder points at the lane\'s Vite config', () => {
+  const viteTool = { ...tool, config: [...tool.config, '.ladle/vite.config.ts'] }
+  put('docs/vite.md', 'Edit .ladle/vite.config.ts to change the build.\n')
+  const found = toolEdits({ consumers: [], packages: [], registry, tool: viteTool, historical: [], read, files: [...files, 'docs/vite.md'] })
+  assert.equal(found.find((e) => e.file === 'docs/vite.md').replacement, "use the lane's Vite config")
+})
+
+test('an id that a template continues through a variable is a prefix, in the lane and in the tool\'s list', () => {
+  const ids = ['primitives--actions--button--primary', 'primitives--actions--button--ghost']
+  const reg = { stories: Object.fromEntries(ids.map((id) => [id, {}])) }
+  const text = 'const open = (state) => `/?story=${card.story}--${state}`\nconst card = { story: \'primitives--actions--button\' }\n'
+  assert.deepEqual(idMentions(text, reg).map((m) => [m.mention, m.prefix]), [['primitives--actions--button', false]])
+  const cover = mentionCoverage([{ file: 'e2e/a.spec.ts', text }], reg, ids)
+  assert.deepEqual([cover.resolved, cover.missing.length, cover.dead.length], [1, 0, 0])
+  // a name no id heads is still dead (when the tool's list lacks it) or missing (when it has it)
+  const gone = [{ file: 'e2e/a.spec.ts', text: "const card = { story: 'primitives--actions--chip' }\nconst story = 'primitives--actions--chip'\n" }]
+  assert.equal(mentionCoverage(gone, reg, ids).dead.length, 1)
+  assert.equal(mentionCoverage(gone, reg, [...ids, 'primitives--actions--chip--default']).missing.length, 1)
+  // toolEdits calls it a prefix that still works
+  const found = toolEdits({ consumers: [], packages: [], registry: reg, tool, historical: [], read: () => text, files: ['e2e/a.spec.ts'], oracleIds: ids })
+  assert.equal(found.find((e) => e.file === 'e2e/a.spec.ts' && e.line === 2).status, 'valid')
+  assert.equal(found.find((e) => e.file === 'e2e/a.spec.ts' && e.line === 2).uses, 'id primitives--actions--button')
 })
 
 test('a consumer the index found that no line explains stays listed', () => {
@@ -223,4 +294,9 @@ test('retire counts the open edits in place of the tool\'s own consumers, and a 
   assert.equal(withEdits.editsValid, edits.filter((e) => e.status === 'valid').length)
   const clean = retirePlan(ledger, 'stories', inv, { edits: edits.filter((e) => e.status !== 'open') })
   assert.deepEqual(clean.edits, [])
+  // the workflow jobs that run the tool's scripts are still collected
+  const ci = { ...inv, assets: [{ ...inv.assets[0], consumers: [{ file: '.github/workflows/ci.yml', line: 4, class: 'ci', how: 'runs', via: 'ladle' }] }] }
+  const jobs = retirePlan(ledger, 'stories', ci, { edits, jobAt: () => ({ id: 'stories', name: 'Stories' }) })
+  assert.deepEqual(jobs.jobs, [{ file: '.github/workflows/ci.yml', line: 4, job: 'stories', name: 'Stories', via: ['ladle'] }])
+  assert.equal(jobs.consumers.length, 0)
 })

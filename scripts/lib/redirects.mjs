@@ -25,10 +25,14 @@ const STORY_WORDS = /\bstor(?:y|ies)\b|story=|\bids?\b|meta\.json|ladle|storyboo
 const idSet = (registry) => new Set(Object.keys(registry?.stories ?? {}))
 
 // Whether a mention names a story: `id` for an id, `prefix` for a prefix
-// that at least one id starts with, null for neither.
+// that at least one id starts with, null for neither. An id that matches no
+// id but heads others (`a--b` for `a--b--c`) is a prefix too: a template can
+// continue a mention through a variable (`${card.story}--${state}`) without
+// a `--` or `${` right after it.
 function resolves(mention, prefix, ids) {
-  if (!prefix) return ids.has(mention) ? 'id' : null
-  for (const id of ids) if (id.startsWith(mention)) return 'prefix'
+  if (!prefix && ids.has(mention)) return 'id'
+  const head = prefix ? mention : `${mention}--`
+  for (const id of ids) if (id.startsWith(head)) return 'prefix'
   return null
 }
 
@@ -126,6 +130,30 @@ export function toolPackages(tool, pkg = {}) {
   return { ladle: ['@ladle/react'], storybook: ['storybook'], histoire: ['histoire'] }[tool] ?? []
 }
 
+// The tool's scripts plus the package scripts that run one of them (`npm run
+// ladle:build` inside `ladle:build:pages`), found to a fixed point, sorted.
+function toolScripts(tool, read) {
+  const found = new Set(tool.scripts ?? [])
+  let all = {}
+  try {
+    all = JSON.parse(read('package.json') || '{}').scripts ?? {}
+  } catch {
+    // a package.json that does not parse names no scripts
+  }
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const [key, command] of Object.entries(all)) {
+      if (found.has(key) || typeof command !== 'string') continue
+      const runs = [...found].some((s) => new RegExp(`\\b(?:npm|pnpm|yarn|bun)\\s+(?:run(?:-script)?\\s+)?(?:-[\\w-]+\\s+)*${escapeRe(s)}(?![\\w:.-])`).test(command))
+      if (runs) {
+        found.add(key)
+        grew = true
+      }
+    }
+  }
+  return [...found].sort(compare)
+}
+
 export const isBinaryPath = (file) => BINARY.test(file)
 const BINARY = /\.(?:png|jpe?g|gif|webp|avif|ico|icns|bmp|svg|woff2?|ttf|otf|eot|mp[34]|mov|webm|wav|ogg|pdf|zip|gz|tgz|tar|map|wasm|lock|lockb|snap|sqlite|db|bin|psd|ai|sketch|fig)$/i
 const LOCKFILE = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|massimo\.config\.json)$/
@@ -151,8 +179,8 @@ export const idScope = (file) => !(file.startsWith('src/') && !isTestFile(file))
 const PATH_REPLACEMENTS = [
   [/\.css$/, "read the app's base CSS (stories.appCss.base), which the lane imports, instead; rules only stories need go in the lane's own CSS"],
   [/(?:components|provider|decorators?|preview)\.[cm]?[jt]sx?$/, 'use the lane frame (stories.frame)'],
-  [/config\.[cm]?[jt]s$/, 'use the stories keys of massimo.config.json'],
   [/vite\.config\.[cm]?[jt]s$/, "use the lane's Vite config"],
+  [/config\.[cm]?[jt]s$/, 'use the stories keys of massimo.config.json'],
 ]
 const pathReplacement = (token) => PATH_REPLACEMENTS.find(([re]) => re.test(token))?.[1] ?? "move it into the lane's folder, or delete it with the tool"
 
@@ -165,7 +193,7 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // line. Four passes join: (a) the consumer index's files, with every line
 // that names the tool's folders, scripts, commands or port, not only the
 // first; (b) the tool's package name in code, tests, CI and docs, leaving out
-// a story file's type import, which the removal patch rewrites; (c) the story
+// the one type import of a story file that the removal patch rewrites; (c) the story
 // ids and prefixes that specs, scripts, skills and docs use; (d) the tool's
 // name as a word, anywhere.
 //
@@ -176,8 +204,9 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // name as a word only). Retire is blocked by `open` and by nothing else.
 // `tool` is the inventory's tool record (`tool`, `config`, `scripts`, `port`),
 // `files` the repo's files, `read(file)` a file's text, `oracleIds` the tool's
-// own ids when known, and `skip` folders to leave out (the project folder).
-export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [] } = {}) {
+// own ids when known, `skip` folders to leave out (the project folder) and
+// `frozen` the config's frozen entries, whose files the removal patch leaves.
+export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [] } = {}) {
   if (!tool || typeof read !== 'function') return []
   const name = tool.tool ?? tool.name
   if (!name) return []
@@ -185,18 +214,13 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   const own = (file) => dirs.some((d) => file === d || file.startsWith(`${d}/`)) || skip.some((d) => file.startsWith(d))
   const ids = idSet(registry)
   const oracle = Array.isArray(oracleIds) ? new Set(oracleIds) : null
-  const storyFiles = new Set(Object.keys(registry?.files ?? {}))
+  const pinned = new Set(frozen.map((f) => f.file ?? f))
 
   const pathRes = [...dirs, ...(tool.config ?? []).filter((f) => !f.includes('/'))].map((p) => new RegExp(`(?<![\\w.-])(${escapeRe(p)}(?![\\w-])(?:/[^\\s'"\`)>,;]*)?)`))
-  // The scripts that run the tool, and any other package script named for it
-  // (`check:ladle-coverage`, `e2e:ladle`), which go or change with it.
-  let namedScripts = []
-  try {
-    namedScripts = Object.keys(JSON.parse(read('package.json') || '{}').scripts ?? {}).filter((s) => s.toLowerCase().includes(name.toLowerCase()))
-  } catch {
-    // a package.json that does not parse names no scripts
-  }
-  const scripts = [...new Set([...(tool.scripts ?? []), ...namedScripts])].sort(compare)
+  // The scripts that run the tool, and the package scripts that run one of
+  // them through npm, directly or through another script. A script only named
+  // for the tool (`e2e:ladle` running a browser test) is not one of them.
+  const scripts = toolScripts(tool, read)
   const scriptRes = scripts.map((s) => new RegExp(`(?:\\b(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?|["']run["']\\s*,\\s*["'])(${escapeRe(s)})(?![\\w:.-])`))
   const scriptKeys = scripts.map((s) => new RegExp(`^\\s*"(${escapeRe(s)})"\\s*:`))
   const commandRe = new RegExp(`\\b(?:npx\\s+|bunx\\s+|pnpm\\s+exec\\s+|yarn\\s+)?(${escapeRe(name)}\\s+(?:serve|dev|build|preview|start))\\b`)
@@ -219,7 +243,14 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       hits.set(line, h)
       h[reason.kind].push(reason)
     }
-    const isStory = storyFiles.has(file) || isStoryFile(file)
+    // The lines of the one type import the removal patch rewrites.
+    const patched = pinned.has(file) ? null : registry?.files?.[file]?.typeImport
+    const patchedLines = new Set()
+    if (patched) {
+      const from = text.slice(0, patched.start).split('\n').length
+      const to = from + text.slice(patched.start, patched.end).split('\n').length - 1
+      for (let n = from; n <= to; n++) patchedLines.add(n)
+    }
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i]
       if (!l) continue
@@ -255,8 +286,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       for (const re of packageRes) {
         const m = re.exec(l)
         if (!m) continue
-        // A story file's type import is the removal patch's.
-        if (isStory && /^\s*import\b/.test(l)) {
+        if (patchedLines.has(n)) {
           used = true
           hit(n, { kind: 'skip' })
           continue
@@ -274,7 +304,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       for (const m of idMentions(text, registry)) {
         const found = resolves(m.mention, m.prefix, ids)
         const label = `${m.prefix ? 'id prefix' : 'id'} ${m.mention}`
-        if (found) hit(m.line, { kind: 'valid', uses: label, replacement: m.prefix ? 'nothing: it matches ids of the lane' : 'nothing: the id is the lane\'s too, and /?story=<id> renders in place' })
+        if (found) hit(m.line, { kind: 'valid', uses: label, replacement: found === 'prefix' ? 'nothing: it matches ids of the lane' : 'nothing: the id is the lane\'s too, and /?story=<id> renders in place' })
         else if (oracle && !resolves(m.mention, m.prefix, oracle)) hit(m.line, { kind: 'dead', uses: label, replacement: "no story has it, in the tool or in the lane: fix or drop it" })
         else hit(m.line, { kind: 'open', uses: label, replacement: 'no story of the lane has it: repoint it (the redirect map names the new route)' })
       }
