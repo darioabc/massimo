@@ -1,0 +1,1 @@
+{ "name": "fixture-csf-lane", "private": true, "dependencies": { "react": "^18.0.0" }, "devDependencies": { "@ladle/react": "^5.1.1" } }

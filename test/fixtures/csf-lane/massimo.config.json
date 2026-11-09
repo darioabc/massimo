@@ -1,0 +1,22 @@
+{
+  "minScripts": "0.4.0",
+  "framework": "react",
+  "styling": ["css"],
+  "components": {
+    "include": ["src/components/**/*.tsx"],
+    "exclude": ["**/*.test.*", "**/*.stories.*"]
+  },
+  "stories": {
+    "lane": "csf",
+    "ids": "ladle",
+    "include": ["src/**/*.stories.{tsx,ts}"],
+    "order": ["foundations--*", "primitives--*", "patterns--*", "pages--*", "explorations--*", "*"],
+    "home": "foundations--welcome--start-here"
+  },
+  "graph": {
+    "taxonomy": {
+      "tiers": ["Foundations", "Primitives", "Patterns", "Pages", "Explorations"],
+      "notLive": ["Explorations"]
+    }
+  }
+}
