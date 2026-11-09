@@ -11,11 +11,14 @@ import { FORMATS_READ, parseArgs } from '../scripts/lib/project.mjs'
 import {
   DETERMINISTIC,
   FREEZE_CSS,
+  SWEEP_FLOOR,
+  SWEEP_READY,
   compareText,
   determinism,
   diffArgs,
   editScript,
   flagNumber,
+  idsOfMeta,
   isOn,
   isUrl,
   loadChromium,
@@ -26,6 +29,9 @@ import {
   playwrightEntries,
   pngSize,
   summarise,
+  sweepOptions,
+  sweepResult,
+  sweepUrl,
   textLines,
   verdict,
 } from '../scripts/lib/shoot.mjs'
@@ -675,4 +681,134 @@ test('--playwright needs exactly one path', () => {
     assert.match(r.stderr, /--playwright takes one path/)
     assert.deepEqual(r.calls, [])
   }
+})
+
+// ── The render sweep ────────────────────────────────────────────────────────
+
+const META = { about: { generator: 'ladle' }, stories: { 'a--one': {}, 'b--two': {}, 'c--three': {}, 'd--four': {} } }
+const metaFile = join(work, 'ids.json')
+writeFileSync(metaFile, JSON.stringify(META))
+const sweep = (args, env = {}) => shoot(['--sweep', 'http://x.test/', ...args, '--playwright', standIn], env)
+
+test('the sweep reads its flags whole, and the pairs format is still 1', () => {
+  assert.equal(FORMATS_READ.pairs, 1)
+  const ok = sweepOptions({ sweep: 'http://localhost:61101/', legacy: true })
+  assert.deepEqual(ok.problems, [])
+  assert.deepEqual(ok.options, { base: 'http://localhost:61101', workers: 4, timeout: 15, ready: SWEEP_READY, legacy: true })
+  assert.equal(SWEEP_READY, 'html[data-story-ready]')
+  const flags = { sweep: 'http://x.test', workers: '2', timeout: '3.5', ready: '#root > div' }
+  assert.deepEqual(sweepOptions(flags).options, { base: 'http://x.test', workers: 2, timeout: 3.5, ready: '#root > div', legacy: false })
+  for (const bad of [{ sweep: true }, { sweep: 'x.test' }, { sweep: 'http://x.test', workers: '0' }, { sweep: 'http://x.test', workers: 'many' }, { sweep: 'http://x.test', timeout: '-1' }, { sweep: 'http://x.test', ready: true }]) {
+    assert.ok(sweepOptions(bad).problems.length > 0, JSON.stringify(bad))
+  }
+})
+
+test('ids come from the stories keys of a Ladle-shaped meta.json, and a state loads where the flags say', () => {
+  assert.deepEqual(idsOfMeta(META), ['a--one', 'b--two', 'c--three', 'd--four'])
+  assert.deepEqual(idsOfMeta({}), [])
+  assert.deepEqual(idsOfMeta(null), [])
+  assert.equal(sweepUrl('http://x.test', 'a b--c', { legacy: true }), 'http://x.test/?story=a%20b--c&mode=preview')
+  assert.equal(sweepUrl('http://x.test', 'a--one', { routes: { 'a--one': '/stories/a/one?mode=preview' } }), 'http://x.test/stories/a/one?mode=preview')
+  assert.equal(sweepUrl('http://x.test', 'a--one', { routes: {} }), null)
+})
+
+test('a baseline excuses only what it also failed, and only when it reached 98% ready', () => {
+  const verdicts = [{ id: 'a', ok: true }, { id: 'b', ok: false, why: 'x' }, { id: 'c', ok: false, why: 'y' }]
+  const plain = sweepResult('http://x.test', verdicts)
+  assert.deepEqual(plain, { base: 'http://x.test', total: 3, ready: 1, failed: [{ id: 'b', why: 'x' }, { id: 'c', why: 'y' }], excused: [] })
+  const good = { total: 200, ready: 199, failed: [{ id: 'b', why: 'old' }] }
+  const excused = sweepResult('http://x.test', verdicts, good)
+  assert.deepEqual(excused.failed, [{ id: 'c', why: 'y' }])
+  assert.deepEqual(excused.excused, [{ id: 'b', why: 'x' }])
+  assert.equal(excused.ready, 1)
+  assert.equal(excused.baseline.excusing, true)
+  // the floor itself counts; one state below it does not
+  assert.equal(sweepResult('u', verdicts, { total: 100, ready: 98, failed: [{ id: 'b' }] }).excused.length, 1)
+  const low = sweepResult('u', verdicts, { total: 100, ready: 97, failed: [{ id: 'b' }] })
+  assert.equal(low.excused.length, 0)
+  assert.equal(low.failed.length, 2)
+  assert.match(low.baseline.note, /97% ready, below 98%, so nothing is excused/)
+  assert.equal(SWEEP_FLOOR, 0.98)
+  // a baseline that holds nothing excuses nothing
+  assert.equal(sweepResult('u', verdicts, { total: 0, ready: 0, failed: [] }).failed.length, 2)
+  // what an earlier sweep excused had failed there too
+  assert.equal(sweepResult('u', verdicts, { total: 100, ready: 99, failed: [], excused: [{ id: 'b' }] }).excused.length, 1)
+})
+
+test('--sweep --legacy opens every id from --ids-from in a fresh context, as Ladle serves it', () => {
+  const r = sweep(['--legacy', '--ids-from', metaFile])
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(r.lines, [{ base: 'http://x.test', total: 4, ready: 4, failed: [], excused: [] }])
+  assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg).sort(), ['a--one', 'b--two', 'c--three', 'd--four'].map((id) => `http://x.test/?story=${id}&mode=preview`))
+  assert.equal(r.calls.filter((c) => c.name === 'newContext').length, 4)
+  assert.equal(r.calls.filter((c) => c.name === 'contextClose').length, 4)
+  assert.ok(r.calls.filter((c) => c.name === 'waitForSelector').every((c) => c.arg.selector === SWEEP_READY && c.arg.state === 'attached'))
+})
+
+test('--ready replaces the selector, and --routes names the ids and where each loads', () => {
+  const routes = join(work, 'routes.json')
+  writeFileSync(routes, JSON.stringify({ 'a--one': '/stories/a/one?mode=preview', 'b--two': '/stories/b/two?mode=preview' }))
+  const r = sweep(['--routes', routes, '--ready', '#root > .done', '--workers', '1'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.lines[0].total, 2)
+  assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg), ['http://x.test/stories/a/one?mode=preview', 'http://x.test/stories/b/two?mode=preview'])
+  assert.ok(r.calls.filter((c) => c.name === 'waitForSelector').every((c) => c.arg.selector === '#root > .done'))
+  // an id with no route fails and says so
+  const some = sweep(['--routes', routes, '--ids-from', metaFile])
+  assert.equal(some.status, 1)
+  assert.deepEqual(some.lines[0].failed.map((f) => f.id), ['c--three', 'd--four'])
+  assert.equal(some.lines[0].failed[0].why, 'no route for this id')
+})
+
+test('a state fails when nothing matches, the match is empty, or a page error fires; the rest still run', () => {
+  const r = sweep(['--legacy', '--ids-from', metaFile, '--timeout', '2'], { FAKE_SWEEP_NOMATCH: 'b--two', FAKE_SWEEP_EMPTY: 'c--three', FAKE_SWEEP_ERROR: 'd--four' })
+  assert.equal(r.status, 1)
+  const out = r.lines[0]
+  assert.equal(out.total, 4)
+  assert.equal(out.ready, 1)
+  const why = Object.fromEntries(out.failed.map((f) => [f.id, f.why]))
+  assert.match(why['b--two'], /html\[data-story-ready\] did not match within 2 seconds/)
+  assert.match(why['c--three'], /matched but holds no element/)
+  assert.match(why['d--four'], /^page error: boom/)
+})
+
+test('--sweep-baseline excuses what the baseline failed too, prints it, and excuses nothing below the floor', () => {
+  const env = { FAKE_SWEEP_NOMATCH: 'b--two,c--three' }
+  const baseline = (ready, failed) => {
+    const file = join(work, `baseline-${ready}.json`)
+    writeFileSync(file, JSON.stringify({ base: 'http://old.test', total: 100, ready, failed: failed.map((id) => ({ id, why: 'old' })) }))
+    return file
+  }
+  const good = sweep(['--legacy', '--ids-from', metaFile, '--sweep-baseline', baseline(99, ['b--two'])], env)
+  assert.equal(good.status, 1)
+  assert.deepEqual(good.lines[0].failed.map((f) => f.id), ['c--three'])
+  assert.deepEqual(good.lines[0].excused.map((f) => f.id), ['b--two'])
+  assert.equal(good.lines[0].ready, 2)
+  const all = sweep(['--legacy', '--ids-from', metaFile, '--sweep-baseline', baseline(99, ['b--two', 'c--three'])], env)
+  assert.equal(all.status, 0)
+  assert.deepEqual(all.lines[0].excused.map((f) => f.id), ['b--two', 'c--three'])
+  const low = sweep(['--legacy', '--ids-from', metaFile, '--sweep-baseline', baseline(90, ['b--two', 'c--three'])], env)
+  assert.equal(low.status, 1)
+  assert.equal(low.lines[0].failed.length, 2)
+  assert.deepEqual(low.lines[0].excused, [])
+  assert.match(low.lines[0].baseline.note, /nothing is excused/)
+})
+
+test('--sweep refuses a bad call with exit 2 before a browser starts', () => {
+  const cases = [
+    [['--ids-from', metaFile], /needs --legacy .* or --routes/],
+    [['--legacy', '--ids-from', join(work, 'missing.json')], /no such file/],
+    [['--legacy', '--ids-from', metaFile, '--workers', '0'], /--workers is a whole number/],
+    [['--legacy', '--ids-from', metaFile, '--timeout', 'soon'], /--timeout is a number of seconds/],
+    [['--legacy', '--ids-from', metaFile, '--sweep-baseline', join(work, 'nope.json')], /no such file/],
+  ]
+  for (const [args, message] of cases) {
+    const r = sweep(args)
+    assert.equal(r.status, 2, args.join(' '))
+    assert.match(r.stderr, message)
+    assert.deepEqual(r.calls, [])
+  }
+  const bare = shoot(['--sweep', '--legacy', '--playwright', standIn])
+  assert.equal(bare.status, 2)
+  assert.match(bare.stderr, /--sweep takes the base URL/)
 })
