@@ -42,6 +42,37 @@ export const DEFAULTS = {
     // The places (`Root / Group`) where a manifest story may name no
     // component: token pages, decision records.
     componentless: [],
+    // The csf lane (0.4.0): story files read in place, shown by a Vite plugin.
+    // Every key below keeps its default until a project opts in, and a config
+    // that sets one needs minScripts 0.4.0.
+    // `ids` is `export` (slug and state from the file and the export) or
+    // `ladle` (Ladle's rule, storyName first); `order` is id-prefix globs for
+    // the index; `home` is the id that `/` and `/stories` open.
+    ids: 'export',
+    order: null,
+    home: null,
+    // [{ label, width, height }] in px, 0 fills the pane. Null means Phone
+    // 390x844, Desktop 1440x900 and Full.
+    viewports: null,
+    // Story files whose states the shell may show together.
+    sideBySide: [],
+    // [{ name, label, attribute, values, unset, default }]; a null default asks the frame.
+    switchers: [],
+    // { <meta key>: { tone, lead } }, a banner per story-level or file-level meta key.
+    banners: null,
+    // A project module whose default export wraps every state.
+    frame: null,
+    // Globs of modules only stories use, beyond the ones the import graph finds.
+    storyOnly: [],
+    // { base, entry }: the CSS the lane imports, and the app's entry that holds `@source not`.
+    appCss: null,
+    // The lane build's output folder, and the host files it may write (`_redirects`).
+    outDir: null,
+    hostFiles: [],
+    // [{ file, sha256, since }]: design targets kept byte for byte.
+    frozen: [],
+    // Title, coverage and banner rules, each off until a key is set.
+    policy: null,
   },
   tokens: {
     // Defaults to <projectDir>/tokens/tokens.json (see loadConfig).
@@ -124,7 +155,7 @@ export const DEFAULTS = {
 
 // Flags that never take a value, so `--strict build` keeps `build` as a
 // positional instead of reading it as the flag's value.
-export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle'])
+export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle', 'legacy'])
 
 // Parse argv into positionals and flags. `--a b`, `--a=b`, and a bare `--a`
 // (true) all work; a repeated flag collects into an array.
@@ -272,7 +303,8 @@ const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts f
 // The newest format of each file this version reads. A file in a newer one
 // was written by a newer massimo, and reading it as an older one would guess.
 // baseline 2: it tracks a kind added in 0.3.0 (audit.mjs NEWER_KINDS).
-export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1 }
+// conversion, removal, redirects and registry are the 0.4.0 story-lane files.
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1, conversion: 1, removal: 1, redirects: 1, registry: 1 }
 // Why a file of `kind` at `version` is too new to read, or null.
 export const newerMessage = (kind, version, where) =>
   typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null

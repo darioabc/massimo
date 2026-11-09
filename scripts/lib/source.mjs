@@ -315,7 +315,7 @@ function readTsconfig(abs, depth = 0) {
 
 // tsconfig/jsconfig files that can carry `paths`: the root ones and whatever
 // they reference (Vite scaffolds put the aliases in tsconfig.app.json).
-function loadTsconfigs(root) {
+export function loadTsconfigs(root) {
   const out = []
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
     const abs = join(root, name)

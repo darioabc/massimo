@@ -332,6 +332,12 @@ const ext = extByFramework[framework] ?? '{tsx,jsx}'
 const topDirs = dirs.slice(0, 3).map((d) => d.dir)
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
 
+// The stories keys 0.3.0 wrote. A key added later is left out, so a config
+// written by init holds none until a project opts in.
+const storiesDefaults = Object.fromEntries(
+  ['lane', 'include', 'devCommand', 'url', 'storyUrl', 'port', 'manifest', 'pages', 'frames', 'componentless'].map((k) => [k, DEFAULTS.stories[k]]),
+)
+
 const suggestedConfig = {
   version: 1,
   projectDir,
@@ -351,13 +357,13 @@ const suggestedConfig = {
   // own frames and wrappers.
   stories: lane
     ? {
-        ...DEFAULTS.stories,
+        ...storiesDefaults,
         include: lane.pages > 0 ? [`${lane.dir}/pages/**/*.{astro,tsx,jsx,vue,svelte,ts}`] : [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`],
         devCommand: lane.devScript ? `npm run ${lane.devScript}` : null,
         port: lane.port ?? DEFAULTS.stories.port,
         url: lane.port ? `http://localhost:${lane.port}/stories` : null,
       }
-    : { ...DEFAULTS.stories, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
+    : { ...storiesDefaults, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
   tokens: {
     ...DEFAULTS.tokens,
     source: `${projectDir}/tokens/tokens.resolver.json`,
