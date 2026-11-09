@@ -1,6 +1,6 @@
 // Proving the lane against the tool it replaces: which story ids a repo
 // mentions, whether each resolves, and every edit the repo must make before
-// the tool can go. A stub until T4 fills it.
+// the tool can go. Returns empty results for now.
 
 // Story ids and id prefixes mentioned in `text`.
 export function idMentions(text, registry) {

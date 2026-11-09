@@ -1,6 +1,6 @@
 // Converting a Ladle repo to the csf lane: working records per story file,
 // the frozen design targets, and the removal patch for the tool's type import.
-// A stub until T3 fills it.
+// Returns empty results for now.
 
 // One record per story file, keyed by repo path.
 export function conversionRecords(registry, { root, frozen } = {}) {

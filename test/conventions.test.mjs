@@ -38,6 +38,13 @@ test('no private leftovers', () => {
     if (f.endsWith('conventions.test.mjs')) continue
     assert.ok(!/fiuto|FIU-/i.test(text(f)), f)
   }
+  // The README names its author under Made by, and nowhere else.
+  assert.ok(!/fiuto|FIU-/i.test(text('README.md').replace(/^## Made by\n[\s\S]*?(?=^## )/m, '')), 'README.md')
+})
+
+// Init copies every script into a project, so a planning note must not ride along.
+test('no plan track names or stub notes in the scripts', () => {
+  for (const f of scripts) assert.ok(!/\bT[0-9]\b|\bstubs?\b/i.test(text(f)), f)
 })
 
 // massimo learnt adoption on a real repo; its names and its own vocabulary

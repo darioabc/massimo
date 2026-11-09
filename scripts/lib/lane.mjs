@@ -1,7 +1,7 @@
 // The csf lane's registry: every story file read in place, every state with
 // its id, route, merged meta and source span. Read by the Vite plugin, by
-// stories.mjs, the graph, convert and verify. A stub until the reader lands;
-// each function already returns the shape it will fill.
+// stories.mjs, the graph, convert and verify. For now each function
+// returns the shape it will fill, with nothing in it.
 
 // The registry of `files` (repo-relative story paths), read through `read(file)`.
 export function laneRegistry({ root, config, files, read } = {}) {

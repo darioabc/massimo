@@ -8,7 +8,7 @@
 //   legacy           /?story=<id>
 //   legacy-preview   /?story=<id>&mode=preview
 //
-// A stub until the routes land; each function already returns its shape.
+// Each function returns its shape for now, with nothing in it.
 
 // What a URL asks for. `selected` is the shell's `?s=<id>`.
 export function parseLaneUrl(pathname, search) {
