@@ -366,13 +366,17 @@ function csfDefault(text, code, blanked) {
 // A line at the left margin that opens a statement of its own: a keyword, or
 // an assignment to a property (`Primary.storyName = ...`).
 const STATEMENT_START = /^(?:(?:export|import|const|let|var|function|class|type|interface|enum|declare)\b|[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\s*=(?!=))/
+const CLOSES = /^[)\]}]/
 
 // The offset just past the statement that starts at `from` in `blanked`: its
 // `;` outside brackets, or its last code before a line at the left margin
 // that starts another statement. A line break at depth 0 ends it too, unless
 // the next line is indented or carries the expression on (`/>`, `.then`).
 // Prettier's layout is assumed, which is what keeps a stray apostrophe in
-// JSX text from running a statement to the end of the file.
+// JSX text from running a statement to the end of the file. No statement
+// starts with a closing bracket, so a margin line that does still belongs to
+// this one, even when a stray `)` in JSX text or a regular expression has
+// already brought the count to 0.
 function statementEnd(blanked, from) {
   let depth = 0
   let last = from
@@ -384,7 +388,7 @@ function statementEnd(blanked, from) {
       const j = LINE_GAP.lastIndex
       if (j >= blanked.length) break
       const next = blanked.slice(j, j + 120)
-      if (blanked[j - 1] === '\n' && (STATEMENT_START.test(next) || (depth <= 0 && !CONTINUES.test(next)))) break
+      if (blanked[j - 1] === '\n' && !CLOSES.test(next) && (STATEMENT_START.test(next) || (depth <= 0 && !CONTINUES.test(next)))) break
       i = j - 1
     } else if (!/\s/.test(c)) {
       if ('([{'.includes(c)) depth++

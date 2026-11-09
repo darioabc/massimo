@@ -157,6 +157,35 @@ test('the csf lane: spans as Ladle counts them, story meta, parameters and the d
   assert.deepEqual(csf.unreadable, [])
 })
 
+// Closing brackets with no opener: in a regular expression and in JSX text.
+const STRAY = `export default { title: 'Pages / Steps' }
+
+export const Strip: Story = () => {
+  const label = 'a)b'.replace(/\\)/g, '')
+  return <p>{label}</p>
+}
+
+export const List: Story = () => (
+  <ul>
+    <li>x] stray</li>
+  </ul>
+)
+
+export const Steps: Story = () => (
+  <ol>
+    <li>Step 1) open</li>
+  </ol>
+)
+`
+
+test('a stray closing bracket does not end an export before the line that closes it', () => {
+  const csf = readCsf(STRAY, 'Steps.stories.tsx')
+  assert.deepEqual(
+    csf.stories.map((s) => [s.export, s.span.start, s.span.end]),
+    [['Strip', 3, 6], ['List', 8, 12], ['Steps', 14, 18]],
+  )
+})
+
 test('type-only imports, with the offsets of the statement and the names it brings in', () => {
   const { typeImports } = readCsf(LANE, 'Table.stories.tsx')
   assert.deepEqual(typeImports.map(({ spec, names }) => [spec, names]), [
