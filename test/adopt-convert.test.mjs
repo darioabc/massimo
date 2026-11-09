@@ -156,9 +156,12 @@ test('after the patch is applied, --check passes, and the frozen file is byte fo
 test('removal.patch applies with git apply and leaves the same files as the edits', (t) => {
   const ctx = fresh()
   convert(ctx)
+  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  convert(ctx)
   if (spawnSync('git', ['--version']).status !== 0) return t.skip('git is not installed')
   const r = spawnSync('git', ['apply', work(ctx, 'removal.patch')], { cwd: ctx.root, encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
+  assert.ok(existsSync(join(ctx.root, LEGACY_TYPES_FILE)))
   assert.equal(convert(ctx, '--check').status, 0)
   assert.match(text(ctx, 'src/Welcome.stories.tsx'), /^import type \{ Story \} from '\.\/stories\/story'\n/)
 })
@@ -184,6 +187,11 @@ test('an edit outside the type import fails --check and names the export that mo
   put(ctx, file, body)
   assert.equal(convert(ctx, '--check').status, 0)
   // A file that is gone is a change too.
+  rmSync(join(ctx.root, 'src/Welcome.stories.tsx'))
+  const gone = convert(ctx, '--check')
+  assert.equal(gone.status, 1)
+  assert.match(gone.stdout, /src\/Welcome\.stories\.tsx: it is gone/)
+  // An emptied one is a change as well.
   put(ctx, 'src/Welcome.stories.tsx', '')
   assert.equal(convert(ctx, '--check').status, 1)
 })
@@ -303,11 +311,21 @@ test('frozen candidates are the files whose states all carry a banner key, by th
     'src/D.stories.tsx': "export default { title: 'Pages / D', meta: { exploration: '' } }\nexport const One = () => null\n",
   }
   const registry = registryOf(sources)
-  assert.deepEqual(frozenCandidates(registry, null), [{ file: 'src/A.stories.tsx', key: 'exploration' }])
-  assert.deepEqual(frozenCandidates(registry, { bannerByRoot: { Explorations: 'exploration', Pages: 'drift' } }), [
+  const read = (f) => sources[f]
+  assert.deepEqual(frozenCandidates(registry, null, { read }), [{ file: 'src/A.stories.tsx', key: 'exploration' }])
+  assert.deepEqual(frozenCandidates(registry, { bannerByRoot: { Explorations: 'exploration', Pages: 'drift' } }, { read }), [
     { file: 'src/A.stories.tsx', key: 'exploration' },
     { file: 'src/B.stories.tsx', key: 'drift' },
   ])
+})
+
+test('frozen candidates read the default export, not the states', () => {
+  const sources = {
+    'src/StoryLevel.stories.tsx': "export default { title: 'Pages / Story level' }\nexport const One = () => null\nOne.meta = { exploration: 'One.' }\nexport const Two = () => null\nTwo.meta = { exploration: 'Two.' }\n",
+    'src/FileLevel.stories.tsx': "export default { title: 'Pages / File level', meta: { exploration: 'Kept.' } }\nexport const One = () => null\nexport const Two = () => null\nTwo.meta = { exploration: '' }\n",
+  }
+  const found = frozenCandidates(registryOf(sources), null, { read: (f) => sources[f] })
+  assert.deepEqual(found, [{ file: 'src/FileLevel.stories.tsx', key: 'exploration' }])
 })
 
 test('frozenProblems reads the pins: a changed file, a bad entry, a file that is gone', () => {
@@ -335,6 +353,23 @@ test('the types file holds only non-relative import type lines and export type d
   const bad = checkTypesFile("import type { X } from './x'\nimport { y } from 'y'\nexport default {}\nexport type Fine = string\n")
   assert.deepEqual(bad.problems.map((p) => p.split(' ')[0]), ['import', 'import', 'export'])
   assert.deepEqual(bad.names, ['Fine'])
+  // Indented, comment-prefixed and value statements at the top level are statements too.
+  assert.equal(checkTypesFile("  import type { X } from './rel'\n").problems.length, 1)
+  assert.equal(checkTypesFile("/* c */ import type { X } from './rel'\n").problems.length, 1)
+  assert.match(checkTypesFile("export type A = string\n  export const leaked = 1\n").problems.join(), /export const leaked = 1 is neither/)
+  assert.match(checkTypesFile("import type { X } from \"../rel\"\n").problems.join(), /relative import/)
+  assert.deepEqual(checkTypesFile("export type A =\n  | 'a'\n  | 'b'\n"), { problems: [], names: ['A'] })
+})
+
+test('--types refuses a types file with an indented or comment-prefixed relative import', () => {
+  for (const line of ["  import type { Base } from './base'", "/* c */ import type { Base } from './base'"]) {
+    const ctx = fresh()
+    put(ctx, 'src/lane/types.ts', `${line}\nexport type Story = Base\n`)
+    const r = convert(ctx, '--types', 'src/lane/types.ts')
+    assert.equal(r.status, 1, line)
+    assert.match(r.stderr, /relative import/)
+    assert.ok(!existsSync(work(ctx, 'removal.patch')))
+  }
 })
 
 test('the patch is exact for a file with no final newline and for CRLF lines', (t) => {
@@ -363,6 +398,14 @@ test('records of a file read from memory give the same hashes as the files on di
   const files = walk(ctx.root).filter(compileGlobs(config1.stories.include))
   const registry = laneRegistry({ root: ctx.root, config: config1, files, read: (f) => text(ctx, f) })
   const records = conversionRecords(registry, { root: ctx.root, frozen: [] })
+  const onDisk = convert(ctx)
+  assert.equal(onDisk.status, 0, onDisk.stderr)
+  for (const r of records) {
+    const saved = record(ctx, r.file)
+    assert.equal(r.normalHash, saved.normalHash, r.file)
+    assert.equal(r.sha256, saved.sha256, r.file)
+    assert.deepEqual(r.states.map((x) => x.spanHash), saved.states.map((x) => x.spanHash), r.file)
+  }
   assert.equal(records.length, 7)
   assert.deepEqual(records.map((r) => r.file), [...records.map((r) => r.file)].sort())
   assert.ok(records.every((r) => r.frozen === null && r.typeImport?.spec === '@ladle/react'))
@@ -463,4 +506,114 @@ test('plan converts the Ladle tool once the lane is csf, and keeps it before; co
   assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 1 })
   // The retire dry run lists the tool as going.
   assert.match(adopt(ctx, ['retire', 'stories', '--dry-run']).stdout, /tool:ladle {2}convert/)
+})
+
+test('config --write raises a minScripts older than the keys it writes, and says so', () => {
+  const ctx = ladleRepo()
+  const path = join(ctx.root, 'massimo.config.json')
+  writeFileSync(path, JSON.stringify({ framework: 'react', styling: ['css'], minScripts: '0.3.0' }))
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const r = adopt(ctx, ['config', '--write', '--lane', 'csf'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /~ minScripts: "0\.3\.0" -> "0\.4\.0"/)
+  assert.ok(!/= minScripts/.test(r.stdout), r.stdout)
+  const written = JSON.parse(readFileSync(path, 'utf8'))
+  assert.equal(written.minScripts, '0.4.0')
+  assert.equal(written.stories.lane, 'csf')
+})
+
+test('config --write adds a missing minScripts when the stories keys need 0.4.0', () => {
+  const ctx = ladleRepo()
+  const path = join(ctx.root, 'massimo.config.json')
+  writeFileSync(path, JSON.stringify({ framework: 'react', styling: ['css'] }))
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  assert.equal(adopt(ctx, ['config', '--write', '--lane', 'csf']).status, 0)
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).minScripts, '0.4.0')
+})
+
+test('--refreeze raises a minScripts older than the csf lane', () => {
+  const ctx = fresh()
+  convert(ctx)
+  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  const path = join(ctx.root, 'massimo.config.json')
+  const raw = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, JSON.stringify({ ...raw, minScripts: '0.3.0' }, null, 2))
+  const r = convert(ctx, '--refreeze', EXPLORATION)
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).minScripts, '0.4.0')
+})
+
+test("config --lane csf proposes Ladle's default glob and port when its config leaves them out", () => {
+  const ctx = ladleRepo()
+  put(ctx, '.ladle/config.mjs', 'export default { addons: {} }\n')
+  writeFileSync(join(ctx.root, 'package.json'), JSON.stringify({ devDependencies: { '@ladle/react': '5', react: '18' } }))
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const r = adopt(ctx, ['config', '--write', '--lane', 'csf'])
+  assert.equal(r.status, 0, r.stderr)
+  const written = JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8'))
+  assert.ok(written.stories.include.includes('src/**/*.stories.{js,jsx,ts,tsx}'), JSON.stringify(written.stories.include))
+  assert.equal(written.stories.port, 61001)
+  const c = convert(ctx)
+  assert.equal(c.status, 0, c.stderr)
+  assert.match(c.stdout, /^massimo adopt convert stories: 7 records/)
+})
+
+test('convert fails when stories.include matches no story file', () => {
+  const ctx = fresh()
+  setConfig(ctx, { stories: { include: ['nowhere/**/*.stories.tsx'] } })
+  const r = convert(ctx)
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /stories\.include matches no story file/)
+  assert.ok(!existsSync(work(ctx, 'records')))
+})
+
+test('a newer ledger or removal file is refused before anything is written', () => {
+  for (const [dir, name] of [['adopt', 'ledger.json'], ['adopt/stories/work', 'removal.json']]) {
+    const ctx = fresh()
+    mkdirSync(join(ctx.project, dir), { recursive: true })
+    writeFileSync(join(ctx.project, dir, name), JSON.stringify({ format: 2 }))
+    const r = convert(ctx)
+    assert.equal(r.status, 1, name)
+    assert.match(r.stderr, /format 2.*update massimo/, name)
+    assert.ok(!existsSync(work(ctx, 'records')), name)
+    assert.ok(!existsSync(work(ctx, 'removal.patch')), name)
+    assert.ok(!existsSync(join(ctx.project, 'adopt', 'stories', 'redirects.json')), name)
+  }
+})
+
+test('config --write adds new frozen candidates to the files already pinned', () => {
+  const ctx = fresh()
+  convert(ctx)
+  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  const second = 'src/explorations/Second.stories.tsx'
+  put(ctx, second, "export default { title: 'Explorations / Second', meta: { exploration: 'Kept.' } }\nexport const One = () => null\n")
+  const c = convert(ctx)
+  assert.match(c.stdout, /1 to confirm/)
+  const r = adopt(ctx, ['config', '--write'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen.map((f) => f.file), [EXPLORATION, second])
+})
+
+test('convert runs again after the patch is applied: no hand pass, no second ambient file', () => {
+  const ctx = fresh()
+  convert(ctx)
+  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  convert(ctx)
+  applyRemoval(ctx)
+  const r = convert(ctx)
+  assert.equal(r.status, 0, r.stderr)
+  assert.ok(!/compared as a whole/.test(r.stdout), r.stdout)
+  assert.ok(!/keeps? the tool's import/.test(r.stdout), r.stdout)
+  assert.equal(readFileSync(work(ctx, 'removal.patch'), 'utf8'), '')
+  assert.equal(convert(ctx, '--check').status, 0)
+})
+
+test('a bare --refreeze or --types is a usage error and writes nothing', () => {
+  const ctx = fresh()
+  for (const flag of ['--refreeze', '--types']) {
+    const r = adopt(ctx, ['convert', 'stories', flag])
+    assert.equal(r.status, 1, flag)
+    assert.match(r.stderr, /usage: adopt\.mjs convert stories/, flag)
+  }
+  assert.ok(!existsSync(work(ctx, 'records')))
 })
