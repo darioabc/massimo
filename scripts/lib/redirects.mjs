@@ -7,6 +7,7 @@
 // every id that starts with it.
 
 import { join } from 'node:path'
+import { LEGACY_TYPES_FILE } from './convert.mjs'
 import { compare } from './glob.mjs'
 import { writeFileAtomic } from './project.mjs'
 import { isStoryFile, isTestFile, stripComments } from './source.mjs'
@@ -192,8 +193,10 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // class, uses, replacement, status }` sorted by file and line, one entry per
 // line. Four passes join: (a) the consumer index's files, with every line
 // that names the tool's folders, scripts, commands or port, not only the
-// first; (b) the tool's package name in code, tests, CI and docs, leaving out
-// the one type import of a story file that the removal patch rewrites; (c) the story
+// first; (b) the tool's package name in code, tests, CI and docs, and a path
+// into its folder of node_modules, leaving out the one type import of a story
+// file that the removal patch rewrites (a frozen file's is still valid: the
+// legacy types file keeps it declared); (c) the story
 // ids and prefixes that specs, scripts, skills and docs use; (d) the tool's
 // name as a word, anywhere.
 //
@@ -205,8 +208,9 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // `tool` is the inventory's tool record (`tool`, `config`, `scripts`, `port`),
 // `files` the repo's files, `read(file)` a file's text, `oracleIds` the tool's
 // own ids when known, `skip` folders to leave out (the project folder) and
-// `frozen` the config's frozen entries, whose files the removal patch leaves.
-export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [] } = {}) {
+// `frozen` the config's frozen entries, whose files the removal patch leaves,
+// and `legacyTypes` the file the patch adds for them, which is not an edit.
+export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [], legacyTypes = LEGACY_TYPES_FILE } = {}) {
   if (!tool || typeof read !== 'function') return []
   const name = tool.tool ?? tool.name
   if (!name) return []
@@ -225,6 +229,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   const scriptKeys = scripts.map((s) => new RegExp(`^\\s*"(${escapeRe(s)})"\\s*:`))
   const commandRe = new RegExp(`\\b(?:npx\\s+|bunx\\s+|pnpm\\s+exec\\s+|yarn\\s+)?(${escapeRe(name)}\\s+(?:serve|dev|build|preview|start))\\b`)
   const packageRes = packages.map((p) => new RegExp(`(?<![\\w@./-])(${escapeRe(p)})(?![\\w-])`))
+  const modulePathRes = packages.map((p) => new RegExp(`node_modules/(${escapeRe(p)})(?![\\w-])`))
   const portRe = tool.port ? new RegExp(`(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0):${tool.port}(?!\\d)|--port[ =]${tool.port}(?!\\d)|\\bPORT=${tool.port}(?!\\d)|["']?port["']?\\s*:\\s*${tool.port}(?!\\d)`) : null
   const cap = name[0].toUpperCase() + name.slice(1)
   const wordRe = new RegExp(`(?<![A-Za-z])(?:${escapeRe(name)}|${escapeRe(cap)})(?![a-z])|${escapeRe(name.toUpperCase())}`)
@@ -232,7 +237,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   for (const c of consumers) if (!consumerAt.has(c.file)) consumerAt.set(c.file, c)
 
   const out = []
-  const scan = [...new Set([...files, ...consumerAt.keys(), 'package.json'])].filter((f) => !BINARY.test(f) && !LOCKFILE.test(f) && !own(f)).sort(compare)
+  const scan = [...new Set([...files, ...consumerAt.keys(), 'package.json'])].filter((f) => !BINARY.test(f) && !LOCKFILE.test(f) && !own(f) && f !== legacyTypes).sort(compare)
   for (const file of scan) {
     const text = read(file)
     if (!text) continue
@@ -243,8 +248,10 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       hits.set(line, h)
       h[reason.kind].push(reason)
     }
-    // The lines of the one type import the removal patch rewrites.
-    const patched = pinned.has(file) ? null : registry?.files?.[file]?.typeImport
+    // The lines of the one type import the removal patch rewrites, or in a
+    // frozen file the one it leaves for the legacy types file to declare.
+    const patched = registry?.files?.[file]?.typeImport
+    const kept = pinned.has(file)
     const patchedLines = new Set()
     if (patched) {
       const from = text.slice(0, patched.start).split('\n').length
@@ -288,10 +295,17 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
         if (!m) continue
         if (patchedLines.has(n)) {
           used = true
-          hit(n, { kind: 'skip' })
+          if (kept) hit(n, { kind: 'valid', uses: `package ${m[1]}`, replacement: 'nothing: the file is frozen, and the legacy types file keeps this import declared' })
+          else hit(n, { kind: 'skip' })
           continue
         }
         hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: file === 'package.json' ? 'remove the dependency once nothing imports it' : "import the types from the lane's story.ts, or drop the import" })
+        used = true
+      }
+      for (const re of modulePathRes) {
+        const m = re.exec(l)
+        if (!m) continue
+        hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: 'the package goes with the tool: read the file from somewhere else, or drop the use' })
         used = true
       }
       if (portRe?.test(l)) {
