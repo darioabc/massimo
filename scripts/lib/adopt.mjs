@@ -79,8 +79,9 @@ const roleText = (r) => (typeof r === 'string' ? r : `${r.role}${r.under ? ` und
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 const list = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`)
 
-// The decision, loss and lines for one asset of the inventory.
-function assess(asset, inv) {
+// The decision, loss and lines for one asset of the inventory. `config` tells
+// a Ladle repo that opted in to the csf lane from one that did not.
+function assess(asset, inv, config = {}) {
   const lane = inv.stories.lane
   const lines = []
   let decision = 'keep'
@@ -121,6 +122,15 @@ function assess(asset, inv) {
     case 'tool': {
       const t = inv.stories.tools.find((x) => `tool:${x.tool}` === asset.id)
       worse('carried')
+      // A Ladle repo that set stories.lane to csf converts: its story files stay
+      // where they are, and only the specifier of their type import changes.
+      if (t.tool === 'ladle' && config?.stories?.lane === 'csf') {
+        decision = 'convert'
+        lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay where they are, read in place by the csf lane. Only the specifier of each file's type import changes, in a patch that convert stories writes for you to apply; the tool goes once nothing reads it.`)
+        if (t.notReadable > 0) lines.push(`${plural(t.notReadable, 'file has', 'files have')} something not statically readable, listed in the inventory.`)
+        if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which stay in the file and apply at run time; convert stories lists them for a hand pass.`)
+        break
+      }
       lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay in ${t.tool}; the graph credits them by file name. Moving them to the native lane is a later step.`)
       if (t.notReadable > 0) lines.push(`${plural(t.notReadable, 'file has', 'files have')} something not statically readable, listed in the inventory.`)
       if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which a move to the native lane turns into states by hand.`)
@@ -233,8 +243,8 @@ const standing = (a) => (STATES.indexOf(a.state) >= lastState(a) ? STATES.length
 // it is kept and marked missing. An asset at found, or new to the scan, is
 // planned afresh, and a class with a new asset goes back to found until it
 // is agreed too, so nothing counts as mapped or cut over that was not.
-export function planLedger(inv, previous = null, { date = today() } = {}) {
-  const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv) }))
+export function planLedger(inv, previous = null, { date = today(), config = {} } = {}) {
+  const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv, config) }))
   if (hasOwnHeaders(inv)) assets.push(headersAsset(inv))
   const classes = {}
   for (const cls of CLASSES) {
@@ -260,6 +270,7 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
       assets: entries.sort((a, b) => compare(a.id, b.id)),
       ...(verify ? { verify } : {}),
       ...(was?.accepted?.length ? { accepted: was.accepted } : {}),
+      ...(was?.converted ? { converted: was.converted } : {}),
     }
   }
   const historical = previous?.historical ?? []
@@ -463,8 +474,11 @@ const RUN = { npm: 'npm run', pnpm: 'pnpm run', yarn: 'yarn', bun: 'bun run' }
 // The config keys scan can fill: the header keys and their roles, the
 // taxonomy, node kinds for pages and layouts with headers, the lane's
 // manifest, pages, frames, dev command and port, and the lane folder kept out
-// of the audit.
-export function proposeConfig(inv, config = {}) {
+// of the audit. With `lane: 'csf'` on a Ladle repo (the opt-in of
+// `config --lane csf`), also the csf lane: Ladle's own settings as ids, the
+// story glob, order, home, viewports and a port beside Ladle's, the frozen
+// design targets in `frozen`, and the minScripts those keys need.
+export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen = [] } = {}) {
   const proposed = { version: 1 }
   const graph = {}
   const extra = inv.headers.keys.filter((k) => !k.builtin && k.files > 0)
@@ -487,6 +501,24 @@ export function proposeConfig(inv, config = {}) {
       ...(lane.port ? { port: lane.port, url: `http://localhost:${lane.port}${lane.route}`, storyUrl: `http://localhost:${lane.port}${lane.route}/{slug}` } : {}),
     }
     proposed.audit = { exclude: [`${lane.dir}/**`] }
+  }
+  const ladle = laneKind === 'csf' ? inv.stories.tools.find((t) => t.tool === 'ladle') : null
+  if (ladle) {
+    const s = ladle.settings ?? {}
+    const ladlePort = s.port ?? ladle.port
+    const port = ladlePort ? ladlePort + 1 : null
+    proposed.minScripts = '0.4.0'
+    proposed.stories = {
+      ...proposed.stories,
+      lane: 'csf',
+      ids: 'ladle',
+      ...(s.stories ? { include: [].concat(s.stories) } : {}),
+      ...(s.storyOrder ? { order: s.storyOrder } : {}),
+      ...(s.defaultStory ? { home: s.defaultStory } : {}),
+      ...(s.widths ? { viewports: s.widths.map((w) => ({ label: w.label, width: w.width, height: 0 })) } : {}),
+      ...(port ? { port, url: `http://localhost:${port}/stories`, storyUrl: `http://localhost:${port}/stories/{slug}/{state}` } : {}),
+      ...(frozen.length > 0 ? { frozen } : {}),
+    }
   }
   return proposed
 }
