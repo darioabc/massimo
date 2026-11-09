@@ -144,9 +144,9 @@ function fileClass(file) {
 }
 
 // Where story ids are looked for: specs, scripts, skills, docs and CI. The
-// app's own source and the story files hold none, and the tool's folders go
-// with the tool.
-export const idScope = (file) => !(file.startsWith('src/') && !isTestFile(file)) && !isStoryFile(file)
+// app's own source and the story files hold none, the tool's folders go with
+// the tool, and a JSON file is data (an id list, a pairs file), not a use.
+export const idScope = (file) => !(file.startsWith('src/') && !isTestFile(file)) && !isStoryFile(file) && !/\.jsonl?$/i.test(file)
 
 const PATH_REPLACEMENTS = [
   [/\.css$/, "read the app's base CSS (stories.appCss.base), which the lane imports, instead; rules only stories need go in the lane's own CSS"],
