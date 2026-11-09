@@ -152,6 +152,16 @@ test('a file with no title, an export list it cannot read, and a home no story h
   assert.equal(registry.home, null)
 })
 
+test('an exported class is a state, and its span runs to the end of its body', () => {
+  const registry = fromText(
+    { 'src/Legacy.stories.tsx': "import * as React from 'react'\n\nexport default { title: 'Pages / Legacy' }\n\nexport class Panel extends React.Component {\n  render() {\n    return null\n  }\n}\n\nexport const After = () => null\n" },
+    { ids: 'ladle' },
+  )
+  assert.deepEqual(registry.problems, [])
+  assert.deepEqual(Object.keys(registry.stories), ['pages--legacy--panel', 'pages--legacy--after'])
+  assert.deepEqual(registry.stories['pages--legacy--panel'].span, { start: 5, end: 9 })
+})
+
 test("under Ladle ids, an unreadable storyName and an export Ladle refuses are problems", () => {
   const registry = fromText({ 'src/X.stories.tsx': "export default { title: 'Pages / X' }\nexport const A = () => null\nA.storyName = label\nexport const B__C = () => null\n" }, { ids: 'ladle' })
   assert.deepEqual(registry.problems.map((p) => p.detail), [

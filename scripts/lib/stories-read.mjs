@@ -477,10 +477,10 @@ function namedExports(code, blanked) {
   const add = (name, local, at, from, start, end) => {
     if (name && name !== 'default' && !found.some((f) => f.name === name)) found.push({ name, local, at, from, start, end })
   }
-  for (const m of blanked.matchAll(/(?<![\w$.])export\s+(?:declare\s+)?(?:async\s+)?(const|let|var|function\*?)\s+([A-Za-z_$][\w$]*)/g)) {
+  for (const m of blanked.matchAll(/(?<![\w$.])export\s+(?:declare\s+)?(?:async\s+|abstract\s+)?(const|let|var|function\*?|class)\s+([A-Za-z_$][\w$]*)/g)) {
     const start = m.index + /^export\s+(?:declare\s+)?/.exec(m[0])[0].length
     add(m[2], m[2], m.index, null, start, statementEnd(blanked, start))
-    if (!m[1].startsWith('function') && declaresMore(blanked, m.index + m[0].length)) more.push(m[2])
+    if (['const', 'let', 'var'].includes(m[1]) && declaresMore(blanked, m.index + m[0].length)) more.push(m[2])
   }
   for (const m of blanked.matchAll(/(?<![\w$.])export\s*\{([^}]*)\}\s*(?:from\s*(['"])[^'"\n]*\2)?/g)) {
     let offset = m.index + m[0].indexOf('{') + 1
