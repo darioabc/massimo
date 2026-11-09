@@ -51,8 +51,18 @@ test('the fixture under Ladle ids: every state in the order the globs give, the 
     'explorations--new-header--wide',
     'explorations--new-header--narrow',
   ])
-  // The test file beside Button's stories is not a story file.
+  // The include globs leave out the test file beside Button's stories.
   assert.equal(Object.keys(registry.files).length, 7)
+})
+
+test('a test file the include globs let through is still not a story file', () => {
+  const registry = fromText({
+    'src/X.stories.tsx': "export default { title: 'Pages / X' }\nexport const Plain = () => null\n",
+    'src/X.stories.test.tsx': "export default { title: 'Pages / X test' }\nexport const Mounts = () => null\n",
+  })
+  assert.deepEqual(Object.keys(registry.files), ['src/X.stories.tsx'])
+  assert.deepEqual(Object.keys(registry.stories), ['pages--x--plain'])
+  assert.deepEqual(registry.problems, [])
 })
 
 test('each state carries its route, title, name, file, merged meta, flags and span', () => {
