@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { compare } from './glob.mjs'
 import { DEFAULTS, FORMATS_READ, needsScripts, olderThan, refuseNewer, today } from './project.mjs'
+import { openEdits } from './redirects.mjs'
 
 export const LEDGER_FORMAT = 1
 export const CLASSES = ['graph', 'stories', 'audit', 'tokens', 'docs']
@@ -326,8 +327,12 @@ export function markHistorical(ledger, path, { date = today() } = {}) {
 // lose their writer. A file that goes but that a generator which stays
 // still writes (its code names the file) is a blocker: its writer would
 // bring it back, and its check would fail without it. `jobAt(file, line)`
-// names a workflow's job at a line.
-export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
+// names a workflow's job at a line. With `edits` (what toolEdits lists for a
+// story tool that goes), the tool's own consumers are replaced by them, but
+// the workflow jobs that run its scripts are still collected: the
+// plan carries the open ones, which hold the retirement up, and counts the
+// rest.
+export function retirePlan(ledger, cls, inv, { jobAt = () => null, edits = null } = {}) {
   const c = ledger.classes[cls]
   const historical = new Set((ledger.historical ?? []).map((h) => h.path))
   const fresh = new Map(inv.assets.map((a) => [a.id, a]))
@@ -346,6 +351,7 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
         jobs.set(id, { file: k.file, line: k.line, job: job?.id ?? null, name: job?.name ?? null, via: [...new Set([...(jobs.get(id)?.via ?? []), k.via])].sort(compare) })
         continue
       }
+      if (edits && a.kind === 'tool') continue
       // A file that depends on several assets is listed once, as its
       // strongest tie: a deploy read before a CI run before a mention.
       const id = `${k.file}#${k.script ?? ''}`
@@ -383,6 +389,7 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
     historical: all.filter(kept),
     elsewhere,
     writers: written.sort((x, y) => compare(x.path, y.path) || compare(x.writer, y.writer)),
+    ...(edits ? { edits: openEdits(edits), editsHistorical: edits.filter((e) => e.status === 'historical').length, editsValid: edits.filter((e) => e.status === 'valid').length } : {}),
   }
 }
 

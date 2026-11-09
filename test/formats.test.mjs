@@ -229,9 +229,9 @@ test('the css helpers return nothing until they are filled', () => {
   assert.deepEqual([laneCss.storyOnlyModules(), laneCss.sourceNotLines('', 'a.css'), laneCss.cssLayoutProblems()], [[], [], []])
 })
 
-test('the redirect helpers return nothing until they are filled', () => {
+test('the redirect helpers give empty results for empty input', () => {
   const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
-  assert.deepEqual([redirects.idMentions('', registry), redirects.mentionCoverage([], registry, []), redirects.toolEdits()], [[], { missing: [], dead: [] }, []])
+  assert.deepEqual([redirects.idMentions('', registry), redirects.mentionCoverage([], registry, []), redirects.toolEdits()], [[], { files: 0, mentions: 0, resolved: 0, missing: [], dead: [] }, []])
 })
 
 test('the Vite plugin is a named object until it is filled', () => {

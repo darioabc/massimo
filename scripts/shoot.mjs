@@ -8,6 +8,8 @@
 //   shoot.mjs --batch <shots.json>      (array of { url, out, width, height, full, scheme, wait, selector, dom })
 //   shoot.mjs --diff <a.png> <b.png> --out <diff.png> [--threshold 0.05]
 //   shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05]
+//   shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>]
+//             [--sweep-baseline <results.json>] [--workers 4] [--timeout 15]
 //
 // --dom also saves what the page holds as text (its accessibility tree, or its
 // HTML on an older Playwright), for reviewers who read a render without a browser.
@@ -43,11 +45,22 @@
 // repo's own install. The path is a package folder (node_modules/playwright), a
 // node_modules folder or a repo root. It is imported in place, never linked.
 //
+// --sweep opens every story state of a server, each in a fresh browser context, and
+// prints { base, total, ready, failed: [{ id, why }], excused } as one JSON line. A state
+// passes when --ready (default html[data-story-ready]) matches, the matched element holds an
+// element child, and no page error fired before the timeout (seconds, default 15). The ids
+// come from --ids-from (the stories keys of a Ladle-shaped meta.json), else from the server's
+// own /meta.json. --legacy loads each as /?story=<id>&mode=preview; --routes names a JSON
+// file of { "<id>": "<path>" } to load instead, and gives the ids when --ids-from does not.
+// --sweep-baseline takes the result of an earlier sweep: a failure it also had is excused,
+// but only if that baseline reached 98% ready; below that nothing is excused. --workers is
+// how many states load at once. Exit 1 when a state failed and was not excused.
+//
 // Exit codes:
 //   0  every pair is within --max-diff, or the shots and diff were made
 //   1  a pair is over --max-diff or could not run (the older modes also use 1
 //      for a usage error)
-//   2  a --pairs usage or pairs-file error, or --playwright without one path
+//   2  a --pairs or --sweep usage or file error, or --playwright without one path
 //   3  no Playwright
 //
 // Prints one JSON line per shot, diff or pair.
@@ -64,12 +77,17 @@ import {
   flagNumber,
   isUrl,
   loadChromium,
+  idsOfMeta,
   pairFiles,
   pairsDocument,
   parsePairs,
   percent,
   pngSize,
   summarise,
+  SWEEP_FILLED,
+  sweepOptions,
+  sweepResult,
+  sweepUrl,
   verdict,
 } from './lib/shoot.mjs'
 
@@ -384,8 +402,103 @@ function readPairs() {
   return { pairs, out: resolve(flags.out), maxDiff, threshold }
 }
 
+// A JSON file named by a flag, or exit 2.
+function jsonFlag(name) {
+  const file = resolve(flags[name])
+  if (!existsSync(file)) fail(`no such file: ${flags[name]}`, 2)
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch (err) {
+    return fail(`${flags[name]} is not valid JSON: ${err.message}`, 2)
+  }
+}
+
+// The ids of a Ladle-shaped meta.json. One that massimo's own lane wrote, in
+// a format newer than these scripts read, stops the sweep with exit 2.
+function sweepIds(doc, where) {
+  if (doc?.about?.generator === 'massimo') refuseNewer('registry', doc.about.format, where, 2)
+  return idsOfMeta(doc)
+}
+
+// What the sweep needs, read before any browser starts: the options, the ids
+// and where each loads, and the baseline. A server that answers nothing at
+// all stops it here, once, instead of failing every state on its own.
+async function readSweep() {
+  const { options, problems } = sweepOptions(flags)
+  if (!flags.legacy && !flags.routes) problems.push('--sweep needs --legacy (load /?story=<id>) or --routes <file> (a path for each id)')
+  if (problems.length) fail(`usage: shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>] [--sweep-baseline <results.json>] [--workers 4] [--timeout 15]: ${problems.join('; ')}`, 2)
+  const routes = flags.routes ? jsonFlag('routes') : {}
+  const given = flags['ids-from'] ? jsonFlag('ids-from') : null
+  const baseline = flags['sweep-baseline'] ? jsonFlag('sweep-baseline') : null
+  let ids = given ? sweepIds(given, flags['ids-from']) : null
+  try {
+    await fetch(options.base, { signal: AbortSignal.timeout(Math.min(options.timeout * 1000, 10000)) })
+  } catch (err) {
+    fail(`no server answers at ${options.base} (${err.cause?.code ?? err.message})`, 2)
+  }
+  if (!ids && flags.routes) ids = Object.keys(routes)
+  else if (!ids) {
+    try {
+      ids = sweepIds(await (await fetch(`${options.base}/meta.json`)).json(), `${options.base}/meta.json`)
+    } catch (err) {
+      fail(`${options.base}/meta.json could not be read (${err.message}): name the ids with --ids-from <meta.json>`, 2)
+    }
+  }
+  if (ids.length === 0) fail('the sweep found no ids to open', 2)
+  return { ...options, ids, routes, baseline }
+}
+
+// One state in a fresh browser context: ready, with an element inside the
+// ready element, and no page error before then.
+async function sweepOne(browser, id, url, { ready, timeout }) {
+  if (url === null) return { id, ok: false, why: 'no route for this id' }
+  const errors = []
+  const context = await browser.newContext({ viewport: { width: 1024, height: 768 } })
+  try {
+    const page = await context.newPage()
+    page.on('pageerror', (err) => errors.push(err.message))
+    const limit = timeout * 1000
+    const until = Date.now() + limit
+    try {
+      await page.goto(url, { waitUntil: 'load', timeout: limit })
+      await page.waitForSelector(ready, { state: 'attached', timeout: Math.max(until - Date.now(), 1) })
+    } catch (err) {
+      const why = err.name === 'TimeoutError' ? `${ready} did not match within ${timeout} seconds` : err.message.split('\n')[0]
+      return { id, ok: false, why: errors.length ? `page error: ${errors[0]}; ${why}` : why }
+    }
+    try {
+      await page.waitForFunction(SWEEP_FILLED, ready, { timeout: Math.max(until - Date.now(), 1) })
+    } catch (err) {
+      if (err.name !== 'TimeoutError') return { id, ok: false, why: err.message.split('\n')[0] }
+      return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : `${ready} matched but holds no element` }
+    }
+    return errors.length ? { id, ok: false, why: `page error: ${errors[0]}` } : { id, ok: true }
+  } catch (err) {
+    return { id, ok: false, why: err.message.split('\n')[0] }
+  } finally {
+    await context.close()
+  }
+}
+
+// Every id through `workers` loops at once, in the order given.
+async function runSweep(browser, s) {
+  const verdicts = new Array(s.ids.length)
+  let next = 0
+  const loop = async () => {
+    while (next < s.ids.length) {
+      const at = next++
+      const id = s.ids[at]
+      verdicts[at] = await sweepOne(browser, id, sweepUrl(s.base, id, { legacy: Boolean(s.legacy), routes: s.routes }), s)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(s.workers, s.ids.length) }, loop))
+  return sweepResult(s.base, verdicts, s.baseline)
+}
+
 let jobs
-if (flags.diff) {
+if (flags.sweep !== undefined) {
+  jobs = { sweep: await readSweep() }
+} else if (flags.diff) {
   const { a, b } = diffArgs(args, flags)
   if (!a || !b || !flags.out) fail('usage: shoot.mjs --diff <a.png> <b.png> --out <diff.png> [--threshold 0.05]')
   for (const f of [a, b]) if (!existsSync(f)) fail(`no such image: ${f}`)
@@ -397,13 +510,17 @@ if (flags.diff) {
 } else if (flags.url && flags.out) {
   jobs = { shots: [flags] }
 } else {
-  fail('usage: shoot.mjs --url <url> --out <file.png> | --batch <shots.json> | --diff <a.png> <b.png> --out <diff.png> | --pairs <pairs.json> --out <dir>')
+  fail('usage: shoot.mjs --url <url> --out <file.png> | --batch <shots.json> | --diff <a.png> <b.png> --out <diff.png> | --pairs <pairs.json> --out <dir> | --sweep <base url> --legacy')
 }
 
 const chromium = await chromiumOrExit()
 const browser = await chromium.launch()
 try {
-  if (jobs.diff) {
+  if (jobs.sweep) {
+    const result = await runSweep(browser, jobs.sweep)
+    process.stdout.write(`${JSON.stringify(result)}\n`)
+    if (result.failed.length > 0) process.exitCode = 1
+  } else if (jobs.diff) {
     const { a, b, out, threshold } = jobs.diff
     process.stdout.write(`${JSON.stringify(await diff(browser, a, b, out, threshold))}\n`)
   } else if (jobs.pairs) {

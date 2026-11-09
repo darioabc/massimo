@@ -11,6 +11,12 @@
 //   FAKE_NO_MATCH   1: a selector matches nothing (waiting for it times out)
 //   FAKE_ARIA_FAIL  1: the accessibility snapshot fails
 //   FAKE_NO_ARIA    1: an older Playwright, with no accessibility snapshot
+//   The sweep: each of these is a comma-separated list of texts, and a page
+//   whose URL holds one of them behaves as named.
+//   FAKE_SWEEP_NOMATCH  the ready selector never matches
+//   FAKE_SWEEP_EMPTY    the ready element matches but holds no element (the
+//                       story's mount is empty; the sweep's own check decides)
+//   FAKE_SWEEP_ERROR    a page error fires while the page loads
 const { appendFileSync, writeFileSync } = require('node:fs')
 
 const log = (name, arg) => {
@@ -51,9 +57,14 @@ const element = (selector) => ({
       }),
 })
 
+// Whether the page's URL holds one of the texts an environment variable lists.
+const listed = (name, url) => (process.env[name] ?? '').split(',').some((t) => t && url.includes(t))
+
 const makePage = () => {
   const depth = Number(process.env.FAKE_LAZY ?? 0)
   const frames = []
+  const handlers = {}
+  let current = ''
   const addFrame = (level) => {
     const frame = {
       level,
@@ -80,7 +91,32 @@ const makePage = () => {
   addFrame(0)
   return {
     async goto(url) {
+      current = url
       log('goto', url)
+      if (listed('FAKE_SWEEP_ERROR', url)) handlers.pageerror?.(new Error('boom'))
+    },
+    on(event, fn) {
+      handlers[event] = fn
+    },
+    async waitForSelector(selector, o) {
+      log('waitForSelector', { selector, ...o })
+      if (listed('FAKE_SWEEP_NOMATCH', current)) throw timeout('page.waitForSelector')
+    },
+    // The predicate runs against a small document: <html> holding a head and
+    // a body, whose one child is the mount, empty under FAKE_SWEEP_EMPTY.
+    async waitForFunction(fn, arg, o) {
+      log('waitForFunction', { arg, ...o })
+      const node = (tagName, children = []) => ({ tagName, children, childElementCount: children.length })
+      const mount = node('DIV', listed('FAKE_SWEEP_EMPTY', current) ? [] : [node('MAIN')])
+      const body = node('BODY', [node('SCRIPT'), mount])
+      const html = node('HTML', [node('HEAD'), body])
+      const had = globalThis.document
+      globalThis.document = { documentElement: html, body, querySelector: (sel) => (sel.startsWith('html') ? html : mount) }
+      try {
+        if (!fn(arg)) throw timeout('page.waitForFunction')
+      } finally {
+        globalThis.document = had
+      }
     },
     // Only the diff comes here; the settle step works frame by frame.
     async evaluate(fn, arg) {

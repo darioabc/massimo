@@ -33,6 +33,14 @@
 //                                 write a shoot.mjs pairs file from the manifest;
 //                                 --shoot [--out <dir>] [--playwright <path>] runs it
 //                                 (--pairs and --out from --root when relative)
+//     stories on a csf lane: --against <meta.json> is the tool's own list, whose ids,
+//                                 files, exports and meta the lane must match; every id the
+//                                 repo's specs, scripts, skills and docs use must resolve.
+//                                 --sweep <base url> [--legacy] [--sweep-baseline <file>]
+//                                 [--ready <selector>] [--workers <n>] [--timeout <s>] opens
+//                                 every state on that server. --pairs also takes --a-route
+//                                 and --b-route (templates with {id}, {slug}, {state} and
+//                                 {scheme}) and --selector
 //   adopt.mjs accept <class> <key> --why <text>
 //                                 accept a difference verify reports now, with the
 //                                 reason and its detail; a key verify does not report
@@ -51,7 +59,10 @@
 //                                 --ids-from reads the old ids from Ladle's meta.json
 //   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
 //                                 them; a file code depends on is refused
-//   adopt.mjs retire <class> --dry-run [--json]
+//   adopt.mjs retire <class> --dry-run [--json] [--against <meta.json>]
+//                                 (--against, for stories on a csf lane, is the tool's
+//                                 own list: it tells an id that was dead already from one
+//                                 the move loses)
 //                                 what retiring a class takes out and who still depends
 //                                 on it; exit 1 while a consumer remains outside the
 //                                 historical docs, or a generator that stays still
@@ -64,7 +75,8 @@
 // --root, --config, --project-dir.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ALL_KINDS, compareLegacy, notMeasured, offendersOf, parseMap, runAudit } from './audit.mjs'
@@ -89,15 +101,17 @@ import {
   statusTable,
 } from './lib/adopt.mjs'
 import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freezeEntry, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch } from './lib/convert.mjs'
-import { compare, expandGlobs } from './lib/glob.mjs'
+import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
+import { stateUrl } from './lib/lane-route.mjs'
 import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, writeFileAtomic } from './lib/project.mjs'
+import { idScope, isBinaryPath, mentionCoverage, toolEdits, toolPackages } from './lib/redirects.mjs'
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
 import { truthy } from './lib/text.mjs'
-import { VERIFY_CLASSES, compareGraph, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
+import { VERIFY_CLASSES, compareGraph, compareLane, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 // --write, --force and --shoot take no value, so a positional after them stays one.
@@ -281,11 +295,114 @@ function liveLane() {
   return laneRecord(root, scanFiles(config, pkg), pkg, lane)
 }
 
+// The csf lane's registry as the story files hold it now, with the repo's
+// files and package.json that it was read from.
+function currentRegistry() {
+  const pkg = readJson(join(root, 'package.json'), {}) ?? {}
+  const files = scanFiles(config, pkg)
+  const include = compileGlobs(config.stories.include)
+  const registry = laneRegistry({ root, config, files: files.filter(include), read: (f) => readFileSync(join(root, f), 'utf8') })
+  return { registry, files, pkg }
+}
+
+// The ids of the tool's own meta.json (--against), or null when none is
+// given. A file that is not there, or not a meta.json, is an error the
+// caller turns into a difference.
+function readOracle() {
+  if (typeof flags.against !== 'string') return null
+  const path = resolve(root, flags.against)
+  if (!existsSync(path)) throw new Error(`--against ${flags.against} is not there`)
+  let doc
+  try {
+    doc = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (e) {
+    throw new Error(`--against ${flags.against} is not JSON: ${e.message.split('\n')[0]}`)
+  }
+  if (doc?.about?.generator === 'massimo') newer('registry', doc.about.format, flags.against)
+  if (!doc || typeof doc.stories !== 'object' || doc.stories === null) throw new Error(`--against ${flags.against} holds no "stories" to compare with`)
+  return doc.stories
+}
+
+// The render sweep of the lane with shoot.mjs: every state of the registry
+// opened on --sweep's server, and the failures as differences. A server that
+// is not up, or no Playwright, is one difference, never a pass.
+function sweepLane(registry, differences, notes) {
+  const dir = mkdtempSync(join(tmpdir(), 'massimo-sweep-'))
+  try {
+    const routes = join(dir, 'routes.json')
+    const ids = join(dir, 'ids.json')
+    writeFileSync(routes, JSON.stringify(Object.fromEntries(registry.order.map((id) => [id, stateUrl(registry.stories[id], { preview: true })]))))
+    writeFileSync(ids, JSON.stringify({ stories: Object.fromEntries(registry.order.map((id) => [id, {}])) }))
+    const pass = ['ready', 'workers', 'timeout', 'sweep-baseline', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, ['sweep-baseline', 'playwright'].includes(f) ? resolve(root, flags[f]) : flags[f]] : []))
+    const from = typeof flags['ids-from'] === 'string' ? resolve(root, flags['ids-from']) : ids
+    const r = runScript('shoot', ['--sweep', flags.sweep, ...(truthy(flags.legacy) ? ['--legacy'] : ['--routes', routes]), '--ids-from', from, ...pass])
+    let result = null
+    try {
+      result = JSON.parse(lastLine(r.stdout))
+    } catch {
+      // not a result
+    }
+    if (!result || !Array.isArray(result.failed)) {
+      differences.push({ key: 'sweep', detail: r.status === 3 ? 'shoot.mjs found no Playwright: pass --playwright <path> to a checkout that has it' : `shoot.mjs could not run the sweep: ${lastLine(r.text)}` })
+      return [['states ready', '', '0', '1', 'the sweep did not run']]
+    }
+    for (const f of result.failed) differences.push({ key: `render:${f.id}`, detail: f.why })
+    if (result.excused?.length > 0) notes.push(`Excused, since the baseline failed ${result.excused.length === 1 ? 'it' : 'them'} too (decide each): ${result.excused.map((f) => `${f.id} (${f.why})`).join('; ')}.`)
+    if (result.baseline?.note) notes.push(`${result.baseline.note[0].toUpperCase()}${result.baseline.note.slice(1)}.`)
+    return [['states ready', '', `${result.ready}/${result.total}`, String(result.failed.length), result.excused?.length ? `${result.excused.length} excused by the baseline` : '']]
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// The csf lane against the tool it replaces: the same ids (and for each the
+// same file, export and merged meta) as the tool's meta.json (--against),
+// every id and prefix the repo's specs, scripts, skills and docs use, and
+// with --sweep the render of each state, with --pairs the shots.
+function verifyCsfLane(ledger) {
+  const { registry, files } = currentRegistry()
+  const differences = []
+  const notes = []
+  const rows = [['What', 'Tool', 'Lane', 'Differ', 'Note']]
+  const states = Object.keys(registry.stories).length
+  for (const p of registry.problems) differences.push({ key: `story-files:${p.file ?? ''}: ${p.detail}`, detail: 'a story-files problem in the lane' })
+  rows.push(['story files', '', String(Object.keys(registry.files).length), '', ''])
+  const oracle = readOracle()
+  if (oracle) {
+    const compared = compareLane(oracle, registry)
+    rows.push(...compared.rows.slice(1))
+    differences.push(...compared.differences)
+  } else {
+    rows.push(['states', '', String(states), '', ''])
+    notes.push("There is no --against <meta.json>, so the lane's ids are not compared with the tool's own.")
+  }
+  const historical = new Set((ledger.historical ?? []).map((h) => h.path))
+  const scope = files.filter((f) => !isBinaryPath(f) && idScope(f)).map((file) => ({ file, text: readText(root, file) })).filter((f) => f.text.includes('--'))
+  const cover = mentionCoverage(scope, registry, oracle ? Object.keys(oracle) : null)
+  const live = cover.missing.filter((m) => !historical.has(m.file))
+  rows.push(['id mentions', '', `${cover.resolved}/${cover.mentions}`, String(live.length), cover.dead.length ? `${cover.dead.length} dead in the tool too` : ''])
+  for (const m of live) {
+    const what = m.prefix ? 'ids that start with' : 'the id'
+    const detail = oracle ? `the tool has ${what} ${m.mention} and no story of the lane does` : `no story of the lane has ${what} ${m.mention}`
+    differences.push({ key: `mention:${m.file}:${m.mention}`, detail, shown: `line ${m.line}: ${detail}` })
+  }
+  if (cover.missing.length > live.length) notes.push(`${plural(cover.missing.length - live.length, 'mention')} in historical docs no longer resolve; they are left as they are.`)
+  if (cover.dead.length > 0) notes.push(`Dead before the move (the tool's own ids never had them): ${cover.dead.map((m) => `${m.file}:${m.line} ${m.mention}`).join('; ')}.`)
+  if (flags.sweep !== undefined) rows.push(...sweepLane(registry, differences, notes))
+  if (flags.pairs !== undefined) {
+    const to = storyRoutes(config).story
+    const pairsFor = () => storyPairs(registry.order.map((id) => registry.stories[id]), { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier: typeof flags['dom-tier'] === 'string' ? flags['dom-tier'] : 'Pages', aRoute: flags['a-route'] ?? `${to}?mode=preview`, bRoute: flags['b-route'] ?? `${to}?mode=preview`, selector: typeof flags.selector === 'string' ? flags.selector : undefined })
+    rows.push(...storyShots(differences, notes, pairsFor))
+  }
+  return { title: `the csf lane (${plural(states, 'state')} in ${plural(Object.keys(registry.files).length, 'story file')}) against ${oracle ? flags.against : 'the story files alone'}`, rows, differences, notes }
+}
+
 // The lane: its entries and states as the scan's reader reads them now
 // against graph.json (the graph built in memory when there is none yet),
 // the problems massimo's checks find and the checks it could not make; with
 // --pairs, a shoot pairs file from the manifest, and with --shoot, its verdict.
-function verifyStories() {
+function verifyStories(ledger) {
+  if (config.stories.lane === 'csf') return verifyCsfLane(ledger)
   if (config.stories.lane !== 'manifest' || !config.stories.manifest) return { skip: 'stories.lane is not "manifest" with a stories.manifest, so there is no list of stories to verify' }
   const lane = graphJson().storyLane
   if (!lane) return { skip: 'the graph did not read a story lane' }
@@ -344,10 +461,10 @@ function refuseNewerOutput(path, kind, where) {
 // Write the pairs file for the lane and, with --shoot, run shoot.mjs on it
 // and fold each pair's verdict into the differences. Returns the table rows.
 // --pairs and --out are read from the repo root, as --against is.
-function storyShots(differences, notes) {
+function storyShots(differences, notes, pairsFor = null) {
   const domTier = typeof flags['dom-tier'] === 'string' ? flags['dom-tier'] : 'Pages'
-  const manifest = readManifest(readText(root, config.stories.manifest), config.stories.manifest)
-  const { document, entries, skipped } = storyPairs(manifest.entries, { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier })
+  // The csf lane gives its own pairs, one per state; a manifest lane's come from its entries.
+  const { document, entries, skipped } = pairsFor ? pairsFor() : storyPairs(readManifest(readText(root, config.stories.manifest), config.stories.manifest).entries, { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier })
   const { problems } = parsePairs(document.pairs)
   if (problems.length > 0) throw new Error(`the pairs cannot be written: ${problems.join('; ')}`)
   const path = resolve(root, flags.pairs)
@@ -355,7 +472,7 @@ function storyShots(differences, notes) {
   writeJson(path, document)
   const pairs = document.pairs
   const dom = pairs.filter((p) => p.mode === 'dom').length
-  notes.push(`Wrote ${plural(pairs.length, 'pair')} to ${shownPath(path)}: ${plural(entries, 'entry', 'entries')} at light and dark, 390 and 1440 wide, each on its frame route where it has one; ${dom} compared by page text (root ${domTier})${skipped ? `; ${plural(skipped, 'entry')} with no literal slug left out` : ''}.`)
+  notes.push(`Wrote ${plural(pairs.length, 'pair')} to ${shownPath(path)}: ${pairsFor ? plural(entries, 'state') : plural(entries, 'entry', 'entries')} at light and dark, 390 and 1440 wide${pairsFor ? '' : ', each on its frame route where it has one'}; ${dom} compared by page text (root ${domTier})${skipped ? `; ${plural(skipped, 'entry')} with no literal slug left out` : ''}.`)
   const out = typeof flags.out === 'string' ? resolve(root, flags.out) : join(projectDir, 'shots', 'adopt', 'stories')
   // Passed through to shoot.mjs, which runs from the repo root: a Playwright
   // path given from here is made absolute first.
@@ -500,9 +617,35 @@ function passLine(cls, c) {
   return `${cls} passes. It is ${c.state}, and reaches proven one state at a time, through shadowed once the shadow CI job runs it: ${scriptCommand(root, projectDir, 'adopt', `mark ${cls} ${STATES[at + 1]}`)}`
 }
 
+// ── The tool's edits ────────────────────────────────────────────────────────
+
+// Every edit the repo must make before the story tool can go, for the
+// ledger's tool assets that go (decision convert or retire), on a csf lane;
+// null when none does. Specs and docs that name ids are held against the
+// tool's own list when --against gives it.
+function toolEditsFor(ledger, inv) {
+  const going = (ledger.classes.stories?.assets ?? []).filter((a) => a.kind === 'tool' && a.decision !== 'keep' && !a.missing)
+  if (config.stories.lane !== 'csf' || going.length === 0) return null
+  const { registry, files, pkg } = currentRegistry()
+  let oracleIds = null
+  try {
+    const oracle = readOracle()
+    oracleIds = oracle ? Object.keys(oracle) : null
+  } catch {
+    // the tool's list is only for telling a dead id from a lost one
+  }
+  const edits = going.flatMap((a) => {
+    const tool = inv.stories.tools.find((t) => `tool:${t.tool}` === a.id)
+    if (!tool) return []
+    const consumers = inv.assets.find((x) => x.id === a.id)?.consumers ?? []
+    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`] })
+  })
+  return edits.sort((x, y) => compare(x.file, y.file) || x.line - y.line)
+}
+
 // ── retire --dry-run ────────────────────────────────────────────────────────
 
-function retireReport(cls, plan) {
+function retireReport(cls, plan, { toldDead = true } = {}) {
   const lines = [`massimo adopt retire ${cls} --dry-run: ${cls} is ${plan.state}${STATES.indexOf(plan.state) < STATES.indexOf('cut-over') ? ', and retires only after cut-over' : ''}.`, '']
   if (plan.going.length === 0) return [...lines, `Nothing in ${cls} is marked retire or convert: it is all kept as the repo's own.`]
   lines.push(`Goes (${plan.going.length}: marked retire, or convert, whose place massimo's own output takes):`)
@@ -512,6 +655,13 @@ function retireReport(cls, plan) {
   for (const j of plan.jobs) lines.push(`  ${j.file}${j.line ? `:${j.line}` : ''}  ${j.job ? `job ${j.job}${j.name ? ` (${j.name})` : ''}` : 'outside a job'}, runs ${j.via.join(', ')}`)
   if (plan.elsewhere.length) lines.push(`Files a generator that goes also writes, for other classes, which lose their writer: ${plan.elsewhere.map((e) => `${e.path} (${e.class ?? 'no class'}${e.state ? `, ${e.state}` : ''})`).join(', ')}.`)
   const where = (k) => `${k.file}${k.script ? ` (${k.script})` : ''}${k.line ? `:${k.line}` : ''}`
+  if (plan.edits) {
+    lines.push('', `Edits to make first (${plan.edits.length}; ${plan.editsValid} more mentions still work on the lane${plan.editsHistorical ? `, ${plan.editsHistorical} are in historical docs` : ''}):`)
+    for (const e of plan.edits) lines.push(`  ${e.file}:${e.line}  ${e.class}  uses ${e.uses}. Change: ${e.replacement}`)
+    if (plan.edits.length === 0) lines.push('  none')
+    const unknown = plan.edits.filter((e) => /^id(?: prefix)? /.test(e.uses)).length
+    if (!toldDead && unknown > 0) lines.push('', `${plural(unknown, 'id mention')} above resolve${unknown === 1 ? 's' : ''} nowhere in the lane: pass --against <meta.json>, the tool's own list, to tell the ones that were dead already from the ones the move loses.`)
+  }
   const line = (k) => `  ${k.class.padEnd(8)}  ${where(k)}  ${k.how}${k.via ? ` through ${k.via}` : ''}${k.writtenBy ? `, written by ${k.writtenBy}` : ''}  (${k.assets.join(', ')})`
   if (plan.writers.length) {
     lines.push('', `Written by a generator that stays (${plan.writers.length}), whose code names ${plan.writers.length === 1 ? 'it' : 'them'}, so it would write ${plan.writers.length === 1 ? 'it' : 'them'} again and its check fails without ${plan.writers.length === 1 ? 'it' : 'them'}:`)
@@ -522,6 +672,7 @@ function retireReport(cls, plan) {
   const holds = [
     plan.writers.length ? `${plural(plan.writers.length, 'file has', 'files have')} a writer that stays` : '',
     plan.consumers.length ? `${plural(plan.consumers.length, 'consumer remains', 'consumers remain')} outside the docs the ledger marks historical` : '',
+    plan.edits?.length ? `${plural(plan.edits.length, 'edit')} of the repo's own ${plan.edits.length === 1 ? 'is' : 'are'} still open` : '',
   ].filter(Boolean)
   lines.push(
     '',
@@ -531,7 +682,7 @@ function retireReport(cls, plan) {
   )
   return lines
 }
-const notClean = (plan) => plan.consumers.length > 0 || plan.writers.length > 0
+const notClean = (plan) => plan.consumers.length > 0 || plan.writers.length > 0 || (plan.edits?.length ?? 0) > 0
 
 // The flags verify takes, checked alike for verify and for accept, which
 // passes them on to verify so it sees what verify saw.
@@ -539,6 +690,9 @@ function checkVerifyFlags(name, cls) {
   if (cls === undefined && flags.against !== undefined) fail('--against names the file one class is compared with: pass the class too')
   if (flags.pairs !== undefined && cls !== undefined && cls !== 'stories') fail(`--pairs goes with ${name} stories`)
   if (flags.pairs !== undefined && (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string')) fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
+  if (flags.sweep !== undefined && cls !== 'stories') fail(`--sweep goes with ${name} stories: it opens every state of the csf lane on the server it names`)
+  if (flags.sweep !== undefined && cls === 'stories' && config.stories.lane !== 'csf') fail('--sweep opens the states of a csf lane: stories.lane is not "csf" here')
+  if (flags.sweep !== undefined && typeof flags.sweep !== 'string') fail('--sweep takes the base URL of the lane server, such as http://localhost:4650')
   if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
 }
 
@@ -864,13 +1018,14 @@ switch (command) {
   case 'retire': {
     needInit('retire')
     const [cls] = rest
-    if (!CLASSES.includes(cls)) fail(`usage: adopt.mjs retire <${CLASSES.join('|')}> --dry-run`)
+    if (!CLASSES.includes(cls)) fail(`usage: adopt.mjs retire <${CLASSES.join('|')}> --dry-run [--json] [--against <meta.json>]`)
     if (!truthy(flags['dry-run'])) fail(`retire only lists what retiring ${cls} takes out: run it with --dry-run. Deleting is the adopt skill's job, one commit per batch, on your OK.`)
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
     if (!ledger.classes[cls]) fail(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
-    const plan = retirePlan(ledger, cls, scan(), { jobAt: (file, line) => workflowJob(readText(root, file), line) })
-    process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan).join('\n')}\n`)
+    const inv = scan()
+    const plan = retirePlan(ledger, cls, inv, { jobAt: (file, line) => workflowJob(readText(root, file), line), edits: cls === 'stories' ? toolEditsFor(ledger, inv) : null })
+    process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan, { toldDead: typeof flags.against === 'string' }).join('\n')}\n`)
     if (notClean(plan)) process.exit(1)
     break
   }

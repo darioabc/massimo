@@ -192,25 +192,34 @@ export function readRepoGraph(text) {
 // ── Story routes ────────────────────────────────────────────────────────────
 
 // Where a story is served, as a path with `{slug}`: from stories.storyUrl,
-// else stories.url and the slug, else /stories/{slug}. A frame's path adds
+// else stories.url and the slug, else /stories/{slug}; on a csf lane the
+// route ends in `/{state}`, since it serves one state per document. A frame's path adds
 // what its file adds to the page's (`{slug}/frame.astro` beside
 // `{slug}/index.astro` is `/frame`); null when that cannot be told.
 export function storyRoutes(config) {
   const s = config.stories ?? {}
-  const url = s.storyUrl ?? (s.url ? `${String(s.url).replace(/\/$/, '')}/{slug}` : null)
-  const story = url ? url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, '') || '/{slug}' : '/stories/{slug}'
+  // A csf lane serves one state per document, so its route ends in `{state}`.
+  const perState = s.lane === 'csf'
+  const tailOf = (u) => `${String(u).replace(/\/$/, '')}/{slug}${perState ? '/{state}' : ''}`
+  const url = s.storyUrl ?? (s.url ? tailOf(s.url) : null)
+  const story = url ? url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, '') || '/{slug}' : perState ? '/stories/{slug}/{state}' : '/stories/{slug}'
   const tail = (pattern) => (typeof pattern === 'string' && pattern.includes('{slug}') ? pattern.slice(pattern.lastIndexOf('{slug}') + 6).replace(/\.[^./]+$/, '').replace(/(?:^|\/)index$/, '') : null)
   const page = tail(s.pages)
   const frame = tail(s.frames)
   return { story, frame: frame !== null && (page === null || page === '') && story.includes('{slug}') ? `${story}${frame}` : null }
 }
 
+// A route with its placeholders filled: `{slug}`, `{state}`, `{id}` and
+// `{scheme}`, each encoded as a URL part.
+const fillRoute = (route, values) => route.replace(/\{(slug|state|id|scheme)\}/g, (_, key) => encodeURIComponent(values[key] ?? ''))
+
 // The slug a route names, by the story route's pattern, or the route as it
-// is when the pattern does not fit (so a difference shows, rather than a guess).
+// is when the pattern does not fit (so a difference shows, rather than a
+// guess). A `{state}` in the pattern is any one path part.
 function slugReader(route) {
   const [before, after = ''] = route.split('{slug}')
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const re = new RegExp(`^${esc(before)}(.+?)${esc(after)}/?$`)
+  const re = new RegExp(`^${esc(before)}(.+?)${esc(after).replace('\\{state\\}', '[^/]+')}/?$`)
   return (r) => re.exec(r)?.[1] ?? r
 }
 
@@ -488,9 +497,46 @@ export const PAIRS_FORMAT = 1
 // base URLs. An entry whose root is `domTier` is compared by its page text
 // (mode dom), since whole pages carry motion no freeze holds still. Entries
 // without a literal slug are skipped and counted.
-export function storyPairs(entries, { a, b, routes, domTier = 'Pages' }) {
+//
+// For a csf lane, `entries` are the registry's states and each side has its
+// own route template (`aRoute`, `bRoute`, with `{id}`, `{slug}`, `{state}`
+// and `{scheme}`): a pair per state, scheme and size, named
+// `<slug>/<state>/<scheme>-<width>`, on a page of the first title part's
+// tier `domTier` compared by text. A `selector` limits the shot to it.
+export function storyPairs(entries, { a, b, routes, domTier = 'Pages', aRoute, bRoute, selector }) {
   const base = (url) => String(url).replace(/\/+$/, '')
   const pairs = []
+  if (aRoute || bRoute) {
+    const first = routes?.story ?? '/stories/{slug}/{state}'
+    const sides = { a: aRoute ?? first, b: bRoute ?? first }
+    let counted = 0
+    let left = 0
+    for (const state of entries) {
+      if (!state || typeof state.slug !== 'string' || typeof state.state !== 'string') {
+        left++
+        continue
+      }
+      counted++
+      const mode = state.levels?.[0] === domTier ? 'dom' : 'pixel'
+      for (const scheme of ['light', 'dark']) {
+        for (const { width, height } of PAIR_SIZES) {
+          const at = (route) => fillRoute(route, { id: state.id, slug: state.slug, state: state.state, scheme })
+          pairs.push({
+            name: `${state.slug}/${state.state}/${scheme}-${width}`,
+            a: `${base(a)}${at(sides.a)}`,
+            b: `${base(b)}${at(sides.b)}`,
+            width,
+            height,
+            scheme,
+            mode,
+            ...(mode === 'pixel' && !selector ? { full: true } : {}),
+            ...(selector ? { selector } : {}),
+          })
+        }
+      }
+    }
+    return { document: { format: PAIRS_FORMAT, pairs }, entries: counted, skipped: left }
+  }
   let skipped = 0
   let shot = 0
   for (const entry of entries) {
@@ -508,6 +554,58 @@ export function storyPairs(entries, { a, b, routes, domTier = 'Pages' }) {
     }
   }
   return { document: { format: PAIRS_FORMAT, pairs }, entries: shot, skipped }
+}
+
+// ── The csf lane against the tool's own ids ────────────────────────────────
+
+// JSON with object keys in order, so two metas that differ only in key order
+// are the same.
+const canon = (v) => JSON.stringify(v, (_, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([p], [q]) => compare(p, q))) : x))
+
+// The lane's registry against the stories of the tool's own meta.json
+// (`oracle`, keyed by id): the same ids, and for each the same file, export
+// and merged meta. Every difference is keyed `id:<id>`; the detail says which
+// of the three differ, or that only one side has the id (and, when the other
+// side gives the same export another id, which). Returns the table rows and
+// the differences.
+export function compareLane(oracle, registry) {
+  const diffs = keyed()
+  const ours = registry.stories
+  const byExport = new Map(Object.values(ours).map((s) => [`${s.file}\n${s.export}`, s.id]))
+  const theirByExport = new Map(Object.entries(oracle).map(([id, s]) => [`${s.filePath}\n${s.namedExport}`, id]))
+  let same = 0
+  let only = 0
+  let other = 0
+  let changed = 0
+  for (const [id, s] of Object.entries(oracle)) {
+    const mine = ours[id]
+    if (!mine) {
+      only++
+      const moved = byExport.get(`${s.filePath}\n${s.namedExport}`)
+      diffs.add(`id:${id}`, moved ? `the tool has it, and the lane gives ${s.filePath} ${s.namedExport} the id ${moved}` : `the tool has it (${s.filePath} ${s.namedExport}), the lane does not`)
+      continue
+    }
+    const wrong = []
+    if (mine.file !== s.filePath) wrong.push(`file ${s.filePath} against ${mine.file}`)
+    if (mine.export !== s.namedExport) wrong.push(`export ${s.namedExport} against ${mine.export}`)
+    if (canon(mine.meta ?? {}) !== canon(s.meta ?? {})) wrong.push('meta differs')
+    if (wrong.length > 0) {
+      changed++
+      diffs.add(`id:${id}`, wrong.join('; '))
+    } else same++
+  }
+  for (const id of Object.keys(ours)) {
+    if (oracle[id]) continue
+    other++
+    const old = theirByExport.get(`${ours[id].file}\n${ours[id].export}`)
+    diffs.add(`id:${id}`, old ? `the lane has it, and the tool gives ${ours[id].file} ${ours[id].export} the id ${old}` : `the lane has it (${ours[id].file} ${ours[id].export}), the tool does not`)
+  }
+  const rows = [
+    ['What', 'Tool', 'Lane', 'Differ', 'Note'],
+    ['states', String(Object.keys(oracle).length), String(Object.keys(ours).length), String(only + other), only + other ? `${only} only in the tool, ${other} only in the lane` : ''],
+    ['file, export and meta', '', String(same + changed), String(changed), changed ? 'on ids both have' : ''],
+  ]
+  return { rows, differences: diffs.list(), same }
 }
 
 // What a pair that failed shows, as a difference: printed, its error or
