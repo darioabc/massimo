@@ -252,15 +252,23 @@ const togetherHref = (slug: string, choices: Choices) => {
   return `/stories/${encodeURIComponent(slug)}${rest ? `?${rest}` : ''}`
 }
 
-// What the URL asks the shell to show: one state, or a slug's side-by-side files.
-function selection(url: LaneUrl): { id: string | null; together: string[] } {
-  if (url.kind === 'legacy') return { id: url.oldId, together: [] }
+// What the URL asks the shell to show: one state, or a slug's side-by-side
+// files. `missing` is a slug the registry does not hold.
+function selection(url: LaneUrl): { id: string | null; together: string[]; missing: string | null } {
+  if (url.kind === 'legacy') return { id: url.oldId, together: [], missing: null }
   if (url.kind === 'slug' && url.slug) {
     const group = registry.slugs[url.slug]
-    if (!group) return { id: null, together: [] }
-    return { id: group.ids[0] ?? null, together: group.files.filter((f) => sideBySide.has(f)) }
+    if (!group) return { id: null, together: [], missing: url.slug }
+    const together = group.files.filter((f) => sideBySide.has(f))
+    return { id: group.ids[0] ?? null, together, missing: null }
   }
-  return { id: url.selected ?? lane.home ?? registry.order[0] ?? null, together: [] }
+  return { id: url.selected ?? lane.home ?? registry.order[0] ?? null, together: [], missing: null }
+}
+
+// What the shell says when it has no state to show.
+function nothing(id: string | null, missing: string | null) {
+  if (missing) return `No story has the slug ${missing}.`
+  return id ? `No story has the id ${id}.` : 'No stories yet.'
 }
 
 function StateFrame({
@@ -358,7 +366,7 @@ function Sidebar({ selected, choices }: { selected: string | null; choices: Choi
 }
 
 export default function Shell({ url }: { url: LaneUrl }) {
-  const { id, together } = selection(url)
+  const { id, together, missing } = selection(url)
   const story = id ? registry.stories[id] : undefined
   const [choices, setChoices] = useState<Choices>(() => {
     const switches: Record<string, string> = {}
@@ -473,7 +481,7 @@ export default function Shell({ url }: { url: LaneUrl }) {
           }}
         >
           {!story ? (
-            <p style={{ padding: 16 }}>{id ? `No story has the id ${id}.` : 'No stories yet.'}</p>
+            <p style={{ padding: 16 }}>{nothing(id, missing)}</p>
           ) : states.length > 0 ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
               {states.map((stateId) => (
