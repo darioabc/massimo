@@ -17,7 +17,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
-import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { CONFIG_FILE, fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { laneRegistry } from './lib/lane.mjs'
 import { headerRoles, keyRoles, knownKeys, placeFile, tierOf, tierOrder } from './lib/roles.mjs'
 import {
   RULE_KEYS,
@@ -35,7 +36,7 @@ import {
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
-import { closeBracket, componentsOf, readManifest, readStoryStates, slugFiles, slugPath } from './lib/stories-read.mjs'
+import { closeBracket, componentsOf, listFaults, readCsf, readManifest, readStoryStates, slugFiles, slugPath, stateName } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
@@ -294,6 +295,91 @@ function propsAndStates(source, file, name, importers) {
   }
   props.sort((a, b) => compare(a.name, b.name))
   return { props, states: componentStates(source, props) }
+}
+
+// ── The csf lane ────────────────────────────────────────────────────────────
+
+const POLICY_KEYS = ['roots', 'titleParts', 'titleExact', 'titleText', 'nameMatches', 'names', 'ownStory', 'bannerByRoot', 'titlePrefix', 'cleanIds']
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+const stringList = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [])
+
+// Two names match when their letters and digits match, ignoring case, spaces
+// and hyphens: "AiDrawer" matches "AI drawer".
+const nameKey = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+const titlePartsOf = (title) => title.split('/').map((p) => p.trim()).filter(Boolean)
+const stemOfNode = (file) => (file.split('/').pop() ?? file).replace(/\.[^.]+$/, '')
+// A node's file name in words, as a story beside it is titled: `ModalOverlay`
+// is "Modal overlay".
+const wordsOfNode = (file) => stateName({ export: stemOfNode(file) })
+
+// stories.policy as the csf checks use it, or null when it is not set. An
+// option the graph does not know, or a pattern that does not compile, is a
+// warning, and that rule is left off.
+function readPolicy(raw, warnings) {
+  if (raw === null || raw === undefined) return null
+  if (!isPlainObject(raw)) {
+    warnings.push('stories.policy is an object of options, so it is ignored')
+    return null
+  }
+  for (const key of Object.keys(raw)) if (!POLICY_KEYS.includes(key)) warnings.push(`stories.policy.${key} is not an option, so it is ignored`)
+  const regex = (source, flags, where) => {
+    try {
+      return new RegExp(source, typeof flags === 'string' ? flags : '')
+    } catch {
+      warnings.push(`${where} is not a regular expression that compiles, so it is ignored`)
+      return null
+    }
+  }
+  let titleText = null
+  if (isPlainObject(raw.titleText)) {
+    const pattern = typeof raw.titleText.pattern === 'string' ? regex(raw.titleText.pattern, '', 'stories.policy.titleText.pattern') : null
+    const forbidden = []
+    for (const [i, f] of (Array.isArray(raw.titleText.forbidden) ? raw.titleText.forbidden : []).entries()) {
+      const re = typeof f?.pattern === 'string' ? regex(f.pattern, f.flags, `stories.policy.titleText.forbidden[${i}]`) : null
+      if (re) forbidden.push({ re, what: typeof f.what === 'string' ? f.what : `text that matches ${f.pattern}` })
+    }
+    titleText = { pattern, forbidden }
+  }
+  const ownStory = []
+  for (const rule of Array.isArray(raw.ownStory) ? raw.ownStory : []) {
+    const link = rule?.link ?? 'own'
+    if (!isPlainObject(rule) || !['own', 'sibling'].includes(link)) {
+      warnings.push('stories.policy.ownStory has an entry whose link is not "own" or "sibling", so it is ignored')
+      continue
+    }
+    ownStory.push({ tiers: stringList(rule.tiers), files: stringList(rule.files), link })
+  }
+  const names = {}
+  for (const [stem, name] of Object.entries(isPlainObject(raw.names) ? raw.names : {})) {
+    if (typeof name === 'string') names[stem] = name
+    else warnings.push(`stories.policy.names.${stem} is not a string, so it is ignored`)
+  }
+  const titleParts = isPlainObject(raw.titleParts) ? Object.fromEntries(Object.entries(raw.titleParts).filter(([, n]) => Number.isInteger(n))) : null
+  return {
+    roots: stringList(raw.roots).length > 0 ? stringList(raw.roots) : null,
+    titleParts,
+    titleExact: new Set(stringList(raw.titleExact)),
+    titleText,
+    nameMatches: raw.nameMatches === true,
+    names,
+    ownStory,
+    bannerByRoot: isPlainObject(raw.bannerByRoot) ? Object.fromEntries(Object.entries(raw.bannerByRoot).filter(([, k]) => typeof k === 'string' && k)) : {},
+    titlePrefix: (Array.isArray(raw.titlePrefix) ? raw.titlePrefix : []).filter(isPlainObject).map((r) => ({ files: stringList(r.files), prefixes: stringList(r.prefixes) })),
+    cleanIds: raw.cleanIds === true,
+  }
+}
+
+// Why a piece of title or state text breaks stories.policy.titleText, as
+// short phrases for a sentence; empty when it is fine. `alsoWords` is the
+// text in words, where a forbidden word is looked for as well, since an
+// export name has none of its words apart.
+function textReasons(text, rule, alsoWords = null) {
+  const reasons = []
+  if (rule.pattern && !rule.pattern.test(text)) reasons.push('characters or spacing that stories.policy.titleText.pattern does not allow')
+  for (const { re, what } of rule.forbidden) {
+    if ((re.test(text) || (alsoWords !== null && re.test(alsoWords))) && !reasons.includes(what)) reasons.push(what)
+  }
+  return reasons
 }
 
 export function buildGraph(root, config, command = "graph.mjs") {
@@ -654,16 +740,219 @@ export function buildGraph(root, config, command = "graph.mjs") {
       })
   }
 
+  // A csf lane: story files read in place through the registry. A story file
+  // covers a node directly when it imports it or sits beside it, and
+  // incidentally when the node is reached through the modules it imports in
+  // turn. Separate from both is what a node owns: the story beside it, or one
+  // titled with its group and name (`ownStory` asks for it).
+  function readCsfLane() {
+    const policy = readPolicy(config.stories.policy, warnings)
+    const texts = new Map()
+    const readText = (f) => {
+      if (!texts.has(f)) texts.set(f, readFileSync(join(root, f), 'utf8'))
+      return texts.get(f)
+    }
+    const registry = laneRegistry({ root, config, files: storyFiles.filter(storyGlob), read: readText })
+    const csfs = new Map()
+    const csfOf = (f) => {
+      if (!csfs.has(f)) csfs.set(f, readCsf(readText(f), f))
+      return csfs.get(f)
+    }
+    const files = Object.keys(registry.files).sort(compare)
+    const slugOf = (f) => registry.files[f].slug
+
+    const unreadable = []
+    for (const f of files) {
+      for (const u of registry.files[f].unreadable) {
+        if (listFaults({ unreadable: [u] }).length === 0) unreadable.push({ file: f, detail: u.story ? `${u.story}: ${u.detail}` : u.detail })
+      }
+    }
+
+    // The modules a file imports, with the nodes behind any barrel.
+    const adjacent = new Map()
+    const next = (file) => {
+      let out = adjacent.get(file)
+      if (out) return out
+      out = new Set()
+      for (const edge of infoOf(file)?.edges ?? []) {
+        if (!isTestFile(edge.file)) out.add(edge.file)
+        for (const target of reach(edge.file, edge.names)) out.add(target)
+      }
+      adjacent.set(file, out)
+      return out
+    }
+    const incidentalOf = new Map(nodeFiles.map((f) => [f, new Set()]))
+    for (const f of files) {
+      const seen = new Set([f])
+      const queue = [f]
+      while (queue.length > 0) {
+        for (const target of next(queue.pop())) {
+          if (seen.has(target)) continue
+          seen.add(target)
+          queue.push(target)
+        }
+      }
+      for (const target of seen) if (nodeSet.has(target)) incidentalOf.get(target).add(slugOf(f))
+    }
+
+    const directFiles = new Map(nodeFiles.map((f) => [f, new Set([...storiesOf.get(f)].filter((s) => registry.files[s]))]))
+    const siblings = new Map(nodeFiles.map((f) => [f, new Set()]))
+    for (const f of files) {
+      const node = nodeByStem.get(stemOf(f))
+      if (node) siblings.get(node).add(f)
+    }
+    const titled = files.filter((f) => registry.files[f].title !== null).map((f) => ({ file: f, parts: titlePartsOf(registry.files[f].title) }))
+    const nameFor = (nodeFile) => policy?.names[stemOfNode(nodeFile)] ?? wordsOfNode(nodeFile)
+    // The story files that are a node's own: the one beside it, and those
+    // titled "<group> / <name in words>".
+    const ownFiles = (nodeFile, group) => ({
+      sibling: siblings.get(nodeFile),
+      titled: group ? titled.filter(({ parts }) => parts.length >= 2 && parts.slice(0, -1).join(' / ') === group && nameKey(parts[parts.length - 1]) === nameKey(nameFor(nodeFile))).map((t) => t.file) : [],
+    })
+    return {
+      csf: true,
+      registry,
+      policy,
+      files,
+      csfOf,
+      unreadable,
+      nameFor,
+      ownFiles,
+      pagesOf: directFiles,
+      coverage(nodeFile, group) {
+        const own = ownFiles(nodeFile, group)
+        const direct = new Set([...directFiles.get(nodeFile)].map(slugOf))
+        return {
+          own: sortedUnique([...own.sibling, ...own.titled].map(slugOf)),
+          direct: sortedUnique(direct),
+          incidental: sortedUnique([...incidentalOf.get(nodeFile)].filter((s) => !direct.has(s))),
+        }
+      },
+    }
+  }
+
+  // What a csf lane's checks find, each { rule, file, detail }, sorted, with
+  // no line numbers so a ratchet can key on them. The registry's problems and
+  // no-story are always checked; the rest follow the options of stories.policy,
+  // each off until it is set:
+  //   story-title  roots, titleParts and titleExact, titleText, nameMatches
+  //                (with names) and titlePrefix, against the story file
+  //   story-files  the registry's (a duplicate id, a title or export list the
+  //                reader cannot read, a home no story has) and cleanIds
+  //   story-own    ownStory: a node with no story of the kind asked for,
+  //                reported against the node
+  //   story-banner bannerByRoot: a root's files carry its key, no other does
+  //   no-story     a live node with no direct story and no ds:no-story
+  function csfProblems(lane, nodes, live) {
+    const { registry, policy, csfOf } = lane
+    const out = []
+    const add = (rule, file, detail) => out.push({ rule, file, detail })
+    // Under Ladle's ids, a state exported under another name than it is
+    // declared with takes neither its storyName nor its meta, as the registry has it.
+    const ladleDropsOf = (s) => (config.stories.ids === 'ladle' && s.local !== s.export ? { ...s, storyName: null, meta: null } : s)
+    for (const p of registry.problems) add(p.rule, p.file ?? CONFIG_FILE, p.detail)
+    if (policy) {
+      const nodeOfFile = new Map(nodes.map((n) => [n.file, n]))
+      const notLiveTiers = new Set([].concat(taxonomy?.notLive ?? []))
+      const bannerRoots = new Set(Object.keys(policy.bannerByRoot))
+      for (const file of lane.files) {
+        const info = registry.files[file]
+        const title = info.title
+        const csf = csfOf(file)
+        const parts = title === null ? [] : titlePartsOf(title)
+        const root = parts[0] ?? null
+        const titleProblem = (detail) => add('story-title', file, detail)
+        if (title !== null) {
+          if (policy.roots && !policy.roots.includes(root)) titleProblem(`"${title}" starts with ${root}, which is not one of the roots ${policy.roots.join(', ')}`)
+          if (policy.titleParts && !policy.titleExact.has(title)) {
+            const wanted = policy.titleParts[root] ?? policy.titleParts.default
+            if (Number.isInteger(wanted) && parts.length !== wanted) titleProblem(`"${title}" has ${parts.length} ${parts.length === 1 ? 'part' : 'parts'}, and a title under ${root} has ${wanted}`)
+          }
+          if (policy.titleText) {
+            for (const part of parts) {
+              const reasons = textReasons(part, policy.titleText)
+              if (reasons.length > 0) titleProblem(`the title part "${part}" has ${reasons.join(' and ')}`)
+            }
+          }
+          for (const rule of policy.titlePrefix) {
+            if (!compileGlobs(rule.files)(file)) continue
+            if (!rule.prefixes.some((prefix) => title.startsWith(prefix))) titleProblem(`"${title}" does not start with ${rule.prefixes.map((p) => `"${p}"`).join(' or ')}`)
+          }
+          // A title rooted in a bannerByRoot root is exempt, as a story that
+          // is not about the node beside it; with no bannerByRoot, none is.
+          const node = policy.nameMatches ? nodeOfFile.get(nodeByStem.get(stemOf(file))) : null
+          if (node && node.group && !bannerRoots.has(root) && !notLiveTiers.has(node.tier)) {
+            const prefix = `${node.group} / `
+            const name = lane.nameFor(node.file)
+            if (titlePartsOf(node.group).join(' / ') !== parts.slice(0, -1).join(' / ') || nameKey(parts[parts.length - 1]) !== nameKey(name)) titleProblem(`"${title}" is beside ${node.file}, so a story there is titled "${prefix}${name}"`)
+          }
+        }
+        if (policy.titleText) {
+          for (const story of csf.stories) {
+            const s = ladleDropsOf(story)
+            const text = s.storyName ?? s.export
+            const reasons = textReasons(text, policy.titleText, s.storyName === null ? stateName(s) : null)
+            if (reasons.length > 0) titleProblem(`the state ${s.export}${s.storyName === null ? '' : ` (storyName "${s.storyName}")`} has ${reasons.join(' and ')}`)
+          }
+        }
+        if (policy.cleanIds && title !== null) {
+          for (const id of info.ids) {
+            const levels = id.split('--')
+            const state = registry.stories[id].export
+            if (levels.some((l) => l === '' || l.startsWith('-') || l.endsWith('-'))) add('story-files', file, `${state}: the id ${id} has an empty folder`)
+            else if (levels.length !== parts.length + 1) add('story-files', file, `${state}: the id ${id} splits into ${levels.length} levels instead of ${parts.length + 1}`)
+          }
+        }
+        // A file whose meta cannot be read whole cannot be checked for a key in it.
+        const metaRead = !csf.unreadable.some((u) => u.story === null && u.field === 'meta')
+        const fileMeta = isPlainObject(csf.meta.meta) ? csf.meta.meta : {}
+        for (const [bannerRoot, key] of Object.entries(policy.bannerByRoot)) {
+          if (root === bannerRoot) {
+            if (metaRead && (typeof fileMeta[key] !== 'string' || fileMeta[key].trim() === '')) add('story-banner', file, `it sits under ${bannerRoot}, so its default export needs meta.${key} as a non-empty string`)
+            continue
+          }
+          const stray = [...(key in fileMeta ? ['the default export'] : []), ...csf.stories.map(ladleDropsOf).filter((s) => s.meta && key in s.meta).map((s) => s.export)]
+          if (stray.length > 0) add('story-banner', file, `meta.${key} belongs to ${bannerRoot} stories, and ${stray.join(', ')} sets it${root ? ` under ${root}` : ''}`)
+        }
+      }
+      for (const rule of policy.ownStory) {
+        const byGlob = rule.files.length > 0 ? compileGlobs(rule.files) : null
+        for (const n of nodes) {
+          if (!live(n) || n.noStory !== null) continue
+          if (!rule.tiers.includes(n.tier) && !(byGlob && byGlob(n.file))) continue
+          const own = lane.ownFiles(n.file, n.group)
+          if (own.sibling.size > 0 || (rule.link === 'own' && own.titled.length > 0)) continue
+          const beside = `a story beside it (${n.file.replace(/\.[^./]+$/, '')}.stories.*)`
+          add('story-own', n.file, rule.link === 'own' ? `no story of its own: add ${beside}${n.group ? ` or one titled "${n.group} / ${lane.nameFor(n.file)}"` : ''}` : `no story of its own: add ${beside}`)
+        }
+      }
+    }
+    for (const n of nodes) if (live(n) && n.direct.length === 0 && n.noStory === null) add('no-story', n.file, 'no direct story')
+    const seen = new Set()
+    return out
+      .sort((a, b) => compare(a.rule, b.rule) || compare(a.file, b.file) || compare(a.detail, b.detail))
+      .filter((p) => {
+        const id = `${p.rule}\n${p.file}\n${p.detail}`
+        if (seen.has(id)) return false
+        seen.add(id)
+        return true
+      })
+  }
+
   // stories.lane says how stories are found: "manifest" reads the lane's
-  // list and needs to know where it is; anything else finds them by file name.
+  // list and needs to know where it is, "csf" reads the story files in place
+  // through the registry; anything else finds them by file name.
   const laneMode = config.stories.lane ?? 'native'
   if (laneMode === 'manifest' && !config.stories.manifest) {
     throw new Error('stories.lane is "manifest", so stories.manifest must name the file that lists the stories, such as src/stories/manifest.ts. Set it, or set stories.lane to "native" to find stories by file name.')
   }
   if (laneMode !== 'manifest' && config.stories.manifest) {
-    warnings.push(`stories.manifest is set, but stories.lane is "${laneMode}", so stories are found by file name and the manifest is not read; set stories.lane to "manifest" to read it`)
+    warnings.push(`stories.manifest is set, but stories.lane is "${laneMode}", so ${laneMode === 'csf' ? 'the story files are read in place' : 'stories are found by file name'} and the manifest is not read; set stories.lane to "manifest" to read it`)
   }
-  const lane = laneMode === 'manifest' ? readLane() : null
+  if (!['native', 'manifest', 'csf'].includes(laneMode)) {
+    warnings.push(`stories.lane is "${laneMode}", which is not a lane massimo knows (native, manifest or csf), so stories are found by file name`)
+  }
+  const lane = laneMode === 'manifest' ? readLane() : laneMode === 'csf' ? readCsfLane() : null
 
   // Style harvesting reads the colour names the styleFiles define.
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
@@ -780,7 +1069,9 @@ export function buildGraph(root, config, command = "graph.mjs") {
     }
     const sortedAreas = {}
     for (const area of Object.keys(composedBy).sort(compare)) sortedAreas[area] = composedBy[area]
-    const coverage = lane
+    const coverage = lane?.csf
+      ? lane.coverage(file, group)
+      : lane
       ? { direct: sortedUnique(lane.direct.get(file)), incidental: sortedUnique([...lane.incidental.get(file)].filter((s) => !lane.direct.get(file).has(s))) }
       : {}
     return {
@@ -822,7 +1113,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     .filter((n) => n.stories.length === 0 && n.noStory === null && (notLive.size === 0 || live(n)))
     .map((n) => ({ name: n.name, file: n.file, usage: n.usage }))
     .sort((a, b) => b.usage - a.usage || byName(a.name, b.name))
-  const problems = lane ? laneProblems(lane, nodes, live) : []
+  const problems = lane ? (lane.csf ? csfProblems(lane, nodes, live) : laneProblems(lane, nodes, live)) : []
 
   const tokenNames = sortedUnique(customProps.map((p) => p.name).filter((n) => !n.startsWith('--tw-')))
   const groups = Object.fromEntries(TOKEN_GROUPS.map((g) => [g, []]))
@@ -879,18 +1170,21 @@ function kindCounts(nodes, kinds) {
 }
 
 // The story lane in graph.json: where its manifest is, how many entries and
-// states it holds, the coverage split (direct, incidental only, none), the
-// problems its checks find, each { rule, file, detail } (and `whole` for a
-// manifest that cannot be read at all), and the checks it could not make,
-// as { rule: why } under `notChecked`.
+// states it holds (a csf lane: `lane: "csf"`, its story files and states),
+// the coverage split (direct, incidental only, none), the problems its
+// checks find, each { rule, file, detail } (and `whole` for a manifest that
+// cannot be read at all), and the checks it could not make, as { rule: why }
+// under `notChecked`.
 function laneSummary(lane, nodes, problems) {
   const direct = nodes.filter((n) => n.direct.length > 0).length
   const incidental = nodes.filter((n) => n.direct.length === 0 && n.incidental.length > 0).length
   const unreadable = lane.unreadable.sort((a, b) => compare(a.file, b.file) || compare(a.detail, b.detail))
+  // A csf lane has no manifest: it counts its story files and their states.
+  const where = lane.csf
+    ? { lane: 'csf', files: lane.files.length, states: Object.keys(lane.registry.stories).length }
+    : { manifest: lane.manifest, entries: lane.entries.filter(Boolean).length, states: lane.states }
   return {
-    manifest: lane.manifest,
-    entries: lane.entries.filter(Boolean).length,
-    states: lane.states,
+    ...where,
     direct,
     incidental,
     none: nodes.length - direct - incidental,
@@ -1051,6 +1345,22 @@ function nodesLine(summary, storyLane) {
 // and anything in it that could not be read without running it.
 function renderLane(lane) {
   const out = ['## Story lane', '']
+  if (lane.lane === 'csf') {
+    out.push(`The story files are read in place: ${lane.files} ${lane.files === 1 ? 'file' : 'files'}, with ${lane.states} ${lane.states === 1 ? 'state' : 'states'}. A story covers a node directly when its file imports it or sits beside it, and incidentally when the node is reached through the modules that file imports in turn. A node's own story is the one beside it, or one titled with its group and name.`, '')
+    out.push(`- Direct: ${lane.direct} · seen only inside a parent's story: ${lane.incidental} · none: ${lane.none}.`, '')
+    out.push('The checks: `story-files` (every story file can be read in full and no two states share an id, and with `stories.policy.cleanIds` every id has one folder per title part), `story-title` (with `stories.policy`: the roots, the number of parts, the text of title parts and state names, the name a story beside a node takes, and title prefixes), `story-own` (`stories.policy.ownStory`: a node has a story of its own), `story-banner` (`stories.policy.bannerByRoot`: a root\'s files carry its banner key and no other file does) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, all but the last fail the run; `no-story` is reported and never fails it.', '')
+    if (lane.problems.length === 0) out.push('None of them finds a problem.', '')
+    else {
+      for (const p of lane.problems) out.push(`- ${code(p.rule)} · ${code(p.file)} · ${p.detail}`)
+      out.push('')
+    }
+    if (lane.unreadable?.length > 0) {
+      out.push('Not statically readable, so not checked:', '')
+      for (const u of lane.unreadable) out.push(`- ${code(u.file)}: ${u.detail}`)
+      out.push('')
+    }
+    return out
+  }
   out.push(`${code(lane.manifest)} lists ${lane.entries} ${lane.entries === 1 ? 'story' : 'stories'}, with ${lane.states} ${lane.states === 1 ? 'state' : 'states'} on their pages. A story covers a node directly when its page or frame imports it (itself or through the lane's own helpers) or its entry names it, and covers what that node composes only incidentally.`, '')
   out.push(`- Direct: ${lane.direct} · seen only inside a parent's story: ${lane.incidental} · none: ${lane.none}.`, '')
   out.push('The checks: `story-title` (a title is Root / Group / Name under its root and group, which are its component\'s group), `story-files` (the manifest can be read, every entry has its page, every page and frame an entry, and a frame flag its frame), `story-states` (a states list is the page\'s state labels, in order, and every state there has a label) and `no-story` (every live node has a direct story or a `ds:no-story` line). With `graph.strictFaults`, the first three fail the run; the audit ratchets `no-story`.', '')
