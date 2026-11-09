@@ -280,20 +280,59 @@ test('a leak of several classes counts them in words', () => {
   assert.equal(leak(b).lines[0], "leak: 2 classes only stories use are in the app's CSS: h-77, w-[13.37rem]")
 })
 
+const REVIEW = '  review the list: a class name app code builds at run time is no word in its file, so this check cannot see that the app needs it'
+
 test('leak --before fails when the app\'s CSS lost a class an app file uses', () => {
   const b = builds({ appCss: '.flex { display: flex }\n' })
   write(b.root, { 'build/before/assets/app.css': APP_CSS })
   const r = leak(b, { before: join(b.root, 'build/before') })
   assert.equal(r.ok, false)
-  assert.equal(r.lines.at(-1), "lost: the app's CSS no longer has 1 class an app file uses: p-4 (src/App.tsx)")
-  // A class that no app file uses is a drop worth nothing.
+  assert.deepEqual(r.lines, [
+    "dropped: 1 class the build before had is not in the app's CSS",
+    '  app code uses 1: p-4',
+    "lost: the app's CSS no longer has 1 class an app file uses: p-4 (src/App.tsx)",
+  ])
+  // A class that no app file uses passes, and is still listed for review.
   write(b.root, { 'build/before/assets/app.css': `${APP_CSS}.unused { color: red }\n`, 'build/app/assets/app.css': APP_CSS })
-  const fine = leak(b, { before: join(b.root, 'build/before') })
-  assert.deepEqual(fine, { ok: true, lines: ["ok: the app's CSS lost no class an app file uses"] })
+  assert.deepEqual(leak(b, { before: join(b.root, 'build/before') }), {
+    ok: true,
+    lines: [
+      "dropped: 1 class the build before had is not in the app's CSS",
+      '  no file git keeps names 1: unused',
+      REVIEW,
+      "ok: the app's CSS lost no class an app file uses",
+    ],
+  })
   // --before is a check of its own: the scan by words runs without it, or --probe with it.
-  write(b.root, { 'build/app/assets/app.css': `${APP_CSS}${STORY_CLASS}\n` })
-  assert.deepEqual(leak(b, { before: join(b.root, 'build/before') }), { ok: true, lines: ["ok: the app's CSS lost no class an app file uses"] })
+  write(b.root, { 'build/app/assets/app.css': `${APP_CSS}${STORY_CLASS}\n`, 'build/before/assets/app.css': APP_CSS })
+  assert.deepEqual(leak(b, { before: join(b.root, 'build/before') }), {
+    ok: true,
+    lines: ["dropped: the app's CSS has every class the build before had", "ok: the app's CSS lost no class an app file uses"],
+  })
   assert.equal(leak(b, { before: join(b.root, 'build/before'), probe: 'w-[13.37rem]' }).lines[0], "leak: w-[13.37rem] is in the app's CSS")
+})
+
+test('leak --before lists every class the app\'s CSS dropped, by where its name occurs', () => {
+  const b = builds({ appCss: '.flex { display: flex }\n' })
+  write(b.root, {
+    'build/before/assets/app.css': `${APP_CSS}${STORY_CLASS}\n.h-77 { height: 1px }\n.gap-9 { gap: 1px }\n.btn-x { color: red }\n.gap-3 { gap: 1px }\n`,
+    'src/Tall.stories.tsx': `export default { title: 'Foundations / Tall' }\nexport const Tall = () => <div className="h-77" />\n`,
+    'docs/sizes.md': 'Use `btn-x` for the tall card.\n',
+    // A class name app code builds at run time is a word in no file.
+    'src/Grid.tsx': 'export const Grid = ({ n }: { n: number }) => <div className={`gap-${n}`} />\n',
+  })
+  b.files.push('src/Tall.stories.tsx', 'docs/sizes.md', 'src/Grid.tsx')
+  const r = leak(b, { before: join(b.root, 'build/before') })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.lines, [
+    "dropped: 6 classes the build before had are not in the app's CSS",
+    '  app code uses 1: p-4',
+    '  no file git keeps names 2: gap-3, gap-9',
+    '  only files that are not app code, such as docs, tests and stylesheets, name 1: btn-x',
+    '  only story files and story-only modules name 2: h-77, w-[13.37rem]',
+    REVIEW,
+    "lost: the app's CSS no longer has 1 class an app file uses: p-4 (src/App.tsx)",
+  ])
 })
 
 test('leak refuses a folder git does not ignore, and a path that is not a folder', () => {

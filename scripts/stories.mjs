@@ -17,11 +17,11 @@
 //
 // leak refuses a build folder git does not ignore, so a build never reaches a
 // commit. With --probe the class must be in the lane's CSS and not the app's.
-// --before names an earlier app build: the classes the app's CSS lost since
-// then must not occur in an app file. With neither, every class found only in
-// story files, story-only modules and the lane's scaffold folder, and in no
-// other file git keeps (the app's CSS, docs and tests included), is looked up
-// in the app's CSS.
+// --before names an earlier app build: it lists every class the app's CSS
+// dropped since then, by where its name occurs, and fails when an app file
+// uses one. With neither, every class found only in story files, story-only
+// modules and the lane's scaffold folder, and in no other file git keeps (the
+// app's CSS, docs and tests included), is looked up in the app's CSS.
 //
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
@@ -275,9 +275,23 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     else lines.push('ok: no class only stories use is in the app\'s CSS')
   }
 
+  // Every class the app's CSS dropped since the build before, for a person
+  // to review, grouped by where its name occurs. Only one that app code
+  // uses fails the check.
   let lost = []
   if (before) {
-    lost = [...cssIn(before)].filter((c) => !appClasses.has(c) && appCode.has(c)).sort(compare)
+    const dropped = [...cssIn(before)].filter((c) => !appClasses.has(c)).sort(compare)
+    lost = dropped.filter((c) => appCode.has(c))
+    const groups = [
+      [lost, (n) => `app code uses ${n}`],
+      [dropped.filter((c) => !appText.has(c) && !storyWords.has(c)), (n) => `no file git keeps names ${n}`],
+      [dropped.filter((c) => appText.has(c) && !appCode.has(c)), (n) => `only files that are not app code, such as docs, tests and stylesheets, name ${n}`],
+      [dropped.filter((c) => !appText.has(c) && storyWords.has(c)), (n) => `only story files and story-only modules name ${n}`],
+    ]
+    if (dropped.length === 0) lines.push('dropped: the app\'s CSS has every class the build before had')
+    else lines.push(`dropped: ${plural(dropped.length, 'class', 'classes')} the build before had ${dropped.length === 1 ? 'is' : 'are'} not in the app's CSS`)
+    for (const [list, label] of groups) if (list.length > 0) lines.push(`  ${label(list.length)}: ${list.join(', ')}`)
+    if (dropped.length > lost.length) lines.push('  review the list: a class name app code builds at run time is no word in its file, so this check cannot see that the app needs it')
     if (lost.length > 0) lines.push(`lost: the app's CSS no longer has ${plural(lost.length, 'class', 'classes')} an app file uses: ${lost.slice(0, 20).map((c) => `${c} (${appCode.get(c)})`).join(', ')}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`)
     else lines.push('ok: the app\'s CSS lost no class an app file uses')
   }
