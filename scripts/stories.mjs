@@ -41,6 +41,9 @@ import { laneRegistry } from './lib/lane.mjs'
 import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
 import { createResolver, isStoryFile, isTestFile } from './lib/source.mjs'
 import { laneRepoFiles, typesLine } from './lib/vite-stories.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const LANES = ['native', 'manifest', 'csf']
 const APP_TEXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|html|mdx)$/

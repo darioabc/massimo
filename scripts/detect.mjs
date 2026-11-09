@@ -12,6 +12,9 @@ import { join, relative, sep } from 'node:path'
 import { compare } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson } from './lib/project.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const { flags } = parseArgs()
 const root = flags.root ? flags.root : findRoot()

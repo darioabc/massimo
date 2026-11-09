@@ -112,17 +112,19 @@ test('under export ids, the redirects map the ids Ladle gave, and --ids-from rea
   assert.deepEqual(again.redirects, { 'gone--story': null, 'primitives--actions--button--primary': '/stories/primitives--actions--button/primary' })
 })
 
-test('a design target is proposed, confirmed by config --write, and left out of the patch', () => {
+test('a design target is listed, pinned by convert stories --freeze, and left out of the patch', () => {
   const ctx = fresh()
   const first = convert(ctx)
   assert.match(first.stdout, /1 frozen file \(0 pinned, 1 to confirm\)/)
   assert.match(first.stdout, /Frozen candidates[^\n]*\n {2}src\/explorations\/NewHeader\.stories\.tsx {2}\(exploration\)\n/)
   assert.equal(JSON.parse(readFileSync(work(ctx, 'removal.json'), 'utf8')).edits.filter((e) => e.file === EXPLORATION).length, 1)
-  const proposed = JSON.parse(readFileSync(join(ctx.project, 'adopt', 'config.proposed.json'), 'utf8'))
-  assert.deepEqual(proposed.stories.frozen, [{ file: EXPLORATION, sha256: proposed.stories.frozen[0].sha256, since: '2026-11-09' }])
-  const written = adopt(ctx, ['config', '--write'])
+  assert.match(first.stdout, /convert stories --freeze src\/explorations\/NewHeader\.stories\.tsx\n/)
+  // Listing a candidate pins nothing and proposes nothing.
+  assert.ok(!existsSync(join(ctx.project, 'adopt', 'config.proposed.json')) || !JSON.parse(readFileSync(join(ctx.project, 'adopt', 'config.proposed.json'), 'utf8')).stories?.frozen)
+  const written = convert(ctx, '--freeze', EXPLORATION)
   assert.equal(written.status, 0, written.stderr)
-  assert.equal(JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen[0].file, EXPLORATION)
+  assert.match(written.stdout, new RegExp(`^${EXPLORATION}: pinned [0-9a-f]{64}, since 2026-11-09\\n`))
+  assert.deepEqual(JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen, [{ file: EXPLORATION, sha256: written.stdout.match(/[0-9a-f]{64}/)[0], since: '2026-11-09' }])
   const second = convert(ctx)
   assert.match(second.stdout, /1 frozen file \(1 pinned, 0 to confirm\)/)
   const removal = JSON.parse(readFileSync(work(ctx, 'removal.json'), 'utf8'))
@@ -136,8 +138,7 @@ test('a design target is proposed, confirmed by config --write, and left out of 
 
 test('after the patch is applied, --check passes, and the frozen file is byte for byte as it was', () => {
   const ctx = fresh()
-  convert(ctx)
-  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   convert(ctx)
   const frozenBefore = text(ctx, EXPLORATION)
   const before = convert(ctx, '--check')
@@ -155,8 +156,7 @@ test('after the patch is applied, --check passes, and the frozen file is byte fo
 
 test('removal.patch applies with git apply and leaves the same files as the edits', (t) => {
   const ctx = fresh()
-  convert(ctx)
-  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   convert(ctx)
   if (spawnSync('git', ['--version']).status !== 0) return t.skip('git is not installed')
   const r = spawnSync('git', ['apply', work(ctx, 'removal.patch')], { cwd: ctx.root, encoding: 'utf8' })
@@ -199,8 +199,7 @@ test('an edit outside the type import fails --check and names the export that mo
 test('a frozen file passes while it matches, fails when it changes, passes when it is gone, and --refreeze pins it again', () => {
   const ctx = fresh()
   convert(ctx)
-  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
-  convert(ctx)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   const pinned = () => JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen[0]
   const first = pinned().sha256
   const body = text(ctx, EXPLORATION)
@@ -431,7 +430,7 @@ function ladleRepo() {
   return ctx
 }
 
-test("config --lane csf proposes the csf lane from Ladle's own settings and the frozen design targets", () => {
+test("config --lane csf proposes the csf lane from Ladle's own settings and no frozen files", () => {
   const ctx = ladleRepo()
   assert.equal(adopt(ctx, ['scan']).status, 0)
   const inventory = JSON.parse(readFileSync(join(ctx.project, 'adopt', 'inventory.json'), 'utf8'))
@@ -452,7 +451,7 @@ test("config --lane csf proposes the csf lane from Ladle's own settings and the 
   const written = JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8'))
   assert.equal(written.minScripts, '0.4.0')
   assert.deepEqual(
-    { ...written.stories, include: undefined, frozen: written.stories.frozen.map((f) => f.file) },
+    { ...written.stories, include: undefined, frozen: written.stories.frozen },
     {
       lane: 'csf',
       ids: 'ladle',
@@ -463,7 +462,7 @@ test("config --lane csf proposes the csf lane from Ladle's own settings and the 
       port: 6101,
       url: 'http://localhost:6101/stories',
       storyUrl: 'http://localhost:6101/stories/{slug}/{state}',
-      frozen: [EXPLORATION],
+      frozen: undefined,
     },
   )
   assert.ok(written.stories.include.includes('src/**/*.stories.{tsx,ts}'))
@@ -499,6 +498,7 @@ test('plan converts the Ladle tool once the lane is csf, and keeps it before; co
   assert.match(stories().assets[0].lines.join('\n'), /stay where they are, read in place by the csf lane/)
   assert.equal(stories().converted, undefined)
   const edits = join(ctx.project, 'adopt', 'stories', 'edits.md')
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   const r = convert(ctx)
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 1 })
@@ -537,8 +537,7 @@ test('config --write adds a missing minScripts when the stories keys need 0.4.0'
 
 test('--refreeze raises a minScripts older than the csf lane', () => {
   const ctx = fresh()
-  convert(ctx)
-  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   const path = join(ctx.root, 'massimo.config.json')
   const raw = JSON.parse(readFileSync(path, 'utf8'))
   writeFileSync(path, JSON.stringify({ ...raw, minScripts: '0.3.0' }, null, 2))
@@ -585,23 +584,21 @@ test('a newer ledger or removal file is refused before anything is written', () 
   }
 })
 
-test('config --write adds new frozen candidates to the files already pinned', () => {
+test('--freeze adds a candidate to the files already pinned', () => {
   const ctx = fresh()
-  convert(ctx)
-  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   const second = 'src/explorations/Second.stories.tsx'
   put(ctx, second, "export default { title: 'Explorations / Second', meta: { exploration: 'Kept.' } }\nexport const One = () => null\n")
   const c = convert(ctx)
   assert.match(c.stdout, /1 to confirm/)
-  const r = adopt(ctx, ['config', '--write'])
+  const r = convert(ctx, '--freeze', second)
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen.map((f) => f.file), [EXPLORATION, second])
 })
 
 test('convert runs again after the patch is applied: no hand pass, no second ambient file', () => {
   const ctx = fresh()
-  convert(ctx)
-  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
   convert(ctx)
   applyRemoval(ctx)
   const r = convert(ctx)
@@ -612,12 +609,78 @@ test('convert runs again after the patch is applied: no hand pass, no second amb
   assert.equal(convert(ctx, '--check').status, 0)
 })
 
-test('a bare --refreeze or --types is a usage error and writes nothing', () => {
+test('a bare --freeze, --refreeze or --types is a usage error and writes nothing', () => {
   const ctx = fresh()
-  for (const flag of ['--refreeze', '--types']) {
+  for (const flag of ['--freeze', '--refreeze', '--types']) {
     const r = adopt(ctx, ['convert', 'stories', flag])
     assert.equal(r.status, 1, flag)
     assert.match(r.stderr, /usage: adopt\.mjs convert stories/, flag)
   }
   assert.ok(!existsSync(work(ctx, 'records')))
+})
+
+test('--freeze pins a candidate and nothing else: a declined one stays unpinned through config --write', () => {
+  const ctx = ladleRepo()
+  const second = 'src/explorations/Second.stories.tsx'
+  put(ctx, second, "export default { title: 'Explorations / Second', meta: { exploration: 'Kept.' } }\nexport const One = () => null\n")
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  assert.equal(adopt(ctx, ['config', '--write', '--lane', 'csf']).status, 0)
+  assert.equal(JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen, undefined)
+  const listed = convert(ctx)
+  assert.match(listed.stdout, /2 frozen files \(0 pinned, 2 to confirm\)/)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
+  // The second candidate is declined: another config --write must not pin it.
+  assert.equal(adopt(ctx, ['config', '--write', '--lane', 'csf']).status, 0)
+  assert.equal(adopt(ctx, ['plan']).status, 0)
+  assert.equal(adopt(ctx, ['config', '--write']).status, 0)
+  assert.deepEqual(JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8')).stories.frozen.map((f) => f.file), [EXPLORATION])
+  assert.match(convert(ctx).stdout, /2 frozen files \(1 pinned, 1 to confirm\)/)
+})
+
+test('--freeze refuses a file that is not a story file, a pinned one and a config with comments', () => {
+  const ctx = fresh()
+  put(ctx, 'src/notes.ts', 'export const a = 1\n')
+  const notStory = convert(ctx, '--freeze', 'src/notes.ts')
+  assert.equal(notStory.status, 1)
+  assert.match(notStory.stderr, /src\/notes\.ts is not a story file of the lane/)
+  assert.equal(convert(ctx, '--freeze', 'src/Gone.stories.tsx').status, 1)
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
+  const again = convert(ctx, '--freeze', EXPLORATION)
+  assert.equal(again.status, 1)
+  assert.match(again.stderr, /already in stories\.frozen.*--refreeze/)
+  const path = join(ctx.root, 'massimo.config.json')
+  const kept = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, `// mine\n${JSON.stringify({ ...kept, stories: { ...kept.stories, frozen: [] } }, null, 2)}\n`)
+  const before = readFileSync(path, 'utf8')
+  const commented = convert(ctx, '--freeze', EXPLORATION)
+  assert.equal(commented.status, 1)
+  assert.match(commented.stderr, /has comments.*add \{ "file": "src\/explorations\/NewHeader\.stories\.tsx"/)
+  assert.equal(readFileSync(path, 'utf8'), before)
+})
+
+test('--freeze raises a minScripts older than the csf lane', () => {
+  const ctx = fresh()
+  const path = join(ctx.root, 'massimo.config.json')
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), minScripts: '0.3.0' }, null, 2))
+  assert.equal(convert(ctx, '--freeze', EXPLORATION).status, 0)
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).minScripts, '0.4.0')
+})
+
+test('the printed --freeze command quotes a path a shell would read differently', () => {
+  const ctx = fresh()
+  const odd = 'src/explorations/(wip)/Third.stories.tsx'
+  put(ctx, odd, "export default { title: 'Explorations / Third', meta: { exploration: 'Odd path.' } }\nexport const One = () => null\n")
+  const listed = convert(ctx)
+  assert.equal(listed.status, 0, listed.stderr)
+  assert.match(listed.stdout, /convert stories --freeze 'src\/explorations\/\(wip\)\/Third\.stories\.tsx'\n/)
+  assert.match(listed.stdout, /convert stories --freeze src\/explorations\/NewHeader\.stories\.tsx\n/)
+  assert.equal(convert(ctx, '--freeze', odd).status, 0)
+})
+
+test('convert stories does not read adopt/config.proposed.json, so a newer one does not stop it', () => {
+  const ctx = fresh()
+  mkdirSync(join(ctx.project, 'adopt'), { recursive: true })
+  writeFileSync(join(ctx.project, 'adopt', 'config.proposed.json'), JSON.stringify({ version: 2 }))
+  const r = convert(ctx)
+  assert.equal(r.status, 0, r.stderr)
 })

@@ -38,6 +38,9 @@ import { readTokenSource } from './lib/dtcg.mjs'
 import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
 import { closeBracket, componentsOf, listFaults, readCsf, readManifest, readStoryStates, slugFiles, slugPath, stateName } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const COLOR_UTILITIES = 'bg|text|border|ring|outline|fill|stroke|from|via|to|divide|placeholder|caret|accent|decoration|shadow'
 const STORY_EXTS = /\.(?:tsx?|jsx?|mjs|vue|svelte|astro|mdx?)$/
