@@ -1008,11 +1008,16 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   const libraries = classLibraries(config)
   const hasTailwind = styling.some((s) => /^tailwind/.test(s))
   // Set to true in audit.kinds, the palette kind also counts the colours a
-  // Tailwind config defines as the repo's own, and runs on those alone.
+  // Tailwind config defines as the repo's own, and runs on those alone. The
+  // config then also decides what a token name means: a token that never
+  // reaches Tailwind (no Tailwind output, nor a config that names it) leaves
+  // `text-red-600` Tailwind's own red, however the token is called.
   const theme = turnedOn('tailwind-palette') || config.tokens?.breakpoints ? tailwindTheme(root, config.tokens?.tailwindConfig) : null
+  const buildsTailwind = (config.tokens?.outputs ?? []).some((o) => /^tailwind/.test(o?.format))
+  const tokenNamesAreTailwind = !turnedOn('tailwind-palette') || !theme || buildsTailwind
   const ownColors = new Set([
     ...customProps.map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
-    ...dtcgTokens.filter((t) => t.path[0] === 'color').map((t) => t.path.slice(1).join('-')),
+    ...(tokenNamesAreTailwind ? dtcgTokens.filter((t) => t.path[0] === 'color').map((t) => t.path.slice(1).join('-')) : []),
     ...(turnedOn('tailwind-palette') ? tailwindColorNames(theme) : []),
   ])
   const palette = hasTailwind && ownColors.size > 0

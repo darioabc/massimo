@@ -144,6 +144,26 @@ test('every setting at once: what counts, what is exempt, what is off', () => {
   assert.match(md, /- breakpoint: 5 \(1 exempt by audit\.exempt\)\n/)
 })
 
+test('with the palette kind on, a token named like a Tailwind colour makes the class the repo\'s own only once it reaches Tailwind', () => {
+  const ctx = fresh()
+  writeFileSync(join(ctx.root, 'src', 'components', 'Alert.astro'), '---\n// ds:group Primitives / Actions\n---\n\n<p class="text-red-600">!</p>\n')
+  writeFileSync(join(ctx.root, 'src', 'styles', 'red.tokens.json'), JSON.stringify({ color: { red: { 600: { $type: 'color', $value: '#ba1712' } } } }))
+  patch(ctx, (c) => (c.tokens.source = 'src/styles/red.tokens.json'))
+  // The token is called red-600, but nothing feeds it to Tailwind: the class
+  // is Tailwind's own red.
+  assert.ok(keys(audit(ctx), 'tailwind-palette').includes('src/components/Alert.astro: text-red-600'))
+  // Built into a Tailwind output, the token is what the class reads.
+  patch(ctx, (c) => (c.tokens.outputs = [{ format: 'tailwind3', path: 'tailwind.tokens.cjs' }]))
+  assert.ok(!keys(audit(ctx), 'tailwind-palette').includes('src/components/Alert.astro: text-red-600'))
+  // Without the palette kind turned on, a token's name keeps the class the
+  // repo's own, as before 0.3.0.
+  patch(ctx, (c) => {
+    c.tokens.outputs = []
+    delete c.audit.kinds['tailwind-palette']
+  })
+  assert.ok(!keys(audit(ctx), 'tailwind-palette').includes('src/components/Alert.astro: text-red-600'))
+})
+
 test('a header definition is local to its file, and the scale replaces Tailwind screens in config order', () => {
   const ctx = fresh()
   writeFileSync(join(ctx.root, 'src', 'components', 'Other.astro'), '---\n// ds:group Primitives / Actions\n---\n<div style="gap: var(--card-gap)" class="sm:flex" />\n')
