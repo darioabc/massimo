@@ -1137,8 +1137,11 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   const census = headerCensus(root, files, config, text, { tierOrder, tierSource: index?.path ?? null })
   const headers = { ...census, readers: headerReaders(files, text, config, census.keys.map((k) => k.key)) }
   for (const r of own.ratchets) Object.assign(r, proposedMap(r.rules, auditKinds))
-  // The style files the config names, or detect's suggestion before there is one.
-  const styleFiles = (config.tokens?.styleFiles?.length ? config.tokens.styleFiles : detected?.suggestedConfig?.tokens?.styleFiles ?? []).filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)
+  // The style files the config names and those detect finds, so a config
+  // that later names fewer leaves the inventory, and the ledger, as they were.
+  const styleFiles = [...new Set([...(config.tokens?.styleFiles ?? []), ...(detected?.suggestedConfig?.tokens?.styleFiles ?? [])])]
+    .filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)
+    .sort(compare)
   const toolRecords = storyTools(tools, files, pkg, records)
   const assets = assetList({ lane, tools: toolRecords, own, styleFiles })
   const consumers = consumerIndex(root, files, assets, { pkg, config, text })

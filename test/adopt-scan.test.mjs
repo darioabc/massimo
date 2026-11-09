@@ -161,6 +161,19 @@ test('what a consumer is not: the lane inside itself, the writer of its own outp
   }
 })
 
+test('a config naming other style files keeps the ones scan found before it', () => {
+  const t = scratch('legacy')
+  try {
+    writeFileSync(join(t.root, 'src', 'styles', 'card.css'), '.card { --card-gap: 8px; gap: var(--card-gap); }\n')
+    writeFileSync(join(t.root, 'massimo.config.json'), JSON.stringify({ projectDir: 'ds', tokens: { styleFiles: ['src/styles/card.css'] } }))
+    const r = adopt(t.root, ['scan'])
+    assert.equal(r.status, 0, r.stderr)
+    assert.deepEqual(readJson(t.root, 'ds', 'adopt', 'inventory.json').own.styleFiles, ['src/styles/card.css', 'src/styles/theme.css'])
+  } finally {
+    t.cleanup()
+  }
+})
+
 test('after init it writes its inventory, the same bytes every run, and nothing else', () => {
   const project = join(ctx.root, 'ds')
   writeFileSync(join(ctx.root, 'massimo.config.json'), JSON.stringify({ projectDir: 'ds', components: { include: ['src/components/**/*.{astro,tsx}'] }, tokens: { styleFiles: ['src/styles/theme.css'] } }))
