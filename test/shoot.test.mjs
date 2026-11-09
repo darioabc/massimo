@@ -464,12 +464,12 @@ test('--pairs on two images prints a line per pair and a summary, and exits 0 wh
   assert.deepEqual(r.lines[1], { summary: true, pairs: 1, passed: 1, failed: 0, maxDiff: 0, ok: true })
 })
 
-test('--pairs --workers runs pairs side by side and prints them in the order given', () => {
+test('--pairs --workers runs pairs side by side and prints them in the order given, and one at a time by default', () => {
   const pairs = [
     { name: 'slow-one', a: 'http://x.test/slow/a', b: 'http://x.test/slow/b', mode: 'dom' },
     { name: 'fast-two', a: 'http://x.test/fast/a', b: 'http://x.test/fast/b', mode: 'dom' },
   ]
-  const run = (workers) => pairsRun(pairs, ['--workers', workers], { FAKE_SLOW: '/slow/' })
+  const run = (workers) => pairsRun(pairs, workers === null ? [] : ['--workers', workers], { FAKE_SLOW: '/slow/' })
   const many = run('2')
   assert.equal(many.status, 0, many.stderr)
   assert.deepEqual(many.lines.slice(0, 2).map((l) => l.name), ['slow-one', 'fast-two'])
@@ -480,6 +480,9 @@ test('--pairs --workers runs pairs side by side and prints them in the order giv
   const one = run('1')
   assert.deepEqual(one.lines.slice(0, 2).map((l) => l.name), ['slow-one', 'fast-two'])
   assert.ok(names(one).indexOf('goto fast') > names(one).indexOf('gotoEnd'), names(one).join())
+  // without --workers the pairs run one at a time, as before
+  const plain = run(null)
+  assert.ok(names(plain).indexOf('goto fast') > names(plain).indexOf('gotoEnd'), names(plain).join())
   assert.equal(run('0').status, 2)
 })
 

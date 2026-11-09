@@ -7,7 +7,7 @@
 //   shoot.mjs --url <url> --out <file.png> [--width 1280] [--height 800] [--full] [--scheme light|dark] [--wait 300] [--selector <css>] [--dom <file.txt>]
 //   shoot.mjs --batch <shots.json>      (array of { url, out, width, height, full, scheme, wait, selector, dom })
 //   shoot.mjs --diff <a.png> <b.png> --out <diff.png> [--threshold 0.05]
-//   shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 4]
+//   shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 1]
 //   shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>]
 //             [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--wait 500]
 //
@@ -59,7 +59,7 @@
 // but only if that baseline reached 98% ready; below that nothing is excused. --workers is
 // how many states load at once. Exit 1 when a state failed and was not excused.
 //
-// --pairs also takes --workers: how many pairs run at once (default 4), printed in file order.
+// --pairs also takes --workers: how many pairs run at once (default 1), printed in file order.
 //
 // Exit codes:
 //   0  every pair is within --max-diff, or the shots and diff were made
@@ -393,7 +393,7 @@ async function runPair(browser, pair, { out, threshold, maxDiff }) {
 // A pairs file that cannot be run stops here, before a browser starts, with exit
 // 2 so CI can tell a broken file from a pair over the limit.
 function readPairs() {
-  if (typeof flags.pairs !== 'string' || typeof flags.out !== 'string') fail('usage: shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 4]', 2)
+  if (typeof flags.pairs !== 'string' || typeof flags.out !== 'string') fail('usage: shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 1]', 2)
   const file = resolve(flags.pairs)
   if (!existsSync(file)) fail(`no such pairs file: ${flags.pairs}`, 2)
   let doc
@@ -411,7 +411,7 @@ function readPairs() {
   if (!(maxDiff >= 0 && maxDiff <= 100)) fail('--max-diff is a percentage from 0 to 100', 2)
   const threshold = flagNumber(flags.threshold, 0.05)
   if (!(threshold >= 0 && threshold < 1)) fail('--threshold is a fraction from 0 up to, but not including, 1 (default 0.05); --max-diff is the percentage', 2)
-  const workers = flagNumber(flags.workers, 4)
+  const workers = flagNumber(flags.workers, 1)
   if (!Number.isInteger(workers) || workers < 1 || workers > 32) fail('--workers is a whole number from 1 to 32', 2)
   return { pairs, out: resolve(flags.out), maxDiff, threshold, workers }
 }
