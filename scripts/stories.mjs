@@ -21,7 +21,11 @@
 // dropped since then, by where its name occurs, and fails when an app file
 // uses one. With neither, every class found only in story files, story-only
 // modules and the lane's scaffold folder, and in no other file git keeps (the
-// app's CSS, docs and tests included), is looked up in the app's CSS.
+// app's CSS, docs and tests included), is looked up in the app's CSS. An app
+// build has a class only by a rule of the class's own, never by a selector
+// that names it under or beside another class, as a package's sheet or a
+// component library writes one, unless the class's variant names that class,
+// as `group-hover:flex` names `.group`.
 //
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
@@ -31,7 +35,7 @@ import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildGraph } from './graph.mjs'
 import { compare, compileGlobs, walk } from './lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, sourceWords, storyOnly } from './lib/lane-css.mjs'
+import { cssClasses, cssLayoutProblems, ownClasses, sourceWords, storyOnly } from './lib/lane-css.mjs'
 import { frozenProblems } from './lib/convert.mjs'
 import { laneRegistry } from './lib/lane.mjs'
 import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
@@ -171,9 +175,12 @@ const line = (p) => `  [${p.rule}] ${p.file ? `${p.file}: ` : ''}${p.detail}`
 
 // ── leak ─────────────────────────────────────────────────────────────────────
 
-function cssIn(dir) {
-  const files = walk(dir).filter((f) => f.endsWith('.css'))
-  return cssClasses(files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n'))
+// The classes a build's stylesheets name, or with `read` set to ownClasses,
+// hold as rules of their own.
+function cssIn(dir, read = cssClasses) {
+  const out = new Set()
+  for (const f of walk(dir)) if (f.endsWith('.css')) for (const c of read(readFileSync(join(dir, f), 'utf8'))) out.add(c)
+  return out
 }
 
 // The edit that keeps story-only files out of the app's CSS while the lane
@@ -224,7 +231,11 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
       return { ok: false, lines: [`${flag} ${shown} is ${ignored === false ? 'not ignored by git' : 'not a folder git can check'}, so a build could reach a commit; add it to .gitignore and run the check again`] }
     }
   }
-  const appClasses = cssIn(app)
+  // An app build holds a class only by a rule of the class's own: a
+  // package's sheet that scopes a utility under its own class, or a
+  // component library's compound, neither leaks a story's class into the
+  // app nor keeps a class whose own rule the app's CSS dropped.
+  const appClasses = cssIn(app, ownClasses)
   const laneClasses = cssIn(lane)
 
   const include = compileGlobs(config.stories.include)
@@ -270,7 +281,8 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     lines.push(leaked.length > 0 ? `leak: ${probe} is in the app's CSS` : `ok: ${probe} is in the lane's CSS and not the app's`)
   } else if (!before) {
     // A scan by words: a class a package's stylesheet or a CSS plugin gives the
-    // app, under a name only stories use, shows here too; --probe settles one.
+    // app a rule of its own for, under a name only stories use, shows here
+    // too; --probe settles one.
     leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
     if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class', 'classes')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
     else lines.push('ok: no class only stories use is in the app\'s CSS')
@@ -281,7 +293,7 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   // uses fails the check.
   let lost = []
   if (before) {
-    const dropped = [...cssIn(before)].filter((c) => !appClasses.has(c)).sort(compare)
+    const dropped = [...cssIn(before, ownClasses)].filter((c) => !appClasses.has(c)).sort(compare)
     lost = dropped.filter((c) => appCode.has(c))
     const groups = [
       [lost, (n) => `app code uses ${n}`],

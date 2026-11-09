@@ -288,6 +288,41 @@ test('a leak of several classes counts them in words', () => {
   assert.equal(leak(b).lines[0], "leak: 2 classes only stories use are in the app's CSS: h-77, w-[13.37rem]")
 })
 
+// A package's prebuilt sheet with every utility under the package's own
+// class, and a component library's compound, as an app build carries them.
+const PACKAGE = '.widget .mt-10{margin-top:2.5rem}.widget .w-24{width:6rem}.widget{display:block}\n'
+const COMPOUND = ':is(.tooltip.tooltip-open,.tooltip:hover)>.tooltip-content{opacity:1}.tooltip{position:relative}\n'
+
+test('a class the app\'s CSS names only under a package\'s class or in a component\'s compound is no leak', () => {
+  const b = builds({ appCss: `${APP_CSS}${PACKAGE}${COMPOUND}`, laneCss: `${APP_CSS}.mt-10{margin-top:2.5rem}.w-24{width:6rem}\n${PACKAGE}${COMPOUND}` })
+  write(b.root, {
+    'src/Tip.stories.tsx': `export default { title: 'Foundations / Tip' }\nexport const Open = () => <div className="tooltip tooltip-open mt-10 w-24" />\n`,
+    'src/Hint.tsx': `export const Hint = () => <span className="tooltip" />\n`,
+  })
+  b.files.push('src/Tip.stories.tsx', 'src/Hint.tsx')
+  assert.deepEqual(leak(b), { ok: true, lines: ["ok: no class only stories use is in the app's CSS"] })
+  assert.deepEqual(leak(b, { probe: 'w-24' }), { ok: true, lines: ["ok: w-24 is in the lane's CSS and not the app's"] })
+  // A rule of the app's own still leaks, inside @layer and @media too.
+  write(b.root, { 'build/app/assets/more.css': '@layer utilities{@media (min-width:40rem){.w-24{width:6rem}}}\n' })
+  assert.equal(leak(b).lines[0], "leak: 1 class only stories use is in the app's CSS: w-24")
+  assert.equal(leak(b, { probe: 'w-24' }).lines[0], "leak: w-24 is in the app's CSS")
+})
+
+test('a class with a variant the app\'s CSS names only under a package\'s class is no leak, and --before lists it as dropped', () => {
+  const HOVER = String.raw`.hover\:opacity-90:hover{opacity:.9}`
+  const b = builds({ appCss: `${APP_CSS}.widget ${HOVER}.widget{display:block}\n`, laneCss: `${APP_CSS}${HOVER}\n` })
+  write(b.root, { 'src/Fade.stories.tsx': `export default { title: 'Foundations / Fade' }\nexport const Hover = () => <div className="hover:opacity-90" />\n` })
+  b.files.push('src/Fade.stories.tsx')
+  assert.deepEqual(leak(b), { ok: true, lines: ["ok: no class only stories use is in the app's CSS"] })
+  assert.deepEqual(leak(b, { probe: 'hover:opacity-90' }), { ok: true, lines: ["ok: hover:opacity-90 is in the lane's CSS and not the app's"] })
+  write(b.root, { 'build/before/assets/app.css': `${APP_CSS}${HOVER}\n`, 'src/Fade.tsx': `export const Fade = () => <a className="hover:opacity-90" />\n` })
+  b.files.push('src/Fade.tsx')
+  assert.deepEqual(leak(b, { before: join(b.root, 'build/before') }), {
+    ok: false,
+    lines: ["dropped: 1 class the build before had is not in the app's CSS", '  app code uses 1: hover:opacity-90', "lost: the app's CSS no longer has 1 class an app file uses: hover:opacity-90 (src/Fade.tsx)"],
+  })
+})
+
 const REVIEW = '  review the list: a class name app code builds at run time is no word in its file, so this check cannot see that the app needs it'
 
 test('leak --before fails when the app\'s CSS lost a class an app file uses', () => {
@@ -341,6 +376,43 @@ test('leak --before lists every class the app\'s CSS dropped, by where its name 
     REVIEW,
     "lost: the app's CSS no longer has 1 class an app file uses: p-4 (src/App.tsx)",
   ])
+})
+
+test('leak --before finds a class whose square brackets hold a quote, an = or a > in the file that names it', () => {
+  const b = builds()
+  write(b.root, {
+    'build/before/assets/app.css': [
+      APP_CSS,
+      String.raw`.\[\&\>div\]\:static>div{position:static}.data-\[state\=open\]\:block[data-state=open]{display:block}`,
+      String.raw`.has-\[\[data-open\=true\]\]\:flex:has([data-open=true]){display:flex}.before\:content-\[\'\'\]:before{content:var(--tw-content);--tw-content:""}`,
+    ].join('\n'),
+    'src/Sticky.stories.tsx': `export default { title: 'Foundations / Sticky' }\nexport const Bar = () => <div className="[&>div]:static data-[state=open]:block" />\n`,
+    'src/Panel.tsx': `export const Panel = () => <div className={\`has-[[data-open=true]]:flex before:content-['']\`} />\n`,
+  })
+  b.files.push('src/Sticky.stories.tsx', 'src/Panel.tsx')
+  const r = leak(b, { before: join(b.root, 'build/before') })
+  assert.equal(r.ok, false)
+  assert.deepEqual(r.lines, [
+    "dropped: 4 classes the build before had are not in the app's CSS",
+    "  app code uses 2: before:content-[''], has-[[data-open=true]]:flex",
+    '  only story files and story-only modules name 2: [&>div]:static, data-[state=open]:block',
+    REVIEW,
+    "lost: the app's CSS no longer has 2 classes an app file uses: before:content-[''] (src/Panel.tsx), has-[[data-open=true]]:flex (src/Panel.tsx)",
+  ])
+})
+
+test('leak --before lists a class whose own rule the app\'s CSS lost, though another sheet still names it', () => {
+  const b = builds({ appCss: `${APP_CSS}${PACKAGE}${COMPOUND}` })
+  write(b.root, {
+    'build/before/assets/app.css': `${APP_CSS}.mt-10{margin-top:2.5rem}\n`,
+    'build/before/assets/widget.css': `${PACKAGE}${COMPOUND}`,
+    'src/Spaced.tsx': `export const Spaced = () => <section className="mt-10 tooltip tooltip-open" />\n`,
+  })
+  b.files.push('src/Spaced.tsx')
+  assert.deepEqual(leak(b, { before: join(b.root, 'build/before') }), {
+    ok: false,
+    lines: ["dropped: 1 class the build before had is not in the app's CSS", '  app code uses 1: mt-10', "lost: the app's CSS no longer has 1 class an app file uses: mt-10 (src/Spaced.tsx)"],
+  })
 })
 
 test('leak refuses a folder git does not ignore, and a path that is not a folder', () => {

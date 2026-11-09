@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { walk } from '../scripts/lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
+import { cssClasses, cssLayoutProblems, ownClasses, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
 import { DEFAULTS, deepMerge } from '../scripts/lib/project.mjs'
 import { scratch } from './helpers.mjs'
 
@@ -243,7 +243,106 @@ test('cssClasses reads class selectors, unescaped, and nothing from values, urls
   assert.deepEqual([...cssClasses(css)].sort(), ['2xl:p-2', 'a', 'btn', 'btn-lg', 'icon', 'inner', 'md:p-4', 'nested', 'sm:flex', 'w-[13.37rem]'])
 })
 
+test('cssClasses reads a bracket that never closes before escaped class names in time that grows with its length', () => {
+  // A Sass comment is not blanked, so the bracket in it reaches the selector.
+  const css = `// see [docs\n.icon-${'\\31 0'.repeat(14)}{color:red}`
+  const start = Date.now()
+  assert.deepEqual([...cssClasses(css)], [`icon-${'10'.repeat(14)}`])
+  assert.ok(Date.now() - start < 500, `${Date.now() - start} ms`)
+})
+
 test('sourceWords splits on whitespace, quotes and JSX punctuation but keeps utility syntax', () => {
   const words = sourceWords(`<div className={\`w-[13.37rem] \${on ? 'p-4' : "md:flex"}\`} data-x="a b" />`)
   for (const w of ['w-[13.37rem]', 'p-4', 'md:flex', 'a', 'b']) assert.ok(words.has(w), w)
+})
+
+test('sourceWords finds a class whose square brackets hold a quote, an = or a >, and makes no class of code', () => {
+  const words = sourceWords(
+    [
+      '<div className="[&>div]:static data-[state=open]:block hover:[mask-type:luminance]" />',
+      `const tip = cn('has-[[data-open=true]]:flex', \`before:content-[''] \${wide ? 'w-[13.37rem]' : ''}\`)`,
+      `const v = rows['key'] ?? items[i>0 ? 1 : 0]; const f = (a: Array<string[]>) => a[0] === "x" ? [a=b] : c`,
+    ].join('\n'),
+  )
+  for (const w of ['[&>div]:static', 'data-[state=open]:block', 'hover:[mask-type:luminance]', 'has-[[data-open=true]]:flex', "before:content-['']", 'w-[13.37rem]']) assert.ok(words.has(w), w)
+  for (const w of ["rows['key']", "['key']", 'items[i>0', 'string[]>', '[a=b]']) assert.ok(!words.has(w), w)
+})
+
+// Tailwind 4's own output, minified, as a build writes it.
+const UTILITIES = [
+  String.raw`/*! tailwindcss v4 | MIT License */@layer theme{:root,:host{--spacing:.25rem}}`,
+  String.raw`@layer utilities{.mt-10{margin-top:calc(var(--spacing) * 10)}.w-\[13\.37rem\]{width:13.37rem}.sr-only::before{content:""}`,
+  String.raw`:where(.space-x-4>:not(:last-child)){margin-inline-start:calc(var(--spacing) * 4)}`,
+  String.raw`@media (min-width:40rem){.sm\:flex{display:flex}}@media (hover:hover){.hover\:bg-red-500:hover{background-color:red}}`,
+  String.raw`@supports (color:color-mix(in lab,red,red)){.bg-red-500\/50{background-color:color-mix(in oklab,red 50%,transparent)}}`,
+  String.raw`@container (min-width:24rem){.\@sm\:p-2{padding:.5rem}}`,
+  String.raw`.group-hover\:flex:is(:where(.group):hover *){display:flex}.dark\:p-4:where(.dark,.dark *){padding:1rem}`,
+  String.raw`.\[\&\>div\]\:static>div{position:static}.\[\&_svg\]\:size-4 svg{width:1rem}`,
+  String.raw`.before\:content-\[\'\'\]:before{content:var(--tw-content);--tw-content:""}`,
+  String.raw`.data-\[state\=open\]\:block[data-state=open]{display:block}.has-\[\[data-open\=true\]\]\:flex:has([data-open=true]){display:flex}}`,
+].join('')
+
+test('ownClasses holds a class by a rule of its own, inside @media, @supports, @layer and @container too', () => {
+  assert.deepEqual([...ownClasses(UTILITIES)].sort(), [
+    '@sm:p-2',
+    '[&>div]:static',
+    '[&_svg]:size-4',
+    "before:content-['']",
+    'bg-red-500/50',
+    'dark:p-4',
+    'data-[state=open]:block',
+    'group-hover:flex',
+    'has-[[data-open=true]]:flex',
+    'hover:bg-red-500',
+    'mt-10',
+    'sm:flex',
+    'space-x-4',
+    'sr-only',
+    'w-[13.37rem]',
+  ])
+  // The loose read names the marker classes the variants sit under as well.
+  assert.ok(cssClasses(UTILITIES).has('group') && cssClasses(UTILITIES).has('dark'))
+  assert.ok(cssClasses(UTILITIES).has("before:content-['']"))
+})
+
+test('ownClasses leaves out a class a package scopes under its own, a component compound and other wrappers', () => {
+  const css = [
+    // A package's prebuilt sheet, every utility under the package's class.
+    '.widget .mt-10{margin-top:2.5rem}.widget .p-10,.widget .w-24{padding:2.5rem}.widget{display:block}',
+    // A component library's compound and its child rule.
+    ':is(.tooltip.tooltip-open,.tooltip:hover)>.tooltip-content{opacity:1}.tooltip{position:relative}',
+    '.btn:not(.btn-ghost){border-width:1px}.btn:hover{opacity:.9}',
+    // Scoped by an element, an id, an attribute or @scope, or a keyframe step.
+    'body .h-77{height:1px}#root .h-78{height:1px}[dir=rtl] .h-79{height:1px}@scope (.join){.join-item{border-radius:0}}',
+    '@keyframes spin{from{rotate:0}50.5%{rotate:180deg}to{rotate:360deg}}',
+    // Nested rules: the parent holds its class, and a child under it does not.
+    '.card{padding:1rem;&:hover{opacity:.9}.title{font-weight:600}&.card-wide{width:100%}}',
+  ].join('\n')
+  assert.deepEqual([...ownClasses(css)].sort(), ['btn', 'card', 'tooltip', 'widget'])
+  assert.deepEqual([...cssClasses(css)].sort(), ['btn', 'btn-ghost', 'card', 'card-wide', 'h-77', 'h-78', 'h-79', 'join-item', 'mt-10', 'p-10', 'title', 'tooltip', 'tooltip-content', 'tooltip-open', 'w-24', 'widget'])
+})
+
+test('ownClasses holds a class with a variant beside the classes its variant names, and not under a package\'s class', () => {
+  const css = [
+    // Tailwind 3 puts the classes a variant names around the class.
+    String.raw`.group:hover .group-hover\:flex{display:flex}.group\/item:hover .group-hover\/item\:block{display:block}`,
+    String.raw`.peer:checked~.peer-checked\:hidden{display:none}:is(.dark .dark\:bg-black){background:#000}`,
+    String.raw`.group.is-open .group-\[\.is-open\]\:grid{display:grid}.theme-x .\[\.theme-x_\&\]\:p-4{padding:1rem}`,
+    String.raw`@starting-style{.starting\:opacity-0{opacity:0}}`,
+    // A package's sheet scopes its variants under its own class, flat or nested.
+    String.raw`.widget .hover\:opacity-90:hover{opacity:.9}@media (min-width:22.5rem){.widget .min-\[360px\]\:block{display:block}}`,
+    String.raw`.widget{display:block;.focus\:ring-2:focus{outline:0}}.b .hover\:bg-black:hover{background:#000}`,
+    // A component's descendant, and a class named only inside a pseudo-class.
+    String.raw`.sm\:card-md .card-body{padding:1rem}.btn:not(.md\:hidden){display:flex}`,
+  ].join('\n')
+  assert.deepEqual([...ownClasses(css)].sort(), [
+    '[.theme-x_&]:p-4',
+    'dark:bg-black',
+    'group-[.is-open]:grid',
+    'group-hover/item:block',
+    'group-hover:flex',
+    'peer-checked:hidden',
+    'starting:opacity-0',
+    'widget',
+  ])
 })

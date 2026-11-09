@@ -236,26 +236,238 @@ export function cssLayoutProblems({ root, config, files, resolver } = {}) {
   return out.sort((a, b) => compare(a.rule, b.rule) || compare(a.file, b.file) || compare(a.detail, b.detail))
 }
 
-// The class names a stylesheet's selectors use, unescaped, as a Set. Only
-// rule preludes are read, so a decimal in a value or a name in a url() is not
-// taken for a class.
-export function cssClasses(cssText) {
-  const css = blankComments(cssText)
-    .replace(/(['"])(?:\\[\s\S]|(?!\1)[^\\\n])*\1/g, '""')
-    .replace(/url\([^)]*\)/g, 'url()')
-  const out = new Set()
-  for (const m of css.matchAll(/(?<=^|[;{}])([^;{}]*)\{/g)) {
-    const prelude = m[1].trim()
-    if (prelude.startsWith('@')) continue
-    for (const c of prelude.matchAll(/\.((?:\\(?:[0-9a-fA-F]{1,6}\s?|[\s\S])|[\w\u0080-￿-])+)/g)) {
-      out.add(c[1].replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, ch) => (hex ? String.fromCodePoint(parseInt(hex, 16)) : ch)))
+// ── class names in CSS ───────────────────────────────────────────────────────
+
+// A CSS escape, and a class name as a selector writes it, escapes kept.
+const ESCAPE = String.raw`\\(?:[0-9a-fA-F]{1,6}\s?|[\s\S])`
+const NAME_CHAR = String.raw`(?:${ESCAPE}|[\w\u0080-￿-])`
+const IDENT = String.raw`(?:--|-?(?:${ESCAPE}|[A-Za-z_\u0080-￿]))${NAME_CHAR}*`
+
+const unescape = (name) =>
+  name.replace(/\\(?:([0-9a-fA-F]{1,6})\s?|([\s\S]))/g, (_, hex, ch) => {
+    if (!hex) return ch
+    const code = parseInt(hex, 16)
+    return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? '�' : String.fromCodePoint(code)
+  })
+
+// A stylesheet with comments blanked, strings and unquoted url() emptied,
+// and every escape kept whole, so a quote or brace a class name escapes, as
+// in `.before\:content-\[\'\'\]`, stays part of the name.
+const plainCss = (cssText) =>
+  cssText.replace(/\\[\s\S]|\/\*[\s\S]*?\*\/|(["'])(?:\\[\s\S]|(?!\1)[^\\\n])*\1|\burl\((?!\s*["'])(?:\\[\s\S]|[^)\\])*\)/gi, (m, quote) => (m[0] === '\\' ? m : quote ? '""' : m[0] === '/' ? ' ' : 'url()'))
+
+// The class names a selector names, anywhere in it, unescaped. An escape or
+// an attribute selector is passed over whole, so neither starts a name. An
+// escape inside the brackets is passed over one character at a time, so a
+// bracket that never closes costs no more than its length.
+const CLASS = new RegExp(String.raw`${ESCAPE}|\[(?:\\[\s\S]|[^\]\\])*\]|\.(${IDENT})`, 'g')
+const classesIn = (selector) => [...selector.matchAll(CLASS)].filter((m) => m[1]).map((m) => unescape(m[1]))
+
+// The style rules of a stylesheet, in order, as { prelude, parent, ats }:
+// `parent` is the style rule a nested rule sits in, or null, and `ats` names
+// the at-rules around it, outermost first. Only rule preludes are read, so a
+// decimal in a value or a name in a url() is not taken for a class, and the
+// steps of a @keyframes are no style rules.
+function styleRules(cssText) {
+  const css = plainCss(cssText)
+  const rules = []
+  const stack = []
+  let start = 0
+  for (const m of css.matchAll(/\\[\s\S]|[{};]/g)) {
+    if (m[0].length > 1) continue
+    const prelude = css.slice(start, m.index).trim()
+    start = m.index + 1
+    if (m[0] === '}') stack.pop()
+    if (m[0] !== '{') continue
+    const outer = stack[stack.length - 1] ?? { ats: [], rule: null }
+    if (prelude.startsWith('@')) {
+      stack.push({ ats: [...outer.ats, (/^@([\w-]+)/.exec(prelude)?.[1] ?? '').toLowerCase()], rule: outer.rule })
+      continue
     }
+    const rule = { prelude, parent: outer.rule, ats: outer.ats }
+    if (!outer.ats.some((at) => at.endsWith('keyframes'))) rules.push(rule)
+    stack.push({ ats: outer.ats, rule })
+  }
+  return rules
+}
+
+// A selector list split at its top-level commas.
+function selectorList(text) {
+  const out = []
+  let depth = 0
+  let last = 0
+  for (const m of text.matchAll(/\\[\s\S]|[()[\],]/g)) {
+    if (m[0] === '(' || m[0] === '[') depth += 1
+    else if (m[0] === ')' || m[0] === ']') depth = Math.max(0, depth - 1)
+    else if (m[0] === ',' && depth === 0) {
+      out.push(text.slice(last, m.index).trim())
+      last = m.index + 1
+    }
+  }
+  out.push(text.slice(last).trim())
+  return out.filter(Boolean)
+}
+
+// A rule's selectors with nesting resolved: `&` stands for each selector of
+// the rule around it, and a selector with no `&` sits inside that rule.
+function selectorsOf(rule, memo) {
+  if (!memo.has(rule)) {
+    const own = selectorList(rule.prelude)
+    const nested = (parent) => own.map((s) => (s.replace(/\\[\s\S]/g, '').includes('&') ? s.replace(/\\[\s\S]|&/g, (m) => (m === '&' ? parent : m)) : `${parent} ${s}`))
+    memo.set(rule, rule.parent === null ? own : selectorsOf(rule.parent, memo).flatMap(nested))
+  }
+  return memo.get(rule)
+}
+
+// The index of the bracket that closes one opened just before `from`, or -1.
+function closer(text, from, open, close) {
+  let depth = 1
+  for (let i = from; i < text.length; i += 1) {
+    if (text[i] === '\\') i += 1
+    else if (text[i] === open) depth += 1
+    else if (text[i] === close && (depth -= 1) === 0) return i
+  }
+  return -1
+}
+
+// A complex selector as its compounds, each a list of { kind, name, args }:
+// kind 'class', 'pseudo' (a pseudo-class or pseudo-element, `args` what its
+// brackets hold), 'any' (`*`) or 'other' (a type, id or attribute). Null
+// when it does not read, as an `&` with no rule around it.
+const PART = new RegExp(String.raw`(\s*[>+~]\s*|\s+)|\.(${IDENT})|::?(${IDENT})(\()?|(\*)|(#${NAME_CHAR}+|${IDENT})|(\[)`, 'y')
+function compoundsOf(selector) {
+  const out = [[]]
+  let i = 0
+  while (i < selector.length) {
+    PART.lastIndex = i
+    const m = PART.exec(selector)
+    if (m === null) return null
+    i = PART.lastIndex
+    const here = out[out.length - 1]
+    if (m[1] !== undefined) out.push([])
+    else if (m[2] !== undefined) here.push({ kind: 'class', name: unescape(m[2]) })
+    else if (m[3] !== undefined) {
+      let args = null
+      if (m[4]) {
+        const end = closer(selector, i, '(', ')')
+        if (end === -1) return null
+        args = selector.slice(i, end)
+        i = end + 1
+      }
+      here.push({ kind: 'pseudo', name: m[3].toLowerCase(), args })
+    } else if (m[5] !== undefined) here.push({ kind: 'any' })
+    else if (m[6] !== undefined) here.push({ kind: 'other' })
+    else {
+      const end = closer(selector, i, '[', ']')
+      if (end === -1) return null
+      i = end + 1
+      here.push({ kind: 'other' })
+    }
+  }
+  return out.filter((c) => c.length > 0)
+}
+
+// The selectors a selector that is one :is() or :where() holds, or null.
+function heldList(compounds) {
+  const lone = compounds.length === 1 && compounds[0].length === 1 ? compounds[0][0] : null
+  return lone?.kind === 'pseudo' && lone.args !== null && (lone.name === 'is' || lone.name === 'where') ? selectorList(lone.args) : null
+}
+
+// The class a complex selector is the own rule of, as a list of none or one:
+// the selector names that class and no other, the class's compound holds
+// nothing else but pseudo-classes and pseudo-elements, and any other compound
+// holds nothing but those or `*`, as Tailwind's `:where(.space-x-4 >
+// :not(:last-child))` does. A selector that is one :is() or :where() is read
+// as the list it holds.
+function ownIn(selector) {
+  const compounds = compoundsOf(selector)
+  if (compounds === null || compounds.length === 0) return []
+  const list = heldList(compounds)
+  if (list !== null) return list.flatMap(ownIn)
+  const named = new Set(classesIn(selector))
+  const home = compounds.filter((c) => c.some((p) => p.kind === 'class'))
+  if (named.size !== 1 || home.length !== 1 || home[0].filter((p) => p.kind === 'class').length !== 1) return []
+  const holds = (compound, kinds) => compound.every((p) => kinds.includes(p.kind))
+  if (!holds(home[0], ['class', 'pseudo']) || !compounds.every((c) => c === home[0] || holds(c, ['pseudo', 'any']))) return []
+  return [...named]
+}
+
+// Whether a variant class's name names the class `other`: each piece of it
+// between slashes occurs in the name, and not inside a longer run of letters
+// and digits, as `group` and `item` do in `group-hover/item:flex`.
+const WORD_CHAR = /[A-Za-z0-9]/
+function namesClass(name, other) {
+  return other.split('/').filter(Boolean).every((piece) => {
+    for (let at = name.indexOf(piece); at !== -1; at = name.indexOf(piece, at + 1)) {
+      if (!WORD_CHAR.test(name[at - 1] ?? '') && !WORD_CHAR.test(name[at + piece.length] ?? '')) return true
+    }
+    return false
+  })
+}
+
+// The classes with a variant a complex selector holds, as a list: each one a
+// compound names, when every other class a compound names is one its variant
+// names, as `.group` is for `.group:hover .group-hover\:flex`. So a package's
+// sheet that scopes one under its own class, as in `.widget
+// .hover\:opacity-90:hover`, holds none. A class inside a pseudo-class's
+// brackets, as in Tailwind 4's `:where(.group)`, is the variant's. A selector
+// that is one :is() or :where() is read as the list it holds, and one that
+// does not read holds every class with a variant it names.
+function variantsIn(selector) {
+  const compounds = compoundsOf(selector)
+  if (compounds === null) return classesIn(selector).filter((name) => name.includes(':'))
+  const list = heldList(compounds)
+  if (list !== null) return list.flatMap(variantsIn)
+  const names = compounds.flat().filter((p) => p.kind === 'class').map((p) => p.name)
+  return names.filter((name) => name.includes(':') && names.every((other) => other === name || namesClass(name, other)))
+}
+
+// The at-rules a rule of a class's own may sit in.
+const WRAPPERS = new Set(['media', 'supports', 'layer', 'container'])
+
+// The class names a stylesheet's selectors name, unescaped, as a Set.
+export function cssClasses(cssText) {
+  const out = new Set()
+  for (const rule of styleRules(cssText)) for (const name of classesIn(rule.prelude)) out.add(name)
+  return out
+}
+
+// The classes a stylesheet holds, unescaped, as a Set: each class that has a
+// rule of its own (see ownIn), at the top level or inside @media, @supports,
+// @layer or @container. A class a package's sheet scopes under its own, as
+// in `.widget .mt-10`, or a component library names beside another, as in
+// `.tooltip.tooltip-open`, is not held. A class whose name carries a variant
+// (an escaped colon, as in `.md\:p-4` or `.\[\&\>div\]\:static`) is held
+// beside the classes its variant names and inside any at-rule (see
+// variantsIn), since its variant is what puts other selectors and at-rules
+// around it; under a package's class it is not held either.
+export function ownClasses(cssText) {
+  const out = new Set()
+  const memo = new Map()
+  for (const rule of styleRules(cssText)) {
+    const selectors = selectorsOf(rule, memo)
+    for (const selector of selectors) for (const name of variantsIn(selector)) out.add(name)
+    if (!rule.ats.every((at) => WRAPPERS.has(at))) continue
+    for (const selector of selectors) for (const name of ownIn(selector)) if (!name.includes(':')) out.add(name)
   }
   return out
 }
 
+// A class with square brackets, as Tailwind reads one inside a class
+// string: from the start of a word, each bracket opening the word or
+// following `-`, `:`, `@`, `/` or `!`, holding anything but whitespace,
+// with one level of brackets inside, as in `has-[[data-open=true]]:flex`.
+const BRACKETED = /(?<![^\s"'`{}=;<>|\\$])(?:[^\s"'`{}=;<>|\\$[\]]*[-:@/!])?\[(?:[^\s[\]]|\[[^\s[\]]*\])+\](?:[^\s"'`{}=;<>|\\$[\]]*[-:@/!]\[(?:[^\s[\]]|\[[^\s[\]]*\])+\])*[^\s"'`{}=;<>|\\$[\]]*/g
+
 // The words in a source file that could be class names: whatever sits
-// between whitespace, quotes, brackets of JSX and template syntax.
+// between whitespace, quotes, brackets of JSX and template syntax, and each
+// class with square brackets whole, whose brackets may hold a quote, an `=`
+// or a `>`, as in `data-[state=open]:block` or `before:content-['']`. A word
+// that opens with a bracket counts when it is an arbitrary property or
+// variant (a colon inside or right after the brackets), so an array or an
+// index in code makes no word.
 export function sourceWords(text) {
-  return new Set(text.split(/[\s"'`{}=;<>|\\$]+/).filter(Boolean))
+  const words = new Set(text.split(/[\s"'`{}=;<>|\\$]+/).filter(Boolean))
+  for (const [word] of text.matchAll(BRACKETED)) if (!word.startsWith('[') || /^\[[^\]]*:|\]:/.test(word)) words.add(word)
+  return words
 }
