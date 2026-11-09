@@ -12,7 +12,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { compare } from './glob.mjs'
-import { DEFAULTS, FORMATS_READ, refuseNewer, today } from './project.mjs'
+import { DEFAULTS, FORMATS_READ, needsScripts, olderThan, refuseNewer, today } from './project.mjs'
 
 export const LEDGER_FORMAT = 1
 export const CLASSES = ['graph', 'stories', 'audit', 'tokens', 'docs']
@@ -469,6 +469,8 @@ export function statusTable(ledger) {
 
 // ── The proposed config ─────────────────────────────────────────────────────
 
+const LADLE_DEFAULT_PORT = 61000
+const LADLE_DEFAULT_STORIES = 'src/**/*.stories.{js,jsx,ts,tsx}'
 const RUN = { npm: 'npm run', pnpm: 'pnpm run', yarn: 'yarn', bun: 'bun run' }
 
 // The config keys scan can fill: the header keys and their roles, the
@@ -505,14 +507,16 @@ export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen 
   const ladle = laneKind === 'csf' ? inv.stories.tools.find((t) => t.tool === 'ladle') : null
   if (ladle) {
     const s = ladle.settings ?? {}
-    const ladlePort = s.port ?? ladle.port
-    const port = ladlePort ? ladlePort + 1 : null
+    // Ladle's own defaults when its config leaves them out: the port, and the glob
+    // minus mdx, which the CSF reader does not handle.
+    const ladlePort = s.port ?? ladle.port ?? LADLE_DEFAULT_PORT
+    const port = ladlePort + 1
     proposed.minScripts = '0.4.0'
     proposed.stories = {
       ...proposed.stories,
       lane: 'csf',
       ids: 'ladle',
-      ...(s.stories ? { include: [].concat(s.stories) } : {}),
+      include: s.stories ? [].concat(s.stories) : [LADLE_DEFAULT_STORIES],
       ...(s.storyOrder ? { order: s.storyOrder } : {}),
       ...(s.defaultStory ? { home: s.defaultStory } : {}),
       ...(s.widths ? { viewports: s.widths.map((w) => ({ label: w.label, width: w.width, height: 0 })) } : {}),
@@ -525,6 +529,8 @@ export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen 
 
 // Lists merged item by item: the proposal adds what the user's list lacks.
 const UNION = ['graph.extraKeys', 'audit.exclude', 'stories.include']
+// Lists of entries with a `file`: the proposal adds the files the user's list lacks.
+const BY_FILE = ['stories.frozen']
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const at = (obj, path) => path.reduce((o, k) => (isPlainObject(o) ? o[k] : undefined), obj)
@@ -561,6 +567,11 @@ export function mergeAdding(current, proposed, path = []) {
       if (added.length === 0) continue
       merged[key] = [...have, ...added]
       changes.push({ path: name, kind: 'extend', from: have, to: merged[key] })
+    } else if (BY_FILE.includes(name) && Array.isArray(have) && Array.isArray(want)) {
+      const added = want.filter((x) => !have.some((y) => y?.file === x?.file))
+      if (added.length === 0) continue
+      merged[key] = [...have, ...added]
+      changes.push({ path: name, kind: 'extend', from: have, to: merged[key] })
     } else if (fallback !== undefined && same(have, fallback)) {
       merged[key] = want
       changes.push({ path: name, kind: 'default', from: have, to: want })
@@ -569,6 +580,18 @@ export function mergeAdding(current, proposed, path = []) {
     }
   }
   return { merged, changes }
+}
+
+// Raises `merged.minScripts` to what its stories section needs (needsScripts),
+// when it is missing or older, so scripts from before 0.4.0 refuse the config
+// instead of reading it and ignoring the keys. Replaces a kept minScripts
+// change in `changes`, and returns the changes.
+export function raiseMinScripts(merged, changes) {
+  const need = needsScripts(merged)
+  if (!need || (merged.minScripts && !olderThan(merged.minScripts, need))) return changes
+  const from = merged.minScripts ?? null
+  merged.minScripts = need
+  return [...changes.filter((c) => c.path !== 'minScripts'), { path: 'minScripts', kind: from === null ? 'add' : 'raise', from, to: need }]
 }
 
 // The changes as diff lines: + added, ~ a default replaced or a list

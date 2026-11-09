@@ -53,16 +53,16 @@ export function fileSha(root, file) {
 }
 
 // The type import of a story file that the edits are about: the one import
-// of the story types, and whether it comes from `tool`. Returns
-// { found, import, why } where `why` is 'none' (no import of the story
-// types), 'two' (more than one) or 'other' (from another module) when
-// there is no single import from the tool. Found by name, so the same
-// import is found after its specifier is rewritten, when `tool` is null.
-function typeImportOf(csf, tool) {
+// of the story types, and whether it comes from one of `specs` (the tool, or
+// the relative path to the types file once the patch is applied). Returns
+// { found, why } where `why` is 'none' (no import of the story types), 'two'
+// (more than one) or 'other' (from another module) when there is no single
+// import from those.
+function typeImportOf(csf, specs) {
   const imports = csf.typeImports.filter(isStoryType)
   if (imports.length === 0) return { found: null, why: 'none' }
   if (imports.length > 1) return { found: null, why: 'two' }
-  if (tool && imports[0].spec !== tool) return { found: null, why: 'other' }
+  if (!specs.includes(imports[0].spec)) return { found: null, why: 'other' }
   return { found: imports[0], why: null }
 }
 
@@ -77,7 +77,7 @@ const WHY = {
 // import's specifier blanked), the type import, whether the file is pinned
 // in `frozen`, one entry per state with its span hash, what the reader could
 // not read, and the lines a person passes over by hand.
-export function conversionRecords(registry, { root, frozen = [], tool = LADLE_MODULE, read = readFrom(root) } = {}) {
+export function conversionRecords(registry, { root, frozen = [], tool = LADLE_MODULE, typesFile = DEFAULT_TYPES_FILE, read = readFrom(root) } = {}) {
   const pinned = new Map(frozen.map((f) => [f.file, f]))
   const records = []
   for (const file of Object.keys(registry.files).sort(compare)) {
@@ -89,7 +89,7 @@ export function conversionRecords(registry, { root, frozen = [], tool = LADLE_MO
     }
     const csf = readCsf(text, file)
     const info = registry.files[file]
-    const { found, why } = typeImportOf(csf, tool)
+    const { found, why } = typeImportOf(csf, [tool, relativeSpecifier(file, typesFile)])
     const handPass = []
     if (why) handPass.push({ kind: 'type-import', story: null, detail: WHY[why] })
     const argsInStory = []
@@ -137,15 +137,20 @@ const filled = (v) => (typeof v === 'string' ? v.trim() !== '' : v === true)
 
 // Files that look like design targets to freeze: those whose default export
 // sets a meta key that `policy.bannerByRoot` names (any key, with no policy
-// only `exploration`) to text. The registry holds each state's merged meta,
-// so a file counts when every one of its states carries the key. Returns
-// [{ file, key }] sorted by path.
-export function frozenCandidates(registry, policy) {
+// only `exploration`) to text. The default export's own meta is read from the
+// file with `read` (a repo path to its text); a file that cannot be read is
+// left out. Returns [{ file, key }] sorted by path.
+export function frozenCandidates(registry, policy, { root, read = readFrom(root) } = {}) {
   const keys = policy?.bannerByRoot && typeof policy.bannerByRoot === 'object' ? [...new Set(Object.values(policy.bannerByRoot))] : ['exploration']
   const out = []
   for (const file of Object.keys(registry?.files ?? {}).sort(compare)) {
-    const states = registry.files[file].ids.map((id) => registry.stories[id])
-    const key = keys.find((k) => states.length > 0 && states.every((s) => filled(s.meta?.[k])))
+    let meta
+    try {
+      meta = readCsf(read(file), file).meta.meta
+    } catch {
+      continue
+    }
+    const key = keys.find((k) => filled(meta?.[k]))
     if (key) out.push({ file, key })
   }
   return out
@@ -191,7 +196,14 @@ export function refreeze(root, config, file, { since } = {}) {
 // Whether a types file holds only non-relative `import type` lines and
 // `export type` (or `export interface`) declarations. Returns
 // { problems: [text], names: [exported name] }. A statement head is a line
-// at the left margin outside every bracket; the lines under it are its body.
+// outside every bracket that starts at the left margin or with a statement
+// keyword, however far it is indented; the lines under it are its body. A
+// relative module specifier anywhere is refused too, since the declaration
+// sits in the tool's module, which cannot reach a relative path.
+const STATEMENT = /^(?:import|export|const|let|var|function|class|declare|type|interface|enum|namespace|module|abstract|async)\b/
+
+const RELATIVE = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])\.[^'"]*\1/
+
 export function checkTypesFile(text, file = 'story.ts') {
   const code = stripComments(text, file)
   const problems = []
@@ -199,14 +211,14 @@ export function checkTypesFile(text, file = 'story.ts') {
   let depth = 0
   let quote = null
   for (const line of code.split('\n')) {
-    const head = depth === 0 && quote === null && /^\S/.test(line)
+    const t = line.trim()
+    const head = depth === 0 && quote === null && t !== '' && (/^\S/.test(line) || STATEMENT.test(t))
+    if (RELATIVE.test(t)) problems.push(`${t} is a relative import, which a declaration in the tool's module cannot hold`)
     if (head) {
-      const imp = /^import\s+type\b[^'"]*(['"])([^'"]*)\1\s*;?\s*$/.exec(line)
-      const decl = /^export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)/.exec(line)
-      if (imp) {
-        if (imp[2].startsWith('.')) problems.push(`${line.trim()} is a relative import, which a declaration in the tool's module cannot hold`)
-      } else if (decl) names.push(decl[1])
-      else problems.push(`${line.trim()} is neither an import type line nor an export type declaration`)
+      const imp = /^import\s+type\b[^'"]*(['"])([^'"]*)\1\s*;?\s*$/.exec(t)
+      const decl = /^export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)/.exec(t)
+      if (decl) names.push(decl[1])
+      else if (!imp) problems.push(`${t} is neither an import type line nor an export type declaration`)
     }
     for (const c of line) {
       if (quote) {
@@ -261,8 +273,9 @@ export function removalEdits(registry, { root, tool = LADLE_MODULE, typesFile = 
     const text = read(file)
     const csf = readCsf(text, file)
     const imports = csf.typeImports.filter(isStoryType)
-    const { found } = typeImportOf(csf, tool)
-    const usable = found && !pinned.has(file) && found.names.every((n) => exported.has(n))
+    const { found } = typeImportOf(csf, [tool, relativeSpecifier(file, typesFile)])
+    // An import already pointing at the types file is done, and no edit.
+    const usable = found && found.spec === tool && !pinned.has(file) && found.names.every((n) => exported.has(n))
     if (!usable) {
       if (imports.some((t) => t.spec === tool)) leftover = true
       continue
@@ -277,7 +290,15 @@ export function removalEdits(registry, { root, tool = LADLE_MODULE, typesFile = 
     const at = found.start + quoted.index
     edits.push({ file, start: at, end: at + quoted[0].length, before: quoted[0], after: `${q}${relativeSpecifier(file, typesFile)}${q}` })
   }
-  if (leftover) edits.push({ file: LEGACY_TYPES_FILE, create: true, text: ambientDeclaration(tool, typesText, typesFile) })
+  if (leftover) {
+    const text = ambientDeclaration(tool, typesText, typesFile)
+    // Not again once the patch has put it there.
+    let there = null
+    try {
+      there = read(LEGACY_TYPES_FILE)
+    } catch {}
+    if (there !== text) edits.push({ file: LEGACY_TYPES_FILE, create: true, text })
+  }
   return edits
 }
 
