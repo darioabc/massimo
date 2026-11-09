@@ -9,7 +9,7 @@
 // pinned by sha256 in `stories.frozen`, and no edit reaches it.
 
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import { compare } from './glob.mjs'
 import { normalHash, spanHash } from './lane.mjs'
@@ -366,6 +366,3 @@ export function checkRecords(records, { root, frozen = [], read = readFrom(root)
   }
   return out
 }
-
-// Whether a path is in the repo as a file, for the types file.
-export const isFile = (root, file) => existsSync(join(root, file))
