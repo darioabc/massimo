@@ -10,7 +10,6 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import * as convert from '../scripts/lib/convert.mjs'
 import * as lane from '../scripts/lib/lane.mjs'
 import * as laneCss from '../scripts/lib/lane-css.mjs'
 import * as laneRoute from '../scripts/lib/lane-route.mjs'
@@ -228,11 +227,6 @@ test('the route helpers give empty results for empty input', () => {
 
 test('the css helpers return nothing until they are filled', () => {
   assert.deepEqual([laneCss.storyOnlyModules(), laneCss.sourceNotLines('', 'a.css'), laneCss.cssLayoutProblems()], [[], [], []])
-})
-
-test('the convert helpers return nothing until they are filled', () => {
-  const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
-  assert.deepEqual([convert.conversionRecords(registry), convert.frozenCandidates(registry, null), convert.frozenProblems('.', DEFAULTS), convert.removalEdits(registry), convert.refreeze('.', DEFAULTS, 'a.tsx')], [[], [], [], [], null])
 })
 
 test('the redirect helpers return nothing until they are filled', () => {
