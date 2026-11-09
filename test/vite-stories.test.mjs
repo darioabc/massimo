@@ -88,12 +88,12 @@ function devServer(log = logger()) {
 }
 
 // One request through a middleware stack, as { status, headers, body, next }.
-async function request(stack, url, method = 'GET') {
+async function request(stack, url, method = 'GET', headers = {}) {
   const res = { statusCode: 200, headers: {}, body: null, setHeader(k, v) { this.headers[k.toLowerCase()] = v }, end(b) { this.body = String(b ?? '') } }
   let nextCalled = false
   for (const fn of stack) {
     nextCalled = false
-    await fn({ url, originalUrl: url, method }, res, (err) => {
+    await fn({ url, originalUrl: url, method, headers }, res, (err) => {
       if (err) throw err
       nextCalled = true
     })
@@ -320,6 +320,33 @@ test('dev: the HTML entry for the lane paths, Ladle links rendered in place, and
     assert.equal(JSON.parse(meta.body).about.format, 1)
     for (const url of ['/src/stories/main.tsx', '/storiesx', '/@vite/client']) assert.equal((await request(stack, url)).next, true, url)
     assert.equal((await request(stack, '/stories', 'POST')).next, true)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('dev: a story module in a top-level stories/ folder is Vite\'s, and only a page load under /stories/ gets the HTML', async () => {
+  const t = lane({ include: ['stories/**/*.stories.tsx'] })
+  try {
+    write(t.root, 'stories/Button.stories.tsx', "export default { title: 'Primitives / Button' }\nexport const Plain = () => null\n")
+    const { plugin } = started(t.root)
+    const { server, stack } = devServer()
+    plugin.configureServer(server)
+    assert.match(plugin.load(plugin.resolveId(VIRTUAL_ID)), /"stories\/Button\.stories\.tsx": \(\) => import\("\/stories\/Button\.stories\.tsx"\)/)
+    for (const url of ['/stories/Button.stories.tsx', '/stories/Button.stories.tsx?t=123', '/stories/Button.stories.tsx?import']) {
+      assert.equal((await request(stack, url)).next, true, url)
+      assert.equal((await request(stack, url, 'GET', { 'sec-fetch-dest': 'script' })).next, true, url)
+    }
+    // A script or a fetch for a path no file holds is Vite's too, to answer as it will.
+    for (const dest of ['script', 'style', 'empty']) assert.equal((await request(stack, '/stories/gone.tsx', 'GET', { 'sec-fetch-dest': dest })).next, true, dest)
+    // A page, a frame, or a request that does not say, gets the lane's HTML.
+    for (const headers of [{}, { 'sec-fetch-dest': 'document' }, { 'sec-fetch-dest': 'iframe' }]) {
+      for (const url of ['/stories', '/stories/primitives--button', '/stories/primitives--button/plain?mode=preview']) {
+        const res = await request(stack, url, 'GET', headers)
+        assert.equal(res.next, false, `${url} ${JSON.stringify(headers)}`)
+        assert.equal(res.headers['content-type'], 'text/html; charset=utf-8', url)
+      }
+    }
   } finally {
     t.cleanup()
   }

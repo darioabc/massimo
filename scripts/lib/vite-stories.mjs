@@ -8,12 +8,14 @@
 // which a worktree borrows from its parent), the files the dev server may
 // serve, the dependency scan's entries, its own cache folder, its port and
 // its build output. What it serves: the lane's HTML for `/`, `/stories` and
-// `/stories/*`, Ladle-shaped `/meta.json`, and `virtual:massimo-stories`,
-// which holds the registry, one loader per story file, the route helpers of
-// lane-route.mjs as text, and the helpers below, so the scaffold in
-// `src/stories/` imports one declared module and never a `.mjs` file.
+// the pages under `/stories/` (a repo file there, such as a story module in a
+// top-level stories/ folder, stays Vite's), Ladle-shaped `/meta.json`, and
+// `virtual:massimo-stories`, which holds the registry, one loader per story
+// file, the route helpers of lane-route.mjs as text, and the helpers below,
+// so the scaffold in `src/stories/` imports one declared module and never a
+// `.mjs` file.
 
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, compileGlobs, walk } from './glob.mjs'
@@ -50,6 +52,24 @@ const relPath = (root, abs) => toPosix(relative(root, abs))
 
 // Whether a request path is one the lane answers with its HTML entry.
 export const isLanePath = (pathname) => pathname === '/' || pathname === '/index.html' || pathname === '/stories' || pathname.startsWith('/stories/')
+
+// What a browser loads a page or a frame as. A request under /stories/ that
+// says it loads anything else, a script, a style or a fetch, is no navigation.
+const NAVIGATIONS = ['document', 'iframe', 'frame']
+
+// Whether a request under /stories/ is one Vite answers in dev: it names a
+// file in the repo, such as a story module in a top-level stories/ folder,
+// or the browser loads it as something other than a page.
+export function isFileRequest(root, pathname, headers = {}) {
+  if (!pathname.startsWith('/stories/')) return false
+  const dest = headers['sec-fetch-dest']
+  if (typeof dest === 'string' && dest !== '' && !NAVIGATIONS.includes(dest)) return true
+  try {
+    return statSync(join(root, decodeURIComponent(pathname))).isFile()
+  } catch {
+    return false
+  }
+}
 
 // ── Helpers inlined into the virtual module ─────────────────────────────────
 // Each is copied into the virtual module as its own source text, so it uses
@@ -430,7 +450,7 @@ export function massimoStories(options = {}) {
             res.end(metaText())
             return
           }
-          if (!isLanePath(pathname)) return next()
+          if (!isLanePath(pathname) || isFileRequest(lane.root, pathname, req.headers)) return next()
           const page = await server.transformIndexHtml(`/${html}`, readFileSync(join(lane.root, html), 'utf8'), req.originalUrl ?? req.url)
           res.statusCode = 200
           res.setHeader('Content-Type', 'text/html; charset=utf-8')
