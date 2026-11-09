@@ -1,7 +1,9 @@
 // Files written by a newer massimo are refused by name, never guessed at;
 // a project that needs newer scripts says so; lowering a baseline never
 // drops what this version did not measure; and a plugin run says when the
-// project's vendored copy is older.
+// project's vendored copy is older. It also holds the 0.4.0 contract checks:
+// the new defaults, the stories keys a fresh config writes, which config
+// needs 0.4.0, and one test per stub module for the track that fills it.
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -12,7 +14,7 @@ import * as convert from '../scripts/lib/convert.mjs'
 import * as lane from '../scripts/lib/lane.mjs'
 import * as laneCss from '../scripts/lib/lane-css.mjs'
 import * as laneRoute from '../scripts/lib/lane-route.mjs'
-import { DEFAULTS, FORMATS_READ, SCRIPTS_VERSION, loadConfig, olderThan, parseArgs } from '../scripts/lib/project.mjs'
+import { DEFAULTS, FORMATS_READ, SCRIPTS_VERSION, loadConfig, needsScripts, olderThan, parseArgs } from '../scripts/lib/project.mjs'
 import * as redirects from '../scripts/lib/redirects.mjs'
 import * as viteStories from '../scripts/lib/vite-stories.mjs'
 import { SCRIPTS, readJson, run, scratch } from './helpers.mjs'
@@ -209,18 +211,48 @@ test('loadConfig accepts any lane value, so the scripts that cannot use it say s
   }
 })
 
-test('the lane modules are in place and return empty results until they are filled', () => {
+test('the lane module returns an empty registry until the reader lands', () => {
   const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
   assert.deepEqual(registry, { format: 1, ids: 'export', stories: {}, order: [], home: null, slugs: {}, files: {}, problems: [] })
   assert.deepEqual(lane.ladleMeta(registry), { about: { generator: 'massimo', format: 1 }, stories: {} })
   assert.deepEqual(lane.redirectTable(registry, []), {})
+})
+
+test('the hash helpers return empty strings until they are filled', () => {
   assert.deepEqual([lane.normalHash('', null), lane.spanHash('', { start: 0, end: 0 })], ['', ''])
+})
+
+test('the route helpers return their shapes until the routes land', () => {
   assert.equal(laneRoute.parseLaneUrl('/', '').kind, 'missing')
   assert.deepEqual([laneRoute.stateUrl({}), laneRoute.shellUrl('a'), laneRoute.orderIds([], []), laneRoute.argsFromSearch('')], ['', '', [], {}])
+})
+
+test('the css helpers return nothing until they are filled', () => {
   assert.deepEqual([laneCss.storyOnlyModules(), laneCss.sourceNotLines('', 'a.css'), laneCss.cssLayoutProblems()], [[], [], []])
+})
+
+test('the convert helpers return nothing until they are filled', () => {
+  const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
   assert.deepEqual([convert.conversionRecords(registry), convert.frozenCandidates(registry, null), convert.frozenProblems('.', DEFAULTS), convert.removalEdits(registry), convert.refreeze('.', DEFAULTS, 'a.tsx')], [[], [], [], [], null])
+})
+
+test('the redirect helpers return nothing until they are filled', () => {
+  const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
   assert.deepEqual([redirects.idMentions('', registry), redirects.mentionCoverage([], registry, []), redirects.toolEdits()], [[], { missing: [], dead: [] }, []])
+})
+
+test('the Vite plugin is a named object until it is filled', () => {
   assert.equal(viteStories.massimoStories().name, 'massimo-stories')
+})
+
+test('a config needs 0.4.0 only when it sets a 0.4.0 stories key to a non-default value', () => {
+  assert.equal(needsScripts({}), null)
+  assert.equal(needsScripts({ stories: { lane: 'manifest', port: 5000 } }), null)
+  assert.equal(needsScripts({ stories: { ids: 'export', order: null, frozen: [] } }), null)
+  assert.equal(needsScripts({ stories: { lane: 'csf' } }), '0.4.0')
+  assert.equal(needsScripts({ stories: { home: 'a--b' } }), '0.4.0')
+  assert.equal(needsScripts({ stories: { sideBySide: ['a.story.tsx'] } }), '0.4.0')
+  assert.equal(needsScripts({ stories: { policy: { nameMatches: true } } }), '0.4.0')
 })
 
 test('the route module imports nothing, since the plugin inlines its text', () => {

@@ -153,6 +153,21 @@ export const DEFAULTS = {
   figma: { fileKey: null },
 }
 
+// The stories keys 0.4.0 added. A config that sets one to a non-default value,
+// or sets `lane` to "csf", needs these scripts at 0.4.0 or later, so its
+// `minScripts` must say so: 0.3.0 would otherwise read it and ignore the keys.
+export const STORIES_0_4_0_KEYS = ['ids', 'order', 'home', 'viewports', 'sideBySide', 'switchers', 'banners', 'frame', 'storyOnly', 'appCss', 'outDir', 'hostFiles', 'frozen', 'policy']
+
+// The `minScripts` a raw config's stories section requires, or null when it
+// uses nothing from 0.4.0.
+export function needsScripts(raw) {
+  const stories = raw?.stories
+  if (!stories || typeof stories !== 'object') return null
+  if (stories.lane === 'csf') return '0.4.0'
+  const set = STORIES_0_4_0_KEYS.some((key) => key in stories && JSON.stringify(stories[key]) !== JSON.stringify(DEFAULTS.stories[key]))
+  return set ? '0.4.0' : null
+}
+
 // Flags that never take a value, so `--strict build` keeps `build` as a
 // positional instead of reading it as the flag's value.
 export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle', 'legacy'])
