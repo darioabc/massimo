@@ -1165,8 +1165,10 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   // A csf lane lists its states through the registry; no other lane has one.
   const registry = config.stories?.lane === 'csf' && detected?.storyTools?.lane?.dir ? laneRegistry({ root, config, files: expandGlobs(root, config.stories.include ?? [], [], [], files), read: text }) : null
   const lane = laneRecord(root, files, pkg, detected?.storyTools?.lane, text, registry)
-  // A csf lane runs on the port the config gives it, not the framework's default that detect falls back to.
-  if (lane && registry && typeof config.stories?.port === 'number') lane.port = config.stories.port
+  // A csf lane runs on the port the config gives it, not the framework's default that detect falls back to,
+  // unless its dev script sets a port of its own: that one wins.
+  const ownPort = lane?.devScript ? portIn(String(pkg?.scripts?.[lane.devScript] ?? '')) : null
+  if (lane && registry && !ownPort && typeof config.stories?.port === 'number') lane.port = config.stories.port
   const own = ownFiles(root, files, pkg, text)
   // The repo's own index may list its tiers as headings: that is their order.
   const index = own.docs.find((d) => d.kind === 'index' && d.generated)
