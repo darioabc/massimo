@@ -20,11 +20,11 @@ Any URL may carry `mode=preview` (no banner, no switchers), a switch as `<name>=
 
 **The shell** shows one state at a time in an iframe of a fixed size from `stories.viewports` (a width of 0 fills the pane), with every other state one click away in the sidebar. States that shared a document or an origin's storage could disturb each other: harnesses that patch globals, seed a session or write storage are written for one state at a time. So each state renders alone in its own canvas document, and only a file listed in `stories.sideBySide` gets a link that shows its states together. The shell holds the switchers and the banner, loads its iframe with `mode=preview` and the switch values, and never calls `history`: every choice is a link. An iframe is never sized to its content, since a `min-h-screen` story would then grow without end.
 
-**The canvas** renders one state per document. It reads its query once, sets each switch's attribute on `<html>` before the story paints (a switch whose `default` is null asks the frame's `switchDefaults`), renders the state inside the project's frame, and sets `<html data-story-ready>` once the state and its effects have run; a state that throws sets `data-story-error` instead. With `mode=preview` it shows no banner and no switchers, which is how the shell, sweeps and screenshots load it. Outside preview it applies `meta.width` to the story's container, as Ladle does; it never reads `parameters.width`, which Ladle does not honour either. A story's `args` and `argTypes`, the default export's under the story's, become its props at run time, with `arg-<name>` from the URL read by control type as Ladle reads them. On `pagehide` it unmounts, so a harness's cleanup runs before the next state loads. It refuses a registry in a format newer than its own with "update the lane scaffold".
+**The canvas** renders one state per document. It reads its query once, sets each switch's attribute on `<html>` before the story paints (a switch whose `default` is null asks the frame's `switchDefaults`), renders the state inside the project's frame, and sets `<html data-story-ready>` once the state and its effects have run; a state that throws sets `data-story-error` instead. With `mode=preview` it shows no banner and no switchers, which is how the shell, sweeps and screenshots load it. Outside preview it applies `meta.width` to the story's container, as Ladle does: a number of px, or a width name that a viewport's label, or else one of Ladle's default names (`xsmall` 414, `small` 640, `medium` 768, `large` 1024), maps to px. It never reads `parameters.width`, which Ladle does not honour either. A story's `args` and `argTypes`, the default export's under the story's, become its props at run time, with `arg-<name>` from the URL read by control type as Ladle reads them. On `pagehide` it unmounts, so a harness's cleanup runs before the next state loads. It refuses a registry in a format newer than its own with "update the lane scaffold".
 
 **The plugin** (`<project>/scripts/lib/vite-stories.mjs`, vendored by init) is a plain Vite plugin object, so massimo stays free of dependencies and the project's own Vite runs it. It adds to the lane's config: aliases from the tsconfig `paths` the repo declares; React pinned to the install root, the first folder up that holds `node_modules/react` (a worktree borrows its parent's install), with `resolve.dedupe`; `server.fs.allow` for the install root and the repo; `optimizeDeps.entries` set to `stories.include` and `stories.html`, since the dependency scan cannot follow the lane's loaders; `cacheDir` at `node_modules/.vite-stories`; `stories.port` with `strictPort`; and the build's input and `stories.outDir` (`dist-stories` when unset). A value the lane's config sets itself wins. A watcher rebuilds the registry when a story file is added, removed or changed, and the frame's exports are read again when it changes; a changed `massimo.config.json` restarts the server. The build writes the entry as `index.html`, writes `meta.json`, writes a `_redirects` holding only `/stories/* /index.html 200` when `stories.hostFiles` lists it (a host such as Cloudflare Pages rewrites even when an asset matches, so a catch-all would serve the chunks as HTML), and leaves out an app `_redirects` or `_headers` copied from `public/`, with a warning. `vite preview` answers the lane's routes the same way.
 
-`virtual:massimo-stories` is the only module the scaffold imports from massimo. It holds the registry and its `format`, the settings (`viewports`, `switchers`, `banners`, the `sideBySide` files, `home`), one loader per story file, the frame, the route helpers of `lane-route.mjs` (`parseLaneUrl`, `stateUrl`, `shellUrl`), and the view helpers (`laneBanner`, `laneSwitches`, `laneAttributes`, `laneProps`). `src/stories/massimo.d.ts` declares it, so the scaffold never imports a `.mjs` file from TypeScript.
+`virtual:massimo-stories` is the only module the scaffold imports from massimo. It holds the registry and its `format`, the settings (`viewports`, the width names in `widths`, `switchers`, `banners`, the `sideBySide` files, `home`), one loader per story file, the frame, the route helpers of `lane-route.mjs` (`parseLaneUrl`, `stateUrl`, `shellUrl`), and the view helpers (`laneBanner`, `laneSwitches`, `laneWidth`, `laneAttributes`, `laneProps`). `src/stories/massimo.d.ts` declares it, so the scaffold never imports a `.mjs` file from TypeScript.
 
 ## Files
 
@@ -79,7 +79,7 @@ The opt-in proposes most of this from the old tool's config; check it before sca
 ```
 
 - `ids: "ladle"` keeps Ladle's ids, so old links, specs and the redirect map stay exact.
-- `order` and `home` come from Ladle's `storyOrder` and `defaultStory`; `viewports` from its width options, with a height each.
+- `order` and `home` come from Ladle's `storyOrder` and `defaultStory`; `viewports` from its width options, with a height each. Label each viewport with its option's name when stories set `meta.width` to a name, since the canvas maps a name through the labels.
 - A switch names the `<html>` attribute it sets; its `unset` value removes the attribute; a `default` of null asks the frame. Use a query name the app does not read itself.
 - `banners` maps a meta key to the banner a state shows when its merged meta sets that key to a non-empty string.
 - Pick a port the old tool does not hold while both run.
@@ -208,6 +208,7 @@ import {
   lane,
   laneBanner,
   laneSwitches,
+  laneWidth,
   registry,
   shellUrl,
   stateUrl,
@@ -226,7 +227,7 @@ type Choices = { viewport: string | null; switches: Record<string, string> }
 // is the state's `meta.width`, else the one that fills the pane, else the first.
 function viewportFor(story: LaneStory | undefined, picked: string | null): Viewport {
   const all = lane.viewports
-  const width = typeof story?.meta.width === 'number' ? story.meta.width : null
+  const width = laneWidth(story?.meta, lane.widths)
   return (
     all.find((v) => v.label === picked) ??
     all.find((v) => width !== null && v.width === width) ??
@@ -526,6 +527,7 @@ import {
   laneBanner,
   laneProps,
   laneSwitches,
+  laneWidth,
   modules,
   switchDefaults,
 } from 'virtual:massimo-stories'
@@ -655,9 +657,8 @@ export default function Canvas({ story, url }: { story: LaneStory; url: LaneUrl 
   if (url.preview) return framed
 
   // Outside preview mode, as in Ladle: the switchers, the banner, and the
-  // story's own width from `meta.width`.
-  const width =
-    typeof story.meta.width === 'number' && story.meta.width > 0 ? story.meta.width : null
+  // story's own width from `meta.width`, a number or a width name.
+  const width = laneWidth(story.meta, lane.widths)
   return (
     <div data-story-width={width ?? undefined} style={width ? { width } : undefined}>
       {lane.switchers.length > 0 && (
@@ -782,6 +783,7 @@ declare module 'virtual:massimo-stories' {
   export type LaneSettings = {
     home: string | null
     viewports: Viewport[]
+    widths: Record<string, number>
     switchers: Switcher[]
     banners: Record<string, { tone: string; lead: string }>
     sideBySide: string[]
@@ -835,6 +837,10 @@ declare module 'virtual:massimo-stories' {
     switchers: Switcher[],
     defaults: SwitchDefaults | null,
   ): Record<string, string | null>
+  export function laneWidth(
+    meta: Record<string, unknown> | null | undefined,
+    widths: LaneSettings['widths'],
+  ): number | null
   export function laneAttributes(
     values: Record<string, string | null>,
     switchers: Switcher[],

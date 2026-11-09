@@ -137,6 +137,12 @@ export function laneSwitches(story, query, switchers, defaults) {
   return out
 }
 
+export function laneWidth(meta, widths) {
+  let width = meta ? meta.width : undefined
+  if (typeof width === 'string' && widths && Object.prototype.hasOwnProperty.call(widths, width)) width = widths[width]
+  return typeof width === 'number' && width > 0 ? width : null
+}
+
 export function laneAttributes(values, switchers) {
   const out = {}
   for (const s of switchers ?? []) {
@@ -716,6 +722,13 @@ export const lane = {
       "height": 0
     }
   ],
+  "widths": {
+    "xsmall": 414,
+    "small": 640,
+    "medium": 768,
+    "large": 1024,
+    "Phone": 375
+  },
   "switchers": [
     {
       "name": "scheme",

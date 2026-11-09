@@ -26,6 +26,7 @@ import {
   laneProps,
   laneRepoFiles,
   laneSwitches,
+  laneWidth,
   massimoStories,
   tsconfigAliases,
   typesLine,
@@ -283,6 +284,7 @@ test('the virtual module runs: its exports, settings and loaders', async () => {
     assert.deepEqual(mod.lane, {
       home: 'foundations--welcome--start-here',
       viewports: laneSettings.viewports,
+      widths: { xsmall: 414, small: 640, medium: 768, large: 1024, Phone: 375 },
       switchers: laneSettings.switchers,
       banners: laneSettings.banners,
       sideBySide: ['src/components/Button.stories.tsx'],
@@ -558,6 +560,15 @@ test('the banner: the first banner key whose meta value is a non-empty string', 
   assert.equal(laneBanner({ exploration: true }, banners), null)
   assert.equal(laneBanner(null, banners), null)
   assert.equal(laneBanner({ drift: 'x' }, null), null)
+})
+
+test('a state\'s width: a number, or a width name the viewports\' labels or Ladle\'s default names map', () => {
+  const widths = { xsmall: 414, small: 640, medium: 768, large: 1024, Phone: 375 }
+  assert.equal(laneWidth({ width: 375 }, widths), 375)
+  assert.equal(laneWidth({ width: 'small' }, widths), 640)
+  assert.equal(laneWidth({ width: 'Phone' }, widths), 375)
+  for (const meta of [{ width: 0 }, { width: 'huge' }, { width: 'toString' }, {}, null]) assert.equal(laneWidth(meta, widths), null, JSON.stringify(meta))
+  assert.equal(laneWidth({ width: 'small' }, null), null)
 })
 
 test('switch values: the query, the default, the frame, the unset value; and the attributes they set', () => {

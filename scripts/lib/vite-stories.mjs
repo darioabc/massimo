@@ -36,6 +36,8 @@ export const DEFAULT_VIEWPORTS = [
   { label: 'Desktop', width: 1440, height: 900 },
   { label: 'Full', width: 0, height: 0 },
 ]
+// Ladle's default width options, by name, which a story's `meta.width` may use.
+export const LADLE_WIDTHS = { xsmall: 414, small: 640, medium: 768, large: 1024 }
 export const DEFAULT_OUT_DIR = 'dist-stories'
 const DEFAULT_HTML = 'stories.html'
 const DEFAULT_CACHE_DIR = 'node_modules/.vite-stories'
@@ -102,6 +104,15 @@ export function laneSwitches(story, query, switchers, defaults) {
     out[s.name] = value ?? s.unset ?? values[0] ?? null
   }
   return out
+}
+
+// A state's own width from its merged meta, in px, or null: a number, or a
+// width name that `widths` maps to one, as Ladle maps a name through its
+// width options.
+export function laneWidth(meta, widths) {
+  let width = meta ? meta.width : undefined
+  if (typeof width === 'string' && widths && Object.prototype.hasOwnProperty.call(widths, width)) width = widths[width]
+  return typeof width === 'number' && width > 0 ? width : null
 }
 
 // The `<html>` attribute each switch value sets, as { attribute: value },
@@ -172,7 +183,7 @@ export function laneProps(module, name, urlArgs) {
   return props
 }
 
-const INLINED = [laneBanner, laneSwitches, laneAttributes, laneProps]
+const INLINED = [laneBanner, laneSwitches, laneWidth, laneAttributes, laneProps]
 
 // ── The registry and the virtual module ─────────────────────────────────────
 
@@ -203,13 +214,17 @@ const switcher = (s) => ({
   default: s?.default ?? null,
 })
 
-// The settings the shell and canvas read beside the registry.
+// The settings the shell and canvas read beside the registry. `widths` maps
+// a width name a story's `meta.width` may hold to px: each viewport's label,
+// then Ladle's default width names.
 export function laneSettings(registry, config) {
   const stories = config.stories ?? {}
   const together = compileGlobs(stories.sideBySide ?? [])
+  const viewports = (Array.isArray(stories.viewports) && stories.viewports.length > 0 ? stories.viewports : DEFAULT_VIEWPORTS).map(viewport)
   return {
     home: registry.home,
-    viewports: (Array.isArray(stories.viewports) && stories.viewports.length > 0 ? stories.viewports : DEFAULT_VIEWPORTS).map(viewport),
+    viewports,
+    widths: { ...LADLE_WIDTHS, ...Object.fromEntries(viewports.filter((v) => v.width > 0).map((v) => [v.label, v.width])) },
     switchers: (stories.switchers ?? []).map(switcher),
     banners: stories.banners ?? {},
     sideBySide: Object.keys(registry.files).filter(together).sort(compare),
