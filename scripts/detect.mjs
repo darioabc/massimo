@@ -221,8 +221,11 @@ const styleFileStats = files
     return { file: f, customProps, theme, text }
   })
 
+// The project folder's own outputs, such as kit.css, are massimo's, not the
+// repo's.
 function styleFiles() {
   return styleFileStats
+    .filter((s) => !s.file.startsWith(ownDir))
     .filter((s) => s.customProps >= 5 || s.theme)
     .sort((a, b) => Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || compare(a.file, b.file))
     .map(({ file, customProps, theme }) => ({ file, customProps, theme }))
@@ -304,6 +307,17 @@ function packageManager() {
 const framework = detectFramework()
 const styling = detectStyling()
 const dirs = componentDirs()
+// A repo may already own a folder named design-system (a package, docs); only
+// reuse the name when it is ours.
+const projectDir = existsSync(join(root, 'design-system')) && !existsSync(join(root, 'design-system', 'state.json')) ? '.massimo' : 'design-system'
+
+let existingConfig = null
+try {
+  existingConfig = readJson(join(root, CONFIG_FILE), null)
+} catch {
+  // an unreadable config: the project folder detect would choose stands in
+}
+const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
 const styles = styleFiles()
 const stories = detectStoryTools()
 const lane = stories.lane?.dir ? stories.lane : null
@@ -317,10 +331,6 @@ const extByFramework = {
 const ext = extByFramework[framework] ?? '{tsx,jsx}'
 const topDirs = dirs.slice(0, 3).map((d) => d.dir)
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
-
-// A repo may already own a folder named design-system (a package, docs); only
-// reuse the name when it is ours.
-const projectDir = existsSync(join(root, 'design-system')) && !existsSync(join(root, 'design-system', 'state.json')) ? '.massimo' : 'design-system'
 
 const suggestedConfig = {
   version: 1,
@@ -367,13 +377,6 @@ const suggestedConfig = {
 // the repo's own graph, ratchet or token inventory, a DESIGN.md. Only listed
 // when there is something, so the report of a repo with nothing to adopt is
 // as it was.
-let existingConfig = null
-try {
-  existingConfig = readJson(join(root, CONFIG_FILE), null)
-} catch {
-  // an unreadable config: the project folder detect would choose stands in
-}
-const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
 const adoptable = adoptableSummary(root, files.filter((f) => !f.startsWith(ownDir)), { tools: stories.tools, lane, config: existingConfig ?? {} })
 
 const result = {

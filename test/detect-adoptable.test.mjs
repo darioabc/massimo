@@ -115,3 +115,13 @@ test('keys the config already gives a role or lists as extra are not reported ag
     rmSync(join(root, 'massimo.config.json'))
   }
 })
+
+test("the project folder's own style files are not the repo's", () => {
+  const kit = `:root { ${Array.from({ length: 40 }, (_, i) => `--k${i}: ${i}px;`).join(' ')} }\n`
+  const files = { ...PLAIN, 'design-system/state.json': '{}', 'design-system/kit/kit.css': kit, 'ds/kit/kit.css': kit }
+  repo(files, (root) => {
+    assert.deepEqual(detect(root).styleFiles.map((s) => s.file), ['ds/kit/kit.css', 'src/styles/app.css'])
+    writeFileSync(join(root, 'massimo.config.json'), JSON.stringify({ projectDir: 'ds' }))
+    assert.deepEqual(detect(root).styleFiles.map((s) => s.file), ['design-system/kit/kit.css', 'src/styles/app.css'])
+  })
+})

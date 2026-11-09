@@ -23,6 +23,10 @@ Adopt the design-system setup a repo already has, instead of generating a second
 - A config that turns on a key added in 0.3.0 should set `"minScripts": "0.3.0"`, so older vendored scripts refuse it instead of ignoring the key. The adopt and tokens skills set it.
 - The guard skill sets `ds:check` to `node <project>/scripts/check.mjs`. A chained `ds:check` from an earlier version keeps working.
 
+### Fixed
+
+- `detect.mjs` no longer lists the project folder's own style files, such as `kit/kit.css`, among the repo's, where they could push one of the repo's own out of the suggested config.
+
 ## 0.2.1
 
 Fixes to 0.2.0, a Figma library made by hand adopted rather than duplicated, and the format gates that let 0.3.0 change formats safely. After updating, run `init.mjs --update-scripts` so the project's copy, which CI runs, refuses files from newer versions.
