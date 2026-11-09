@@ -228,7 +228,7 @@ test('a duplicate id across two files that share a slug is always a story-files 
   ])
 })
 
-test('strictFaults fails story-own and story-banner, and leaves no-story to the audit', () => {
+test('strictFaults fails story-own and story-banner, and never fails no-story', () => {
   const run1 = (options) => {
     const t = variant(options)
     try {
@@ -279,4 +279,51 @@ test('the fixture with every policy option on writes the golden graph', () => {
   for (const [name, text] of [['graph.md', out.md], ['graph.json', `${JSON.stringify(out.g, null, 2)}\n`]]) {
     assert.equal(text, golden(`graph-csf/${name}`, text) ?? text, name)
   }
+})
+
+test('nameMatches alone flags an Explorations title beside a live node, and a banner root exempts it', () => {
+  const files = { 'src/components/Card.stories.tsx': story('Explorations / Card idea') }
+  assert.deepEqual(found(policy({ nameMatches: true }, { files })), [
+    'story-title · src/components/Card.stories.tsx · "Explorations / Card idea" is beside src/components/Card.tsx, so a story there is titled "Patterns / Cards / Card"',
+  ])
+  assert.deepEqual(found(policy({ nameMatches: true, bannerByRoot: { Explorations: 'exploration' } }, { files })).filter((l) => l.startsWith('story-title')), [])
+})
+
+test('nameMatches wants exactly the group and the name, with no part between', () => {
+  const files = { 'src/components/Card.stories.tsx': story('Patterns / Cards / Extra / Card') }
+  assert.equal(found(policy({ nameMatches: true }, { files })).length, 1)
+})
+
+test('nameMatches stays off when only another option is set', () => {
+  const files = { 'src/components/Card.stories.tsx': story('Patterns / Cards / Wrong name') }
+  assert.deepEqual(found(policy({ cleanIds: true }, { files })).filter((l) => l.startsWith('story-title')), [])
+})
+
+test('ownStory by file glob with link own: a story titled with the group and name is enough', () => {
+  const files = { 'src/blocks/Runner.tsx': '// ds:group Patterns / Cards\nexport const Runner = () => null\n', 'src/pages/Named.stories.tsx': story('Patterns / Cards / Runner') }
+  const options = { files, stories: { policy: { ownStory: [{ files: ['src/blocks/*.tsx'], link: 'own' }] } } }
+  const t = variant(options)
+  try {
+    writeFileSync(join(t.root, 'massimo.config.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(t.root, 'massimo.config.json'), 'utf8')), components: { include: ['src/components/**/*.tsx', 'src/blocks/**/*.tsx'], exclude: ['**/*.test.*', '**/*.stories.*'] } }))
+    assert.equal(run('graph', t).status, 0)
+    assert.deepEqual(readJson(t.project, 'graph.json').storyLane.problems.filter((p) => p.rule === 'story-own'), [])
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('a policy.names value that is not a string warns and is ignored, and the graph still builds', () => {
+  const out = graphOf(policy({ nameMatches: true, names: { Card: 3, Editor: 'Step editor' } }))
+  assert.match(out.stderr, /stories\.policy\.names\.Card is not a string, so it is ignored/)
+  assert.equal(out.g.storyLane.lane, 'csf')
+})
+
+test('under Ladle ids, a renamed export takes no storyName and no meta, so no title or banner check reads them', () => {
+  const renamed = "const Inner: Story = () => null\nInner.meta = { exploration: 'x' }\nInner.storyName = 'Bad_Name v2'\nexport { Inner as Outer }\n"
+  const files = { 'src/components/Renamed.stories.tsx': story('Patterns / Cards / Renamed', renamed) }
+  const onRenamed = (l) => l.includes('Renamed.stories')
+  const p = { bannerByRoot: { Explorations: 'exploration' }, titleText: { pattern: '^[A-Za-z ]+$' } }
+  assert.deepEqual(found(policy(p, { files })).filter(onRenamed), [])
+  // With export ids the registry reads them, so the checks do too.
+  assert.ok(found(policy(p, { files, stories: { ids: 'export', policy: p } })).filter(onRenamed).length > 0)
 })
