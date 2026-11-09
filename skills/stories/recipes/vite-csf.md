@@ -18,9 +18,9 @@ The lane runs beside the old tool until every printed edit is made: its own port
 
 Any URL may carry `mode=preview` (no banner, no switchers), a switch as `<name>=<value>`, and Ladle's args as `arg-<name>=<value>`. A legacy URL is never redirected: specs that act straight after loading one see the state at once.
 
-**The shell** shows one state at a time in an iframe of a fixed size from `stories.viewports` (a width of 0 fills the pane), with every other state one click away in the sidebar. States that shared a document or an origin's storage could disturb each other: harnesses that patch globals, seed a session or write storage are written for one state at a time. So each state renders alone in its own canvas document, and only a file listed in `stories.sideBySide` gets a link that shows its states together. The shell holds the switchers and the banner, loads its iframe with `mode=preview` and the switch values, and never calls `history`: every choice is a link. An iframe is never sized to its content, since a `min-h-screen` story would then grow without end.
+**The shell** shows one state at a time in an iframe of a fixed size from `stories.viewports` (a width of 0 fills the pane), with every other state one click away in the sidebar. States that shared a document or an origin's storage could disturb each other: harnesses that patch globals, seed a session or write storage are written for one state at a time. So each state renders alone in its own canvas document, and only a file listed in `stories.sideBySide` gets a link that shows its states together. The shell holds the switchers and the banner, loads its iframe with `mode=preview` and the switch values, and never calls `history`: every choice is a link. The side-by-side view cannot equal the standalone canvases for a state that autofocuses, since only one frame of a page holds focus. An iframe is never sized to its content, since a `min-h-screen` story would then grow without end.
 
-**The canvas** renders one state per document. It reads its query once, sets each switch's attribute on `<html>` before the story paints (a switch whose `default` is null asks the frame's `switchDefaults`), renders the state inside the project's frame, and sets `<html data-story-ready>` once the state and its effects have run; a state that throws sets `data-story-error` instead. With `mode=preview` it shows no banner and no switchers, which is how the shell, sweeps and screenshots load it. Outside preview it applies `meta.width` to the story's container, as Ladle does: a number of px, or a width name that a viewport's label, or else one of Ladle's default names (`xsmall` 414, `small` 640, `medium` 768, `large` 1024), maps to px. It never reads `parameters.width`, which Ladle does not honour either. A story's `args` and `argTypes`, the default export's under the story's, become its props at run time, with `arg-<name>` from the URL read by control type as Ladle reads them. On `pagehide` it unmounts, so a harness's cleanup runs before the next state loads. It refuses a registry in a format newer than its own with "update the lane scaffold".
+**The canvas** renders one state per document. It reads its query once, sets each switch's attribute on `<html>` before the story paints (a switch whose `default` is null asks the frame's `switchDefaults`), renders the state inside the project's frame, and sets `<html data-story-ready>` once the state and its effects have run; a state that throws sets `data-story-error` and removes `data-story-ready`, so no state is marked both (one that throws in an effect after its first commit is caught the same way). With `mode=preview` it shows no banner and no switchers, which is how the shell, sweeps and screenshots load it. Outside preview it applies `meta.width` to the story's container, as Ladle does: a number of px, or a width name that a viewport's label, or else one of Ladle's default names (`xsmall` 414, `small` 640, `medium` 768, `large` 1024), maps to px. It never reads `parameters.width`, which Ladle does not honour either. A story's `args` and `argTypes`, the default export's under the story's, become its props at run time, with `arg-<name>` from the URL read by control type as Ladle reads them. On `pagehide` it unmounts, so a harness's cleanup runs before the next state loads. It refuses a registry in a format newer than its own with "update the lane scaffold".
 
 **The plugin** (`<project>/scripts/lib/vite-stories.mjs`, vendored by init) is a plain Vite plugin object, so massimo stays free of dependencies and the project's own Vite runs it. It adds to the lane's config: aliases from the tsconfig `paths` the repo declares; React pinned to the install root, the first folder up that holds `node_modules/react` (a worktree borrows its parent's install), with `resolve.dedupe`; `server.fs.allow` for the install root and the repo; `optimizeDeps.entries` set to `stories.include` and `stories.html`, since the dependency scan cannot follow the lane's loaders; `cacheDir` at `node_modules/.vite-stories`; `stories.port` with `strictPort`; and the build's input and `stories.outDir` (`dist-stories` when unset). A value the lane's config sets itself wins. A watcher rebuilds the registry when a story file is added, removed or changed, and the frame's exports are read again when it changes; a changed `massimo.config.json` restarts the server. The build writes the entry as `index.html`, writes `meta.json`, writes a `_redirects` holding only `/stories/* /index.html 200` when `stories.hostFiles` lists it (a host such as Cloudflare Pages rewrites even when an asset matches, so a catch-all would serve the chunks as HTML), and leaves out an app `_redirects` or `_headers` copied from `public/`, with a warning. `vite preview` answers the lane's routes the same way.
 
@@ -254,7 +254,11 @@ const togetherHref = (slug: string, choices: Choices) => {
 
 // What the URL asks the shell to show: one state, or a slug's side-by-side
 // files. `missing` is a slug the registry does not hold.
-function selection(url: LaneUrl): { id: string | null; together: string[]; missing: string | null } {
+function selection(url: LaneUrl): {
+  id: string | null
+  together: string[]
+  missing: string | null
+} {
   if (url.kind === 'legacy') return { id: url.oldId, together: [], missing: null }
   if (url.kind === 'slug' && url.slug) {
     const group = registry.slugs[url.slug]
@@ -547,9 +551,11 @@ const describe = (error: unknown) =>
   error instanceof Error ? (error.stack ?? error.message) : String(error)
 
 // A state that cannot render says why, and marks the document so a sweep
-// reports it instead of waiting for it to be ready.
+// reports it instead of waiting for it to be ready. A state is never marked
+// both: one that failed after its first commit loses data-story-ready here.
 function Failed({ message }: { message: string }) {
   useEffect(() => {
+    html().removeAttribute('data-story-ready')
     html().setAttribute('data-story-error', 'true')
   }, [])
   return (
@@ -575,7 +581,7 @@ class Boundary extends Component<{ children: ReactNode }, { error: string | null
 // Marks the document ready once the state and its own effects have run.
 function Ready() {
   useEffect(() => {
-    html().setAttribute('data-story-ready', 'true')
+    if (!html().hasAttribute('data-story-error')) html().setAttribute('data-story-ready', 'true')
   }, [])
   return null
 }
@@ -903,7 +909,7 @@ The lane imports the app's base CSS (`stories.appCss.base`) and never the app's 
 @source "./";
 ```
 
-Point the first import at `stories.appCss.base`. Add a `@source` line for each story-only module whose name no line covers, such as harnesses and shared story helpers (`stories.mjs leak` lists them in the edit it prints, and once `stories.appCss.entry` is set, `--check` warns on each one the entry does not exclude).
+Point the first import at `stories.appCss.base`. Add a `@source` line for each story-only module whose name no line covers, such as harnesses and shared story helpers (while `stories.appCss.entry` is null no command lists them at scaffold time: `stories.mjs leak` prints them in its edit only when it finds a leaked class, which needs `--app` and `--lane` builds. Create the entry with just the `@import` of `stories.appCss.base` and set `stories.appCss.entry` to it, then `stories.mjs --check` warns `css-uncovered` on each story-only module the entry does not exclude).
 
 `src/stories/stories.extra.css`:
 

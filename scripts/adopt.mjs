@@ -476,7 +476,7 @@ function storyShots(differences, notes, pairsFor = null) {
   const out = typeof flags.out === 'string' ? resolve(root, flags.out) : join(projectDir, 'shots', 'adopt', 'stories')
   // Passed through to shoot.mjs, which runs from the repo root: a Playwright
   // path given from here is made absolute first.
-  const pass = ['max-diff', 'threshold', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, f === 'playwright' ? resolve(flags[f]) : flags[f]] : []))
+  const pass = ['max-diff', 'threshold', 'workers', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, f === 'playwright' ? resolve(flags[f]) : flags[f]] : []))
   const argv = ['--pairs', path, '--out', out, ...pass]
   if (!truthy(flags.shoot)) {
     notes.push(`Shoot them, with both servers up: ${scriptCommand(root, projectDir, 'shoot', [`--pairs ${shownPath(path)}`, `--out ${shownPath(out)}`, ...pass].join(' '))}, or run verify stories again with --shoot.`)
