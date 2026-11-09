@@ -595,7 +595,8 @@ function passLine(cls, c) {
 
 // ── The tool's edits ────────────────────────────────────────────────────────
 
-// Every edit the repo must make before the story tool can go, for the
+// Every edit the repo must make before the story tool can go (the convert
+// command writes them to adopt/stories/edits.md through writeEditsFile), for the
 // ledger's tool assets that go (decision convert or retire), on a csf lane;
 // null when none does. Specs and docs that name ids are held against the
 // tool's own list when --against gives it.

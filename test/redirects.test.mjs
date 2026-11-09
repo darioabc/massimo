@@ -197,7 +197,7 @@ test('edits.md groups the open edits by class and lists what still works, what i
   assert.match(md, /- `src\/Thing\.tsx:1` uses \.ladle\/ladle\.css\. Change: read the app's base CSS/)
   assert.match(md, /## Prose \(3\)\n\n.*\n\n- `README\.md:1`\n/)
   assert.match(md, /Run `node scripts\/adopt\.mjs retire stories --dry-run` for what is still open\./)
-  assert.ok(!md.includes('—'))
+  assert.ok(!md.includes('\u2014'))
   assert.match(editsSummary(edits), /^\d+ open edits?, \d+ mentions? that still work/)
 })
 
