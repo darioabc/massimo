@@ -34,12 +34,13 @@ import { frozenProblems } from './lib/convert.mjs'
 import { laneRegistry } from './lib/lane.mjs'
 import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
 import { createResolver, isStoryFile, isTestFile } from './lib/source.mjs'
+import { typesLine } from './lib/vite-stories.mjs'
 
 const LANES = ['native', 'manifest', 'csf']
 const APP_TEXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|html|mdx)$/
 
-// The first line the scaffold's type file carries for a registry format.
-export const typesLine = (format) => `// massimo lane types, format ${format}`
+// The first line the scaffold's type file carries, as the plugin writes it.
+export { typesLine }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
@@ -125,7 +126,7 @@ export function checkLane({ root, config, files = repoFiles(root, config), graph
   for (const p of cssLayoutProblems({ root, config, files, resolver: createResolver(root, config) })) (p.severity === 'warn' ? warnings : problems).push(p)
 
   // A scaffold written by another format of the plugin reads a registry it may not understand.
-  const expected = typesLine(registry.format)
+  const expected = typesLine()
   for (const file of files.filter((f) => f === 'massimo.d.ts' || f.endsWith('/massimo.d.ts'))) {
     const first = readFileSync(join(root, file), 'utf8').split('\n', 1)[0].replace(/^﻿/, '').trimEnd()
     if (first !== expected) problems.push({ rule: 'scaffold', file, detail: `its first line is "${first}", but this plugin writes "${expected}"; update the lane scaffold` })
