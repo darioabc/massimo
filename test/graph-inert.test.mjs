@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { DEFAULTS, STORIES_0_4_0_KEYS } from '../scripts/lib/project.mjs'
 import { SCRIPTS, golden, read, run, scratch } from './helpers.mjs'
 
 const docs = (ctx) => spawnSync(process.execPath, [join(SCRIPTS, 'docs.mjs'), '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
@@ -40,4 +41,23 @@ test('extra keys and the native lane, set the 0.2.1 way, write what 0.2.1 wrote'
   const out = outputs((c) => ({ ...c, stories: { ...c.stories, lane: 'native' }, graph: { extraKeys: ['bogus'] } }))
   same('graph-app-extra/graph.md', out.md)
   same('graph-app-extra/graph.json', out.json)
+})
+
+test('every 0.4.0 stories key at its default writes what 0.2.1 wrote', () => {
+  const defaults = Object.fromEntries(STORIES_0_4_0_KEYS.map((key) => [key, DEFAULTS.stories[key]]))
+  const out = outputs((c) => ({ ...c, stories: { ...c.stories, ...defaults } }))
+  same('graph-app/graph.md', out.md)
+  same('graph-app/graph.json', out.json)
+  same('graph-app/README.md', out.readme)
+})
+
+test('a manifest lane writes the same story lane summary, with no csf fields', () => {
+  const t = scratch('adopt')
+  try {
+    assert.equal(run('graph', t).status, 0)
+    const lane = JSON.parse(read(t.project, 'graph.json')).storyLane
+    assert.deepEqual(Object.keys(lane), ['manifest', 'entries', 'states', 'direct', 'incidental', 'none', 'problems'])
+  } finally {
+    t.cleanup()
+  }
 })

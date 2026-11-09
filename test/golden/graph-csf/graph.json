@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "generatedBy": "massimo graph",
+  "summary": {
+    "components": 4,
+    "withStory": 3,
+    "withoutStory": 1,
+    "noStory": 0,
+    "tokens": 0,
+    "nodesWithRules": 0,
+    "unresolvedImports": 0,
+    "headerFaults": 0
+  },
+  "tokens": {
+    "styleFiles": [],
+    "total": 0,
+    "groups": {},
+    "dtcg": null
+  },
+  "storyQueue": [
+    {
+      "name": "Field",
+      "file": "src/components/Field.tsx",
+      "usage": 0
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Button",
+      "file": "src/components/Button.tsx",
+      "tier": "Primitives",
+      "group": "Primitives / Actions",
+      "noStory": null,
+      "stories": [
+        "src/components/Button.stories.tsx"
+      ],
+      "own": [
+        "primitives--actions--button"
+      ],
+      "direct": [
+        "primitives--actions--button"
+      ],
+      "incidental": [],
+      "exports": [
+        "Button"
+      ],
+      "composes": [],
+      "composedBy": {},
+      "usage": 0,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Card",
+      "file": "src/components/Card.tsx",
+      "tier": "Patterns",
+      "group": "Patterns / Cards",
+      "noStory": null,
+      "stories": [
+        "src/components/Card.stories.tsx"
+      ],
+      "own": [
+        "patterns--cards--card"
+      ],
+      "direct": [
+        "patterns--cards--card"
+      ],
+      "incidental": [],
+      "exports": [
+        "Card"
+      ],
+      "composes": [],
+      "composedBy": {},
+      "usage": 0,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Editor",
+      "file": "src/components/gauge/Editor.tsx",
+      "tier": "Patterns",
+      "group": "Patterns / Gauge",
+      "noStory": null,
+      "stories": [
+        "src/components/gauge/Editor.stories.tsx"
+      ],
+      "own": [
+        "patterns--gauge--editor"
+      ],
+      "direct": [
+        "patterns--gauge--editor"
+      ],
+      "incidental": [],
+      "exports": [
+        "Editor"
+      ],
+      "composes": [],
+      "composedBy": {},
+      "usage": 0,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    },
+    {
+      "name": "Field",
+      "file": "src/components/Field.tsx",
+      "tier": "Primitives",
+      "group": "Primitives / Inputs",
+      "noStory": null,
+      "stories": [],
+      "own": [],
+      "direct": [],
+      "incidental": [],
+      "exports": [
+        "Field"
+      ],
+      "composes": [],
+      "composedBy": {},
+      "usage": 0,
+      "props": [],
+      "states": [],
+      "packages": [],
+      "style": {
+        "classes": {},
+        "tokens": [],
+        "cssVars": []
+      },
+      "rules": {},
+      "decisions": []
+    }
+  ],
+  "unresolved": {},
+  "faults": [],
+  "storyLane": {
+    "lane": "csf",
+    "files": 7,
+    "states": 13,
+    "direct": 3,
+    "incidental": 0,
+    "none": 1,
+    "problems": [
+      {
+        "rule": "no-story",
+        "file": "src/components/Field.tsx",
+        "detail": "no direct story"
+      },
+      {
+        "rule": "story-files",
+        "file": "src/components/Button.stories.tsx",
+        "detail": "LogIn: the id primitives--actions--button--log--in-button splits into 5 levels instead of 4"
+      },
+      {
+        "rule": "story-files",
+        "file": "src/pages/review/Summary.stories.tsx",
+        "detail": "StateB_Admin: the id pages--review--summary--state-b--admin splits into 5 levels instead of 4"
+      },
+      {
+        "rule": "story-own",
+        "file": "src/components/Field.tsx",
+        "detail": "no story of its own: add a story beside it (src/components/Field.stories.*) or one titled \"Primitives / Inputs / Field\""
+      },
+      {
+        "rule": "story-title",
+        "file": "src/pages/review/Summary.stories.tsx",
+        "detail": "the state StateB_Admin has characters or spacing that stories.policy.titleText.pattern does not allow"
+      }
+    ]
+  }
+}
