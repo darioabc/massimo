@@ -70,12 +70,17 @@ function sourceGraph({ root, config, files, resolver }) {
   let built = null
   const resolve = resolver ?? ((from, spec) => (built ??= createResolver(root, config))(from, spec))
   const isStoryPath = compileGlobs(config?.stories?.include ?? [])
+  // `stories` holds story files and tests, which are never app code; `own`
+  // holds the story files alone, since only they make a module story-only.
   const stories = new Set()
+  const own = new Set()
   const sources = []
   for (const file of files ?? []) {
     if (!isSource(file)) continue
     sources.push(file)
-    if (isStoryFile(file) || isTestFile(file) || isStoryPath(file)) stories.add(file)
+    const test = isTestFile(file)
+    if (!test && (isStoryFile(file) || isStoryPath(file))) own.add(file)
+    if (test || own.has(file)) stories.add(file)
   }
   const imports = new Map()
   const importers = new Map()
@@ -95,16 +100,17 @@ function sourceGraph({ root, config, files, resolver }) {
     imports.set(file, targets)
     for (const target of targets) (importers.get(target) ?? importers.set(target, new Set()).get(target)).add(file)
   }
-  // The smallest set in which every member has an importer and all its
-  // importers are stories, tests or members: a module that app code also
-  // imports never gets in, and a cycle nothing outside reaches stays out.
+  // The smallest set in which every member has a story or a member among its
+  // importers and all its importers are stories, tests or members: a module
+  // that app code also imports never gets in, a module only tests import is
+  // test support and stays out, and so does a cycle nothing outside reaches.
   const only = new Set()
   for (let grew = true; grew; ) {
     grew = false
     for (const file of sources) {
       if (stories.has(file) || only.has(file)) continue
-      const from = importers.get(file)
-      if (from && [...from].every((f) => stories.has(f) || only.has(f))) {
+      const from = [...(importers.get(file) ?? [])]
+      if (from.some((f) => own.has(f) || only.has(f)) && from.every((f) => stories.has(f) || only.has(f))) {
         only.add(file)
         grew = true
       }
@@ -116,8 +122,9 @@ function sourceGraph({ root, config, files, resolver }) {
 }
 
 // Source files that are not stories or tests and are imported only by
-// stories, tests or other such files, plus whatever `stories.storyOnly`
-// globs add, as sorted repo-relative paths. `files` is every repo file.
+// stories, tests or other such files, at least one of them a story or such a
+// file, plus whatever `stories.storyOnly` globs add, as sorted repo-relative
+// paths. `files` is every repo file.
 export function storyOnlyModules({ root, config, files, resolver } = {}) {
   return [...sourceGraph({ root, config, files, resolver }).only].sort(compare)
 }

@@ -37,11 +37,22 @@ test('a module only stories, tests and other such modules import is story-only',
   const t = lane({
     'src/pages/review/rows.ts': 'export const FIXED = 3\n',
     'src/pages/review/tableHarness.tsx': `import { FIXED } from './rows'\nexport const ROWS = [FIXED]\nexport const ReviewTable = () => null\n`,
+    'src/pages/review/tableHarness.test.tsx': `import { ROWS } from './tableHarness'\n`,
     'src/components/Button.stories.test.tsx': `import * as stories from './Button.stories'\nimport { testOnly } from './testOnly'\n`,
     'src/components/testOnly.ts': 'export const testOnly = 1\n',
   })
   // The fixture's components are imported by their stories alone, so they count too.
-  assert.deepEqual(storyOnlyModules(t), ['src/components/Button.tsx', 'src/components/Card.tsx', 'src/components/gauge/Editor.tsx', 'src/components/testOnly.ts', 'src/pages/review/rows.ts', 'src/pages/review/tableHarness.tsx'])
+  assert.deepEqual(storyOnlyModules(t), ['src/components/Button.tsx', 'src/components/Card.tsx', 'src/components/gauge/Editor.tsx', 'src/pages/review/rows.ts', 'src/pages/review/tableHarness.tsx'])
+})
+
+test('a module only tests import is test support, not story-only, and neither is what only it imports', () => {
+  const t = lane({
+    'scripts/report.ts': `import { rule } from './rule'\nexport const report = rule\n`,
+    'scripts/rule.ts': 'export const rule = 1\n',
+    'scripts/report.test.ts': `import { report } from './report'\n`,
+  })
+  const only = storyOnlyModules(t)
+  for (const f of ['scripts/report.ts', 'scripts/rule.ts']) assert.ok(!only.includes(f), f)
 })
 
 test('a module app code also imports stays app code, and so does what only it imports', () => {
