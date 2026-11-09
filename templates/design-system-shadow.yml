@@ -37,8 +37,7 @@ jobs:
       - name: massimo story lane (shadow)
         continue-on-error: true
         run: |
-          if node -e "process.exit(require('./massimo.config.json').stories?.lane === 'csf' ? 0 : 1)"; then
-            node <project>/scripts/stories.mjs --check
+          if node --input-type=module -e "import { readJson } from './<project>/scripts/lib/project.mjs'; process.exit(readJson('massimo.config.json')?.stories?.lane === 'csf' ? 0 : 1)"; then
             npm ci
             npm run build
             npm run ds:stories:build

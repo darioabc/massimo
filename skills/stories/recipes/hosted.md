@@ -60,4 +60,4 @@ On the deployed site:
 
 ## CI
 
-`design-system-shadow.yml` has a step for this: for a csf lane it runs the check, both builds and the leak check on pull requests, allowed to fail like the rest of that job. The deploy itself stays in the repo's own workflow.
+`design-system-shadow.yml` has a step for this: for a csf lane it runs both builds and the leak check on pull requests (the job's `check.mjs` step already runs `stories.mjs --check`), allowed to fail like the rest of that job. `design-system-check.yml` runs only the check, so copy the shadow step there to keep the builds and the leak check in CI. The deploy itself stays in the repo's own workflow.
