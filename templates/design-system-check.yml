@@ -22,4 +22,6 @@ jobs:
       # The checks are zero-dependency Node scripts vendored in the project folder,
       # so no install step is needed, unless a guard.extraChecks command needs
       # the repo's packages: then add the repo's install step here.
+      # A csf story lane needs no step of its own: check.mjs runs
+      # stories.mjs --check when stories.lane is "csf", so ds:check covers it.
       - run: npm run ds:check

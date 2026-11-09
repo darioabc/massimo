@@ -940,6 +940,8 @@ The output folder must be ignored before the first build: `git check-ignore -q <
 - `npm run ds:stories`, then load `/stories`, one canvas (`/stories/<slug>/<state>`) and one old link (`/?story=<id>&mode=preview`); each reaches `html[data-story-ready]` with no console error.
 - `npm run ds:stories:build`: the output folder holds `index.html`, `meta.json` and the chunks, a `_redirects` with only the `/stories/*` line when asked, and no `_headers` from the app.
 
+To serve the built lane from a host, follow `hosted.md`: the rewrite, the headers and the checks before it goes up.
+
 ## Leak check
 
 ```bash
