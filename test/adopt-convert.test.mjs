@@ -430,7 +430,7 @@ function ladleRepo() {
   return ctx
 }
 
-test("config --lane csf proposes the csf lane from Ladle's own settings and the frozen design targets", () => {
+test("config --lane csf proposes the csf lane from Ladle's own settings and no frozen files", () => {
   const ctx = ladleRepo()
   assert.equal(adopt(ctx, ['scan']).status, 0)
   const inventory = JSON.parse(readFileSync(join(ctx.project, 'adopt', 'inventory.json'), 'utf8'))
