@@ -66,7 +66,9 @@ const excludedBy = (lines, file) => lines.some((l) => globToRegExp(l.glob).test(
 // imports at run time, and the story-only set. A type-only import is not an
 // edge, since the app takes nothing from it at run time.
 function sourceGraph({ root, config, files, resolver }) {
-  const resolve = resolver ?? createResolver(root, config)
+  // The resolver is built on first use, so no files means no disk read.
+  let built = null
+  const resolve = resolver ?? ((from, spec) => (built ??= createResolver(root, config))(from, spec))
   const isStoryPath = compileGlobs(config?.stories?.include ?? [])
   const stories = new Set()
   const sources = []
