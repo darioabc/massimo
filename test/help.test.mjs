@@ -12,8 +12,8 @@ import { SCRIPTS, scratch } from './helpers.mjs'
 const contexts = []
 after(() => contexts.forEach((c) => c.cleanup()))
 
-// Every command-line script; the two hooks read a hook payload and take no flags.
-const NAMES = ['adopt', 'audit', 'canvas', 'check', 'detect', 'docs', 'graph', 'init', 'serve', 'shoot', 'state', 'stories', 'tokens']
+// Every script, the two hooks included: a hook answers --help too, and reads no payload for it.
+const NAMES = ['adopt', 'agent-guard', 'audit', 'canvas', 'check', 'detect', 'docs', 'graph', 'init', 'serve', 'session-start', 'shoot', 'state', 'stories', 'tokens']
 const snapshot = (root) => walk(root).sort().map((f) => `${f}:${readFileSync(join(root, f), 'utf8').length}`)
 
 for (const name of NAMES) {
@@ -22,7 +22,7 @@ for (const name of NAMES) {
       const ctx = scratch('csf-lane')
       contexts.push(ctx)
       const before = snapshot(ctx.root)
-      const r = spawnSync(process.execPath, [join(SCRIPTS, `${name}.mjs`), flag, '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8', timeout: 20000 })
+      const r = spawnSync(process.execPath, [join(SCRIPTS, `${name}.mjs`), flag, '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8', timeout: 20000, input: '' })
       assert.equal(r.status, 0, r.stderr)
       const header = readFileSync(join(SCRIPTS, `${name}.mjs`), 'utf8').split('\n').filter((l) => l.startsWith('//'))[0].slice(3)
       assert.ok(r.stdout.startsWith(header), r.stdout.slice(0, 120))

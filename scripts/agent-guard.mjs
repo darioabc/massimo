@@ -9,6 +9,9 @@
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const READ_ONLY = new Set(['reviewer', 'visual-reviewer'])
 const EXPLORATIONS_ONLY = new Set(['ideator'])

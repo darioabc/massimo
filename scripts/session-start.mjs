@@ -4,8 +4,11 @@
 // Silent everywhere else, and never fails a session: any error exits 0.
 
 import { existsSync } from 'node:fs'
+import { helpAndExit } from './lib/help.mjs'
 import { findRoot, loadConfig, rel } from './lib/project.mjs'
 import { hookBanner, hookContext, loadState } from './lib/state.mjs'
+
+helpAndExit(import.meta.url)
 
 try {
   const start = process.env.CLAUDE_PROJECT_DIR || process.cwd()
