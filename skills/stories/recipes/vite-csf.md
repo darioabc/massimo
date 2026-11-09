@@ -889,7 +889,7 @@ The lane imports the app's base CSS (`stories.appCss.base`) and never the app's 
 @source "./";
 ```
 
-Point the first import at `stories.appCss.base`. Add a `@source` line for each story-only module whose name no line covers, such as harnesses and shared story helpers (`stories.mjs --check` lists them).
+Point the first import at `stories.appCss.base`. Add a `@source` line for each story-only module whose name no line covers, such as harnesses and shared story helpers (`stories.mjs leak` lists them in the edit it prints, and once `stories.appCss.entry` is set, `--check` warns on each one the entry does not exclude).
 
 `src/stories/stories.extra.css`:
 
@@ -933,7 +933,9 @@ npm run build && npm run ds:stories:build
 node <project>/scripts/stories.mjs leak --app dist --lane dist-stories
 ```
 
-Use the app's real build output folder if it is not `dist`. It fails when a class found only in story files and story-only modules reaches the app's CSS, and prints the CSS edit that keeps them out. `leak` refuses an output folder git does not ignore.
+Use the app's real build output folder if it is not `dist`. It fails when a class found only in story files and story-only modules reaches the app's CSS, and prints the CSS edit that keeps them out, with every path written from the entry CSS it names. `leak` refuses an output folder git does not ignore.
+
+The scan goes by words, so a class that a package's stylesheet or a CSS plugin gives the app, under a name only stories use, shows up too. Settle one with a probe: add a story-only class to a story, rebuild both, and run `leak --probe '<class>'`, which passes when the class is in the lane's CSS and not the app's. After moving the exclusions, keep the app build from before the move and run `leak --before <that folder>`: it fails if the app's CSS lost a class an app file uses.
 
 ## Gotchas
 
