@@ -348,7 +348,7 @@ test('story tools: CSF files read statically, and what is not readable is listed
     const r = adopt(root, ['--json'])
     assert.equal(r.status, 0, r.stderr)
     const out = JSON.parse(r.stdout)
-    assert.deepEqual(out.stories.tools, [{ tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle', 'ladle:build'], port: 61000, files: 3, stories: 2, withArgs: 1, notReadable: 2 }])
+    assert.deepEqual(out.stories.tools, [{ tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle', 'ladle:build'], port: 61000, files: 3, stories: 2, withArgs: 1, notReadable: 2, settings: { stories: null, storyOrder: null, defaultStory: null, port: null, widths: null, outDir: null } }])
     const button = out.stories.files.find((f) => f.file === 'src/Button.stories.tsx')
     assert.deepEqual([button.title, button.stories, button.args], ['Primitives / Button', ['Solid fill', 'Sized'], true])
     assert.match(out.stories.files.find((f) => f.file === 'src/Old.stories.tsx').unreadable[0], /storiesOf/)
