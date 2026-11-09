@@ -42,7 +42,7 @@ const APP_TEXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|html|mdx)$/
 // The first line the scaffold's type file carries, as the plugin writes it.
 export { typesLine }
 
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 // Whether git ignores a folder: true, false, or null when git cannot say. A
 // folder outside the repo can never reach a commit, so it counts as ignored.
@@ -146,21 +146,34 @@ function cssIn(dir) {
   return cssClasses(files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n'))
 }
 
-// The edit that keeps the exclusions out of the base CSS the lane imports.
+// The edit that keeps story-only files out of the app's CSS while the lane
+// still reads them (layout A): the exclusions live in an entry CSS of the
+// app's own, which imports the base CSS the lane imports. With no entry set,
+// it proposes app.css beside the base. Each path is written from the entry's
+// folder, since Tailwind reads a `@source` path from the file that declares it.
 export function layoutEdit(config, storyOnly) {
-  const base = config.stories.appCss?.base ?? '<base css>'
-  const entry = config.stories.appCss?.entry ?? '<entry css>'
-  const from = config.stories.appCss?.entry ? posix.dirname(entry) : '.'
+  const appCss = config.stories.appCss ?? {}
+  const base = typeof appCss.base === 'string' ? appCss.base : null
+  const excluded = [...storyOnly, ...config.stories.include]
+  if (base === null) {
+    return [
+      'The app must keep story-only files out of its CSS in an entry of its own (layout A), and stories.appCss names no base CSS:',
+      '  1. Set stories.appCss.base to the CSS file the app\'s main module imports, and run leak again for the exact edit.',
+      '  2. The files that entry will exclude, from the repo root:',
+      ...excluded.map((p) => `    ${p}`),
+    ]
+  }
+  const entry = typeof appCss.entry === 'string' ? appCss.entry : posix.join(posix.dirname(base), 'app.css')
+  const from = posix.dirname(entry)
   const here = (p) => posix.relative(from, p) || '.'
   const spec = here(base).startsWith('.') ? here(base) : `./${here(base)}`
-  const nots = [...storyOnly, ...config.stories.include].map((p) => `    @source not "${here(p)}";`)
   return [
-    'The lane and the app must not share a stylesheet that holds @source not (layout A):',
-    `  1. ${base}: take out its @source not lines.`,
-    `  2. ${entry}: start with @import "${spec}"; then the exclusions:`,
-    ...nots,
-    `  3. The app's main module imports ${entry}. The lane's stories.css keeps importing ${base}.`,
-    ...(config.stories.appCss ? [] : ['  4. Set stories.appCss to { "base": ..., "entry": ... } so --check can read the layout.']),
+    `The lane imports ${base}, so the app keeps story-only files out of its CSS in an entry of its own (layout A):`,
+    `  1. ${typeof appCss.entry === 'string' ? `Make ${entry} start` : `Create ${entry}`} with @import "${spec}"; then the exclusions:`,
+    ...excluded.map((p) => `    @source not "${here(p)}";`),
+    `  2. Point the app's main module at ${entry} instead of ${base}.`,
+    `  3. Keep @source not out of ${base} and the sheets it imports: there it would drop the lane's own classes too.`,
+    ...(typeof appCss.entry === 'string' ? [] : [`  4. Set stories.appCss.entry to "${entry}", so stories.mjs --check reads the layout.`]),
   ]
 }
 
@@ -205,14 +218,14 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     lines.push(leaked.length > 0 ? `leak: ${probe} is in the app's CSS` : `ok: ${probe} is in the lane's CSS and not the app's`)
   } else {
     leaked = [...storyWords].filter((w) => !appWords.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
-    if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
+    if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class', 'classes')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
     else lines.push('ok: no class only stories use is in the app\'s CSS')
   }
 
   let lost = []
   if (before) {
     lost = [...cssIn(before)].filter((c) => !appClasses.has(c) && appWords.has(c)).sort(compare)
-    if (lost.length > 0) lines.push(`lost: the app's CSS no longer has ${plural(lost.length, 'class')} an app file uses: ${lost.slice(0, 20).map((c) => `${c} (${appWords.get(c)})`).join(', ')}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`)
+    if (lost.length > 0) lines.push(`lost: the app's CSS no longer has ${plural(lost.length, 'class', 'classes')} an app file uses: ${lost.slice(0, 20).map((c) => `${c} (${appWords.get(c)})`).join(', ')}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`)
     else lines.push('ok: the app\'s CSS lost no class an app file uses')
   }
 

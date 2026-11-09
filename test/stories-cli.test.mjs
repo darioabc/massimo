@@ -202,12 +202,37 @@ test('a leak prints the edit that keeps the exclusions out of the base CSS', () 
   b.config.stories.appCss = { base: 'src/styles/index.css', entry: 'src/styles/app.css' }
   const r = leak(b)
   const edit = r.lines.slice(r.lines.indexOf('') + 1)
-  assert.equal(edit[0], 'The lane and the app must not share a stylesheet that holds @source not (layout A):')
-  assert.equal(edit[1], '  1. src/styles/index.css: take out its @source not lines.')
-  assert.equal(edit[2], '  2. src/styles/app.css: start with @import "./index.css"; then the exclusions:')
+  assert.equal(edit[0], 'The lane imports src/styles/index.css, so the app keeps story-only files out of its CSS in an entry of its own (layout A):')
+  assert.equal(edit[1], '  1. Make src/styles/app.css start with @import "./index.css"; then the exclusions:')
   assert.ok(edit.includes('    @source not "../pages/review/tableHarness.tsx";'))
   assert.ok(edit.includes('    @source not "../**/*.stories.{tsx,ts}";'))
-  assert.equal(layoutEdit(deepMerge(structuredClone(DEFAULTS), {}), []).at(-1), '  4. Set stories.appCss to { "base": ..., "entry": ... } so --check can read the layout.')
+  assert.equal(edit.at(-1), "  3. Keep @source not out of src/styles/index.css and the sheets it imports: there it would drop the lane's own classes too.")
+})
+
+test('with no entry CSS set, the edit proposes app.css beside the base, with paths written from there', () => {
+  const config = deepMerge(structuredClone(DEFAULTS), { stories: { include: ['src/**/*.stories.tsx'], appCss: { base: 'src/styles/index.css', entry: null } } })
+  assert.deepEqual(layoutEdit(config, ['src/pages/review/tableHarness.tsx', 'tools/mail/preview.ts']), [
+    'The lane imports src/styles/index.css, so the app keeps story-only files out of its CSS in an entry of its own (layout A):',
+    '  1. Create src/styles/app.css with @import "./index.css"; then the exclusions:',
+    '    @source not "../pages/review/tableHarness.tsx";',
+    '    @source not "../../tools/mail/preview.ts";',
+    '    @source not "../**/*.stories.tsx";',
+    "  2. Point the app's main module at src/styles/app.css instead of src/styles/index.css.",
+    "  3. Keep @source not out of src/styles/index.css and the sheets it imports: there it would drop the lane's own classes too.",
+    '  4. Set stories.appCss.entry to "src/styles/app.css", so stories.mjs --check reads the layout.',
+  ])
+  // With no base CSS named, it cannot write paths from an entry, so it asks for the base first.
+  const none = layoutEdit(deepMerge(structuredClone(DEFAULTS), {}), ['src/x.ts'])
+  assert.equal(none[1], "  1. Set stories.appCss.base to the CSS file the app's main module imports, and run leak again for the exact edit.")
+  assert.equal(none[3], '    src/x.ts')
+})
+
+test('a leak of several classes counts them in words', () => {
+  const both = `${APP_CSS}${STORY_CLASS}\n.h-77 { height: 1px }\n`
+  const b = builds({ appCss: both, laneCss: both })
+  write(b.root, { 'src/Tall.stories.tsx': `export default { title: 'Foundations / Tall' }\nexport const Tall = () => <div className="h-77" />\n` })
+  b.files.push('src/Tall.stories.tsx')
+  assert.equal(leak(b).lines[0], "leak: 2 classes only stories use are in the app's CSS: h-77, w-[13.37rem]")
 })
 
 test('leak --before fails when the app\'s CSS lost a class an app file uses', () => {
