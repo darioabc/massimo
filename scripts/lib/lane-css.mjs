@@ -365,6 +365,12 @@ function compoundsOf(selector) {
   return out.filter((c) => c.length > 0)
 }
 
+// The selectors a selector that is one :is() or :where() holds, or null.
+function heldList(compounds) {
+  const lone = compounds.length === 1 && compounds[0].length === 1 ? compounds[0][0] : null
+  return lone?.kind === 'pseudo' && lone.args !== null && (lone.name === 'is' || lone.name === 'where') ? selectorList(lone.args) : null
+}
+
 // The class a complex selector is the own rule of, as a list of none or one:
 // the selector names that class and no other, the class's compound holds
 // nothing else but pseudo-classes and pseudo-elements, and any other compound
@@ -374,14 +380,44 @@ function compoundsOf(selector) {
 function ownIn(selector) {
   const compounds = compoundsOf(selector)
   if (compounds === null || compounds.length === 0) return []
-  const lone = compounds.length === 1 && compounds[0].length === 1 ? compounds[0][0] : null
-  if (lone?.kind === 'pseudo' && lone.args !== null && (lone.name === 'is' || lone.name === 'where')) return selectorList(lone.args).flatMap(ownIn)
+  const list = heldList(compounds)
+  if (list !== null) return list.flatMap(ownIn)
   const named = new Set(classesIn(selector))
   const home = compounds.filter((c) => c.some((p) => p.kind === 'class'))
   if (named.size !== 1 || home.length !== 1 || home[0].filter((p) => p.kind === 'class').length !== 1) return []
   const holds = (compound, kinds) => compound.every((p) => kinds.includes(p.kind))
   if (!holds(home[0], ['class', 'pseudo']) || !compounds.every((c) => c === home[0] || holds(c, ['pseudo', 'any']))) return []
   return [...named]
+}
+
+// Whether a variant class's name names the class `other`: each piece of it
+// between slashes occurs in the name, and not inside a longer run of letters
+// and digits, as `group` and `item` do in `group-hover/item:flex`.
+const WORD_CHAR = /[A-Za-z0-9]/
+function namesClass(name, other) {
+  return other.split('/').filter(Boolean).every((piece) => {
+    for (let at = name.indexOf(piece); at !== -1; at = name.indexOf(piece, at + 1)) {
+      if (!WORD_CHAR.test(name[at - 1] ?? '') && !WORD_CHAR.test(name[at + piece.length] ?? '')) return true
+    }
+    return false
+  })
+}
+
+// The classes with a variant a complex selector holds, as a list: each one a
+// compound names, when every other class a compound names is one its variant
+// names, as `.group` is for `.group:hover .group-hover\:flex`. So a package's
+// sheet that scopes one under its own class, as in `.widget
+// .hover\:opacity-90:hover`, holds none. A class inside a pseudo-class's
+// brackets, as in Tailwind 4's `:where(.group)`, is the variant's. A selector
+// that is one :is() or :where() is read as the list it holds, and one that
+// does not read holds every class with a variant it names.
+function variantsIn(selector) {
+  const compounds = compoundsOf(selector)
+  if (compounds === null) return classesIn(selector).filter((name) => name.includes(':'))
+  const list = heldList(compounds)
+  if (list !== null) return list.flatMap(variantsIn)
+  const names = compounds.flat().filter((p) => p.kind === 'class').map((p) => p.name)
+  return names.filter((name) => name.includes(':') && names.every((other) => other === name || namesClass(name, other)))
 }
 
 // The at-rules a rule of a class's own may sit in.
@@ -400,15 +436,17 @@ export function cssClasses(cssText) {
 // in `.widget .mt-10`, or a component library names beside another, as in
 // `.tooltip.tooltip-open`, is not held. A class whose name carries a variant
 // (an escaped colon, as in `.md\:p-4` or `.\[\&\>div\]\:static`) is held
-// wherever a selector names it, since its variant is what puts other
-// selectors around it.
+// beside the classes its variant names and inside any at-rule (see
+// variantsIn), since its variant is what puts other selectors and at-rules
+// around it; under a package's class it is not held either.
 export function ownClasses(cssText) {
   const out = new Set()
   const memo = new Map()
   for (const rule of styleRules(cssText)) {
-    for (const name of classesIn(rule.prelude)) if (name.includes(':')) out.add(name)
+    const selectors = selectorsOf(rule, memo)
+    for (const selector of selectors) for (const name of variantsIn(selector)) out.add(name)
     if (!rule.ats.every((at) => WRAPPERS.has(at))) continue
-    for (const selector of selectorsOf(rule, memo)) for (const name of ownIn(selector)) if (!name.includes(':')) out.add(name)
+    for (const selector of selectors) for (const name of ownIn(selector)) if (!name.includes(':')) out.add(name)
   }
   return out
 }

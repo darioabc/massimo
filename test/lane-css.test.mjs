@@ -313,3 +313,28 @@ test('ownClasses leaves out a class a package scopes under its own, a component 
   assert.deepEqual([...ownClasses(css)].sort(), ['btn', 'card', 'tooltip', 'widget'])
   assert.deepEqual([...cssClasses(css)].sort(), ['btn', 'btn-ghost', 'card', 'card-wide', 'h-77', 'h-78', 'h-79', 'join-item', 'mt-10', 'p-10', 'title', 'tooltip', 'tooltip-content', 'tooltip-open', 'w-24', 'widget'])
 })
+
+test('ownClasses holds a class with a variant beside the classes its variant names, and not under a package\'s class', () => {
+  const css = [
+    // Tailwind 3 puts the classes a variant names around the class.
+    String.raw`.group:hover .group-hover\:flex{display:flex}.group\/item:hover .group-hover\/item\:block{display:block}`,
+    String.raw`.peer:checked~.peer-checked\:hidden{display:none}:is(.dark .dark\:bg-black){background:#000}`,
+    String.raw`.group.is-open .group-\[\.is-open\]\:grid{display:grid}.theme-x .\[\.theme-x_\&\]\:p-4{padding:1rem}`,
+    String.raw`@starting-style{.starting\:opacity-0{opacity:0}}`,
+    // A package's sheet scopes its variants under its own class, flat or nested.
+    String.raw`.widget .hover\:opacity-90:hover{opacity:.9}@media (min-width:22.5rem){.widget .min-\[360px\]\:block{display:block}}`,
+    String.raw`.widget{display:block;.focus\:ring-2:focus{outline:0}}.b .hover\:bg-black:hover{background:#000}`,
+    // A component's descendant, and a class named only inside a pseudo-class.
+    String.raw`.sm\:card-md .card-body{padding:1rem}.btn:not(.md\:hidden){display:flex}`,
+  ].join('\n')
+  assert.deepEqual([...ownClasses(css)].sort(), [
+    '[.theme-x_&]:p-4',
+    'dark:bg-black',
+    'group-[.is-open]:grid',
+    'group-hover/item:block',
+    'group-hover:flex',
+    'peer-checked:hidden',
+    'starting:opacity-0',
+    'widget',
+  ])
+})

@@ -24,7 +24,8 @@
 // app's CSS, docs and tests included), is looked up in the app's CSS. An app
 // build has a class only by a rule of the class's own, never by a selector
 // that names it under or beside another class, as a package's sheet or a
-// component library writes one.
+// component library writes one, unless the class's variant names that class,
+// as `group-hover:flex` names `.group`.
 //
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
