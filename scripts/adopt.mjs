@@ -15,8 +15,7 @@
 //                                 keys and never overwriting a value you set (a config
 //                                 with comments is left for you to edit by hand).
 //                                 --lane csf is the opt-in for a Ladle repo: the csf
-//                                 lane, Ladle's own settings and the frozen design
-//                                 targets, from the saved inventory
+//                                 lane and Ladle's own settings, from the saved inventory
 //   adopt.mjs status [--json]     the ledger as a table
 //   adopt.mjs mark <class> <state> [--batch <id>] [--force]
 //                                 move a class one state on; never past a blocker;
@@ -47,15 +46,17 @@
 //                                 is refused. It takes the flags verify takes, for a
 //                                 difference only they produce (--against, and
 //                                 --pairs, --a, --b and --shoot for a shot)
-//   adopt.mjs convert stories [--check] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]
+//   adopt.mjs convert stories [--check] [--freeze <file>] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]
 //                                 for a Ladle repo on the csf lane: one record per story
 //                                 file under <project>/adopt/stories/work/, the frozen
-//                                 design targets proposed, the redirect map
+//                                 design target candidates listed, the redirect map
 //                                 (adopt/stories/redirects.json) and the removal patch
 //                                 that points each unfrozen file's type import at --types
 //                                 (default src/stories/story.ts). --check proves every file
 //                                 is unchanged outside that import and every frozen file
-//                                 matches its sha256; --refreeze pins a frozen file again;
+//                                 matches its sha256; --freeze pins one story file as a
+//                                 design target (a candidate is never pinned for you);
+//                                 --refreeze pins a frozen file again;
 //                                 --ids-from reads the old ids from Ladle's meta.json
 //   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
 //                                 them; a file code depends on is refused
@@ -70,7 +71,7 @@
 //                                 on your OK
 //
 // Read-only towards the repo: only massimo.config.json (config --write and
-// convert stories --refreeze), the files under <project>/adopt/, a pairs file
+// convert stories --freeze and --refreeze), the files under <project>/adopt/, a pairs file
 // (verify --pairs) and shots (verify --shoot) are written. Shared flags:
 // --root, --config, --project-dir.
 
@@ -100,7 +101,7 @@ import {
   retirePlan,
   statusTable,
 } from './lib/adopt.mjs'
-import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freezeEntry, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch } from './lib/convert.mjs'
+import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch } from './lib/convert.mjs'
 import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
@@ -115,7 +116,11 @@ import { VERIFY_CLASSES, compareGraph, compareLane, compareTokens, readRepoGraph
 
 const here = dirname(fileURLToPath(import.meta.url))
 // --write, --force and --shoot take no value, so a positional after them stays one.
-const { _: args, flags } = parseArgs(process.argv.slice(2).map((a) => (['--write', '--force', '--shoot'].includes(a) ? `${a}=true` : a)))
+// --freeze is a boolean flag for shoot.mjs, but here it takes the file to pin.
+const argv = process.argv.slice(2).map((a) => (['--write', '--force', '--shoot'].includes(a) ? `${a}=true` : a))
+const freezeAt = argv.indexOf('--freeze')
+if (freezeAt >= 0 && argv[freezeAt + 1] !== undefined && !argv[freezeAt + 1].startsWith('--')) argv.splice(freezeAt, 2, `--freeze=${argv[freezeAt + 1]}`)
+const { _: args, flags } = parseArgs(argv)
 const [command = 'scan', ...rest] = args
 const { root, exists, config, configPath, projectDir } = loadConfig(flags)
 const projectRel = rel(root, projectDir) || '.'
@@ -713,17 +718,6 @@ function csfRegistry(effective = config, ids = effective.stories.ids) {
   return laneRegistry({ root, config: stories, files, read: readSource })
 }
 
-// The files `config --lane csf` proposes to freeze: the candidates in the
-// config the proposal would leave, not yet in its stories.frozen.
-function frozenProposal(inv, current) {
-  const base = proposeConfig(inv, config, { lane: 'csf' })
-  const effective = deepMerge(structuredClone(DEFAULTS), mergeAdding(current, base).merged)
-  const pinned = new Set(effective.stories.frozen.map((f) => f.file))
-  return frozenCandidates(csfRegistry(effective), effective.stories.policy, { root, read: readSource })
-    .filter((c) => !pinned.has(c.file))
-    .map((c) => freezeEntry(root, c.file, today()))
-}
-
 // Every record under work/records, read and refused when a newer massimo wrote it.
 function readRecords() {
   const dir = workPath('records')
@@ -766,6 +760,17 @@ function convertCheck() {
   if (open > 0) process.exit(1)
 }
 
+// Write `list` to stories.frozen in the config file, keeping its indent. A
+// config with comments is left for you: `by hand` says what to set.
+function writeFrozen(list, byHand) {
+  const text = readFileSync(configPath, 'utf8')
+  if (text !== stripJsonComments(text)) fail(`${rel(root, configPath)} has comments (or trailing commas), which a rewrite would drop: ${byHand}`)
+  const raw = readJson(configPath, {}) ?? {}
+  raw.stories = { ...raw.stories, frozen: list }
+  raiseMinScripts(raw, [])
+  writeFileAtomic(configPath, `${JSON.stringify(raw, null, text.match(/^[ \t]+(?=")/m)?.[0] ?? '  ')}\n`)
+}
+
 function convertRefreeze(file) {
   const path = repoFile(file)
   if (!path) fail(`${file} is not in the repo`)
@@ -775,18 +780,29 @@ function convertRefreeze(file) {
   } catch (e) {
     fail(e.message)
   }
-  const text = readFileSync(configPath, 'utf8')
-  if (text !== stripJsonComments(text)) fail(`${rel(root, configPath)} has comments (or trailing commas), which a rewrite would drop: set sha256 to ${result.new} and since to ${result.since} in stories.frozen by hand`)
-  const raw = readJson(configPath, {}) ?? {}
-  raw.stories = { ...raw.stories, frozen: result.frozen }
-  raiseMinScripts(raw, [])
-  writeFileAtomic(configPath, `${JSON.stringify(raw, null, text.match(/^[ \t]+(?=")/m)?.[0] ?? '  ')}\n`)
+  writeFrozen(result.frozen, `set sha256 to ${result.new} and since to ${result.since} in stories.frozen by hand`)
   process.stdout.write(`${path}: pinned ${result.old ?? 'nothing'} -> ${result.new}, since ${result.since}\n`)
+}
+
+// Pin one story file as a design target: the only way a candidate is stored.
+function convertFreeze(file) {
+  const path = repoFile(file)
+  if (!path) fail(`${file} is not in the repo`)
+  let result
+  try {
+    result = freeze(root, config, csfRegistry(), path, { since: today() })
+  } catch (e) {
+    fail(e.message)
+  }
+  writeFrozen(result.frozen, `add { "file": "${path}", "sha256": "${result.sha256}", "since": "${result.since}" } to stories.frozen by hand`)
+  process.stdout.write(`${path}: pinned ${result.sha256}, since ${result.since}\n`)
 }
 
 function convertStories() {
   if (config.stories.lane !== 'csf') fail(`convert stories is for the csf lane: stories.lane is "${config.stories.lane}". ${scriptCommand(root, projectDir, 'adopt', 'config --write --lane csf')} opts a Ladle repo in`)
-  if (flags.refreeze === true || flags.types === true) fail('usage: adopt.mjs convert stories [--check] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]: --refreeze and --types take a file')
+  if (flags.freeze === true || flags.refreeze === true || flags.types === true) fail('usage: adopt.mjs convert stories [--check] [--freeze <file>] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]: --freeze, --refreeze and --types take a file')
+  if (typeof flags.freeze === 'string' && typeof flags.refreeze === 'string') fail('usage: adopt.mjs convert stories: --freeze and --refreeze are one file at a time')
+  if (typeof flags.freeze === 'string') return convertFreeze(flags.freeze)
   if (typeof flags.refreeze === 'string') return convertRefreeze(flags.refreeze)
   if (truthy(flags.check)) return convertCheck()
   readRecords()
@@ -841,19 +857,13 @@ function convertStories() {
     writeEditsFile(projectDir, toolList, { tool: names.join(' and '), command: scriptCommand(root, projectDir, 'adopt', 'retire stories --dry-run') })
   }
 
-  // The candidates go in the proposed config, for config --write to store.
-  if (candidates.length > 0) {
-    const proposed = existsSync(proposedPath(projectDir)) ? readJson(proposedPath(projectDir), { version: 1 }) : { version: 1 }
-    refuseNewer('config', proposed.version, 'adopt/config.proposed.json')
-    writeJson(proposedPath(projectDir), { ...proposed, stories: { ...proposed.stories, frozen: candidates.map((c) => freezeEntry(root, c.file, today())) } })
-  }
   if (ledger?.classes?.stories) {
     ledger.classes.stories.converted = { at: today(), files: summary.files, states: summary.states, frozen: summary.frozen }
     writeJson(ledgerPath(projectDir), ledger)
   }
 
   const out = [`massimo adopt convert stories: ${plural(summary.files, 'record')} (${plural(summary.states, 'state')}), ${plural(candidates.length + summary.frozen, 'frozen file')} (${summary.frozen} pinned, ${candidates.length} to confirm), ${plural(summary.argsFiles.length, 'file')} with args, ${plural(summary.parametersStories.length, 'story', 'stories')} with parameters.`]
-  if (candidates.length > 0) out.push('', 'Frozen candidates, each a default export that sets a banner meta key:', ...candidates.map((c) => `  ${c.file}  (${c.key})`), `Confirm them with ${scriptCommand(root, projectDir, 'adopt', 'config --write')}, which stores them in stories.frozen, then run convert stories again so the patch leaves them alone.`)
+  if (candidates.length > 0) out.push('', 'Frozen candidates, each a default export that sets a banner meta key:', ...candidates.map((c) => `  ${c.file}  (${c.key})`), 'Pin the ones that are design targets, then run convert stories again so the patch leaves them alone:', ...candidates.map((c) => `  ${scriptCommand(root, projectDir, 'adopt', `convert stories --freeze ${c.file}`)}`))
   if (summary.argsFiles.length > 0) out.push('', 'Files that keep args or argTypes at run time, for a hand pass:', ...listed(summary.argsFiles.map((f) => `  ${f}`)))
   if (summary.parametersStories.length > 0) out.push('', 'Stories that set parameters, which the canvas does not read, for a hand pass:', ...listed(summary.parametersStories.map((h) => `  ${h.file}  ${h.story}`)))
   if (summary.wholeFiles.length > 0) out.push('', 'Files without a single type import from the tool, compared as a whole, for a hand pass:', ...listed(summary.wholeFiles.map((h) => `  ${h.file}  ${h.detail}`)))
@@ -902,7 +912,7 @@ switch (command) {
       if (flags.lane !== 'csf') fail('usage: adopt.mjs config [--write] [--lane csf]; csf is the only lane --lane takes')
       const inv = readInventory()
       if (!inv.stories.tools.some((t) => t.tool === 'ladle')) fail('--lane csf converts a Ladle repo, and scan finds no Ladle here')
-      proposed = proposeConfig(inv, config, { lane: 'csf', frozen: frozenProposal(inv, current) })
+      proposed = proposeConfig(inv, config, { lane: 'csf' })
     } else {
       if (!existsSync(proposedPath(projectDir))) fail(`no ${shown('config.proposed.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
       proposed = readJson(proposedPath(projectDir), {})
@@ -1001,7 +1011,7 @@ switch (command) {
   }
   case 'convert': {
     needInit('convert')
-    if (rest[0] !== 'stories' || rest.length > 1) fail('usage: adopt.mjs convert stories [--check] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]')
+    if (rest[0] !== 'stories' || rest.length > 1) fail('usage: adopt.mjs convert stories [--check] [--freeze <file>] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]')
     convertStories()
     break
   }

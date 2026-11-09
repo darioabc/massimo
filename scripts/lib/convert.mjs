@@ -191,6 +191,18 @@ export function refreeze(root, config, file, { since } = {}) {
   return { file, old: entry.sha256 ?? null, new: now, since, frozen: list.map((f) => (f === entry ? pinned : f)) }
 }
 
+// Pin one more story file: its sha256 as it is now and `since`, added to the
+// end of the list. Returns { file, since, sha256, frozen } like refreeze. Throws
+// when the file is not a story file of the lane, is not there, or is pinned.
+export function freeze(root, config, registry, file, { since } = {}) {
+  const list = config?.stories?.frozen ?? []
+  if (list.some((f) => f.file === file)) throw new Error(`${file} is already in stories.frozen: convert stories --refreeze ${file} pins it again`)
+  if (!registry?.files?.[file]) throw new Error(`${file} is not a story file of the lane: stories.include matches ${Object.keys(registry?.files ?? {}).length} files`)
+  const entry = freezeEntry(root, file, since)
+  if (entry.sha256 === null) throw new Error(`${file} is not there, so there is nothing to pin`)
+  return { file, sha256: entry.sha256, since, frozen: [...list, entry] }
+}
+
 // ── The types file ──────────────────────────────────────────────────────────
 
 // Whether a types file holds only non-relative `import type` lines and
