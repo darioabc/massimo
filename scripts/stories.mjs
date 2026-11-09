@@ -31,7 +31,7 @@ import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildGraph } from './graph.mjs'
 import { compare, compileGlobs, walk } from './lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, sourceWords, storyOnly } from './lib/lane-css.mjs'
+import { cssClasses, cssLayoutProblems, ownClasses, sourceWords, storyOnly } from './lib/lane-css.mjs'
 import { frozenProblems } from './lib/convert.mjs'
 import { laneRegistry } from './lib/lane.mjs'
 import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
@@ -171,9 +171,12 @@ const line = (p) => `  [${p.rule}] ${p.file ? `${p.file}: ` : ''}${p.detail}`
 
 // ── leak ─────────────────────────────────────────────────────────────────────
 
-function cssIn(dir) {
-  const files = walk(dir).filter((f) => f.endsWith('.css'))
-  return cssClasses(files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n'))
+// The classes a build's stylesheets name, or with `read` set to ownClasses,
+// hold as rules of their own.
+function cssIn(dir, read = cssClasses) {
+  const out = new Set()
+  for (const f of walk(dir)) if (f.endsWith('.css')) for (const c of read(readFileSync(join(dir, f), 'utf8'))) out.add(c)
+  return out
 }
 
 // The edit that keeps story-only files out of the app's CSS while the lane
@@ -226,6 +229,10 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   }
   const appClasses = cssIn(app)
   const laneClasses = cssIn(lane)
+  // The app holds a class only by a rule of the class's own: a package's
+  // sheet that scopes a utility under its own class, or a component
+  // library's compound, gives the app nothing a story's class could leak.
+  const appHeld = cssIn(app, ownClasses)
 
   const include = compileGlobs(config.stories.include)
   const { modules, scaffold } = storyOnly({ root, config, files, resolver: createResolver(root, config) })
@@ -266,12 +273,13 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   let leaked = []
   if (probe !== null) {
     if (!laneClasses.has(probe)) return { ok: false, lines: [`the class ${probe} is not in the lane's CSS, so this probe proves nothing`] }
-    if (appClasses.has(probe)) leaked = [probe]
+    if (appHeld.has(probe)) leaked = [probe]
     lines.push(leaked.length > 0 ? `leak: ${probe} is in the app's CSS` : `ok: ${probe} is in the lane's CSS and not the app's`)
   } else if (!before) {
     // A scan by words: a class a package's stylesheet or a CSS plugin gives the
-    // app, under a name only stories use, shows here too; --probe settles one.
-    leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
+    // app a rule of its own for, under a name only stories use, shows here
+    // too; --probe settles one.
+    leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appHeld.has(w)).sort(compare)
     if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class', 'classes')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
     else lines.push('ok: no class only stories use is in the app\'s CSS')
   }

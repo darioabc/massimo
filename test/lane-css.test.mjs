@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { walk } from '../scripts/lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
+import { cssClasses, cssLayoutProblems, ownClasses, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
 import { DEFAULTS, deepMerge } from '../scripts/lib/project.mjs'
 import { scratch } from './helpers.mjs'
 
@@ -246,4 +246,58 @@ test('cssClasses reads class selectors, unescaped, and nothing from values, urls
 test('sourceWords splits on whitespace, quotes and JSX punctuation but keeps utility syntax', () => {
   const words = sourceWords(`<div className={\`w-[13.37rem] \${on ? 'p-4' : "md:flex"}\`} data-x="a b" />`)
   for (const w of ['w-[13.37rem]', 'p-4', 'md:flex', 'a', 'b']) assert.ok(words.has(w), w)
+})
+
+// Tailwind 4's own output, minified, as a build writes it.
+const UTILITIES = [
+  String.raw`/*! tailwindcss v4 | MIT License */@layer theme{:root,:host{--spacing:.25rem}}`,
+  String.raw`@layer utilities{.mt-10{margin-top:calc(var(--spacing) * 10)}.w-\[13\.37rem\]{width:13.37rem}.sr-only::before{content:""}`,
+  String.raw`:where(.space-x-4>:not(:last-child)){margin-inline-start:calc(var(--spacing) * 4)}`,
+  String.raw`@media (min-width:40rem){.sm\:flex{display:flex}}@media (hover:hover){.hover\:bg-red-500:hover{background-color:red}}`,
+  String.raw`@supports (color:color-mix(in lab,red,red)){.bg-red-500\/50{background-color:color-mix(in oklab,red 50%,transparent)}}`,
+  String.raw`@container (min-width:24rem){.\@sm\:p-2{padding:.5rem}}`,
+  String.raw`.group-hover\:flex:is(:where(.group):hover *){display:flex}.dark\:p-4:where(.dark,.dark *){padding:1rem}`,
+  String.raw`.\[\&\>div\]\:static>div{position:static}.\[\&_svg\]\:size-4 svg{width:1rem}`,
+  String.raw`.before\:content-\[\'\'\]:before{content:var(--tw-content);--tw-content:""}`,
+  String.raw`.data-\[state\=open\]\:block[data-state=open]{display:block}.has-\[\[data-open\=true\]\]\:flex:has([data-open=true]){display:flex}}`,
+].join('')
+
+test('ownClasses holds a class by a rule of its own, inside @media, @supports, @layer and @container too', () => {
+  assert.deepEqual([...ownClasses(UTILITIES)].sort(), [
+    '@sm:p-2',
+    '[&>div]:static',
+    '[&_svg]:size-4',
+    "before:content-['']",
+    'bg-red-500/50',
+    'dark:p-4',
+    'data-[state=open]:block',
+    'group-hover:flex',
+    'has-[[data-open=true]]:flex',
+    'hover:bg-red-500',
+    'mt-10',
+    'sm:flex',
+    'space-x-4',
+    'sr-only',
+    'w-[13.37rem]',
+  ])
+  // The loose read names the marker classes the variants sit under as well.
+  assert.ok(cssClasses(UTILITIES).has('group') && cssClasses(UTILITIES).has('dark'))
+  assert.ok(cssClasses(UTILITIES).has("before:content-['']"))
+})
+
+test('ownClasses leaves out a class a package scopes under its own, a component compound and other wrappers', () => {
+  const css = [
+    // A package's prebuilt sheet, every utility under the package's class.
+    '.widget .mt-10{margin-top:2.5rem}.widget .p-10,.widget .w-24{padding:2.5rem}.widget{display:block}',
+    // A component library's compound and its child rule.
+    ':is(.tooltip.tooltip-open,.tooltip:hover)>.tooltip-content{opacity:1}.tooltip{position:relative}',
+    '.btn:not(.btn-ghost){border-width:1px}.btn:hover{opacity:.9}',
+    // Scoped by an element, an id, an attribute or @scope, or a keyframe step.
+    'body .h-77{height:1px}#root .h-78{height:1px}[dir=rtl] .h-79{height:1px}@scope (.join){.join-item{border-radius:0}}',
+    '@keyframes spin{from{rotate:0}50.5%{rotate:180deg}to{rotate:360deg}}',
+    // Nested rules: the parent holds its class, and a child under it does not.
+    '.card{padding:1rem;&:hover{opacity:.9}.title{font-weight:600}&.card-wide{width:100%}}',
+  ].join('\n')
+  assert.deepEqual([...ownClasses(css)].sort(), ['btn', 'card', 'tooltip', 'widget'])
+  assert.deepEqual([...cssClasses(css)].sort(), ['btn', 'btn-ghost', 'card', 'card-wide', 'h-77', 'h-78', 'h-79', 'join-item', 'mt-10', 'p-10', 'title', 'tooltip', 'tooltip-content', 'tooltip-open', 'w-24', 'widget'])
 })

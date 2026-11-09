@@ -288,6 +288,26 @@ test('a leak of several classes counts them in words', () => {
   assert.equal(leak(b).lines[0], "leak: 2 classes only stories use are in the app's CSS: h-77, w-[13.37rem]")
 })
 
+// A package's prebuilt sheet with every utility under the package's own
+// class, and a component library's compound, as an app build carries them.
+const PACKAGE = '.widget .mt-10{margin-top:2.5rem}.widget .w-24{width:6rem}.widget{display:block}\n'
+const COMPOUND = ':is(.tooltip.tooltip-open,.tooltip:hover)>.tooltip-content{opacity:1}.tooltip{position:relative}\n'
+
+test('a class the app\'s CSS names only under a package\'s class or in a component\'s compound is no leak', () => {
+  const b = builds({ appCss: `${APP_CSS}${PACKAGE}${COMPOUND}`, laneCss: `${APP_CSS}.mt-10{margin-top:2.5rem}.w-24{width:6rem}\n${PACKAGE}${COMPOUND}` })
+  write(b.root, {
+    'src/Tip.stories.tsx': `export default { title: 'Foundations / Tip' }\nexport const Open = () => <div className="tooltip tooltip-open mt-10 w-24" />\n`,
+    'src/Hint.tsx': `export const Hint = () => <span className="tooltip" />\n`,
+  })
+  b.files.push('src/Tip.stories.tsx', 'src/Hint.tsx')
+  assert.deepEqual(leak(b), { ok: true, lines: ["ok: no class only stories use is in the app's CSS"] })
+  assert.deepEqual(leak(b, { probe: 'w-24' }), { ok: true, lines: ["ok: w-24 is in the lane's CSS and not the app's"] })
+  // A rule of the app's own still leaks, inside @layer and @media too.
+  write(b.root, { 'build/app/assets/more.css': '@layer utilities{@media (min-width:40rem){.w-24{width:6rem}}}\n' })
+  assert.equal(leak(b).lines[0], "leak: 1 class only stories use is in the app's CSS: w-24")
+  assert.equal(leak(b, { probe: 'w-24' }).lines[0], "leak: w-24 is in the app's CSS")
+})
+
 const REVIEW = '  review the list: a class name app code builds at run time is no word in its file, so this check cannot see that the app needs it'
 
 test('leak --before fails when the app\'s CSS lost a class an app file uses', () => {
