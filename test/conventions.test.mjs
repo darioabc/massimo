@@ -34,7 +34,8 @@ test('no em dashes in the docs, the skills or anything a script writes', () => {
 })
 
 test('no private leftovers', () => {
-  for (const f of [...docs, ...scripts, ...files('test/fixtures', /./)]) {
+  for (const f of [...docs, ...scripts, ...files('test', /\.mjs$/), ...files('test/fixtures', /./), 'CHANGELOG.md']) {
+    if (f.endsWith('conventions.test.mjs')) continue
     assert.ok(!/fiuto|FIU-/i.test(text(f)), f)
   }
 })
@@ -42,7 +43,7 @@ test('no private leftovers', () => {
 // massimo learnt adoption on a real repo; its names and its own vocabulary
 // stay there, so fixtures and tests use generic ones.
 test('no names or vocabulary from the repos massimo was proven on', () => {
-  const banned = /folio|dariocodipietro|@parked:|ds:island|ds:sheet|tone-ink|--paper-\d/i
+  const banned = /folio|dariocodipietro|@parked:|ds:island|ds:sheet|tone-ink|--paper-\d|keycap|runnersurface|61100|data-skin/i
   for (const f of [...docs, ...scripts, ...files('test', /\.mjs$/), ...files('test/fixtures', /./), 'CHANGELOG.md']) {
     if (f.endsWith('conventions.test.mjs')) continue
     assert.ok(!banned.test(text(f)), f)
