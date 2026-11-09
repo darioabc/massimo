@@ -386,6 +386,20 @@ test('leak --before finds a class whose square brackets hold a quote, an = or a 
   ])
 })
 
+test('leak --before lists a class whose own rule the app\'s CSS lost, though another sheet still names it', () => {
+  const b = builds({ appCss: `${APP_CSS}${PACKAGE}${COMPOUND}` })
+  write(b.root, {
+    'build/before/assets/app.css': `${APP_CSS}.mt-10{margin-top:2.5rem}\n`,
+    'build/before/assets/widget.css': `${PACKAGE}${COMPOUND}`,
+    'src/Spaced.tsx': `export const Spaced = () => <section className="mt-10 tooltip tooltip-open" />\n`,
+  })
+  b.files.push('src/Spaced.tsx')
+  assert.deepEqual(leak(b, { before: join(b.root, 'build/before') }), {
+    ok: false,
+    lines: ["dropped: 1 class the build before had is not in the app's CSS", '  app code uses 1: mt-10', "lost: the app's CSS no longer has 1 class an app file uses: mt-10 (src/Spaced.tsx)"],
+  })
+})
+
 test('leak refuses a folder git does not ignore, and a path that is not a folder', () => {
   const b = builds()
   const seen = []

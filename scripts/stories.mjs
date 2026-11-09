@@ -21,7 +21,10 @@
 // dropped since then, by where its name occurs, and fails when an app file
 // uses one. With neither, every class found only in story files, story-only
 // modules and the lane's scaffold folder, and in no other file git keeps (the
-// app's CSS, docs and tests included), is looked up in the app's CSS.
+// app's CSS, docs and tests included), is looked up in the app's CSS. An app
+// build has a class only by a rule of the class's own, never by a selector
+// that names it under or beside another class, as a package's sheet or a
+// component library writes one.
 //
 // Shared flags: --root <dir> --config <file> --project-dir <dir>
 
@@ -227,12 +230,12 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
       return { ok: false, lines: [`${flag} ${shown} is ${ignored === false ? 'not ignored by git' : 'not a folder git can check'}, so a build could reach a commit; add it to .gitignore and run the check again`] }
     }
   }
-  const appClasses = cssIn(app)
+  // An app build holds a class only by a rule of the class's own: a
+  // package's sheet that scopes a utility under its own class, or a
+  // component library's compound, neither leaks a story's class into the
+  // app nor keeps a class whose own rule the app's CSS dropped.
+  const appClasses = cssIn(app, ownClasses)
   const laneClasses = cssIn(lane)
-  // The app holds a class only by a rule of the class's own: a package's
-  // sheet that scopes a utility under its own class, or a component
-  // library's compound, gives the app nothing a story's class could leak.
-  const appHeld = cssIn(app, ownClasses)
 
   const include = compileGlobs(config.stories.include)
   const { modules, scaffold } = storyOnly({ root, config, files, resolver: createResolver(root, config) })
@@ -273,13 +276,13 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   let leaked = []
   if (probe !== null) {
     if (!laneClasses.has(probe)) return { ok: false, lines: [`the class ${probe} is not in the lane's CSS, so this probe proves nothing`] }
-    if (appHeld.has(probe)) leaked = [probe]
+    if (appClasses.has(probe)) leaked = [probe]
     lines.push(leaked.length > 0 ? `leak: ${probe} is in the app's CSS` : `ok: ${probe} is in the lane's CSS and not the app's`)
   } else if (!before) {
     // A scan by words: a class a package's stylesheet or a CSS plugin gives the
     // app a rule of its own for, under a name only stories use, shows here
     // too; --probe settles one.
-    leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appHeld.has(w)).sort(compare)
+    leaked = [...storyWords].filter((w) => !appText.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
     if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class', 'classes')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
     else lines.push('ok: no class only stories use is in the app\'s CSS')
   }
@@ -289,7 +292,7 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   // uses fails the check.
   let lost = []
   if (before) {
-    const dropped = [...cssIn(before)].filter((c) => !appClasses.has(c)).sort(compare)
+    const dropped = [...cssIn(before, ownClasses)].filter((c) => !appClasses.has(c)).sort(compare)
     lost = dropped.filter((c) => appCode.has(c))
     const groups = [
       [lost, (n) => `app code uses ${n}`],
