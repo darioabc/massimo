@@ -327,7 +327,7 @@ test('--shoot runs shoot.mjs on the pairs and folds each verdict in', () => {
   assert.match(none.stdout, /  open {6}shoot  shoot\.mjs found no Playwright: pass --playwright <path> to a checkout that has it\n/)
 })
 
-test('--workers reaches the shots, which run that many pairs at once', () => {
+test('--workers is checked by shoot.mjs --pairs, which verify stories --pairs --shoot passes it to', () => {
   const pkg = join(ctx.root, '..', 'pw', 'node_modules', 'playwright')
   const args = ['verify', 'stories', '--pairs', 'shots.json', '--a', 'http://a.test', '--b', 'http://b.test', '--shoot', '--playwright', pkg]
   const bad = script('adopt', [...args, '--workers', '0'])
