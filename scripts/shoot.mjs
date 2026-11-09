@@ -465,7 +465,7 @@ const SWEEP_ERROR = 'html[data-story-error] is set: the state failed'
 // ready element, and after the wait no page error and no html[data-story-error].
 // A state marked html[data-story-error] fails as soon as the mark is seen, even
 // when it never became ready. The wait runs on this side, not in the page, and
-// every step has a time limit, so a page that stubs timers or blocks its main
+// every step has a time limit, so a page that replaces timers or blocks its main
 // thread fails its own state instead of the whole sweep.
 async function sweepOne(browser, id, url, { ready, timeout, wait }) {
   if (url === null) return { id, ok: false, why: 'no route for this id' }
@@ -501,7 +501,7 @@ async function sweepOne(browser, id, url, { ready, timeout, wait }) {
     }
     let failed
     try {
-      // The frames are a courtesy: a page that stubs them is not a failed state.
+      // The frames are a courtesy: a page that replaces them is not a failed state.
       await within(page.evaluate(sweepFrames), Math.min(1000, limit))
       await page.waitForTimeout(wait)
       failed = await erroredNow()

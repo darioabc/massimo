@@ -376,10 +376,10 @@ export const SWEEP_WAIT_MS = 500
 export const SWEEP_MARKED = (selector) =>
   document.documentElement.hasAttribute('data-story-error') || document.querySelector(selector) !== null
 // Runs in the page: whether the document is marked as failed. It uses no timer,
-// so a page that stubs timers or animation frames cannot stall it.
+// so a page that replaces timers or animation frames cannot stall it.
 export const sweepErrored = () => document.documentElement.hasAttribute('data-story-error')
 // Runs in the page: two animation frames. The sweep gives up on it quickly, since
-// a page that stubs requestAnimationFrame never finishes it.
+// a page that replaces requestAnimationFrame never finishes it.
 export const sweepFrames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
 // A promise against a timer kept on the Node side: { value } when it settles
 // first, null when `ms` pass. A promise left behind cannot reject unhandled.
