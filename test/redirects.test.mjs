@@ -176,7 +176,7 @@ test('a port is still valid on the lane, and a story file\'s type import is the 
   assert.deepEqual(ported.find((e) => e.file === 'docs/ports.md'), { file: 'docs/ports.md', line: 1, class: 'docs', uses: 'port 61300', replacement: 'nothing, while stories.port is this port; set it when the tool goes', status: 'valid' })
 })
 
-test('only the type import the removal patch rewrites is skipped: a value import, a second type import and a frozen file are open', () => {
+test('only the type import the removal patch rewrites is skipped: a value import and a second type import are open, and a frozen file keeps its type import', () => {
   const text = [
     "import type { Story } from '@ladle/react'",
     "import { action } from '@ladle/react'",
@@ -193,8 +193,36 @@ test('only the type import the removal patch rewrites is skipped: a value import
   const found = (frozen = []) => toolEdits({ consumers: [], packages: ['@ladle/react'], registry: live, tool, historical: [], read, files: withMixed, frozen }).filter((e) => e.file === 'src/Mixed.stories.tsx')
   // the registry names the first type import of Story or StoryDefault: line 1
   assert.deepEqual(found().map((e) => [e.line, e.status, e.uses]), [[2, 'open', 'package @ladle/react'], [5, 'open', 'package @ladle/react']])
-  // a frozen file keeps its import, so the patch leaves it and it is open too
-  assert.deepEqual(found([{ file: 'src/Mixed.stories.tsx' }]).map((e) => e.line), [1, 2, 5])
+  // a frozen file keeps its import for the legacy types file; every other line is still checked
+  assert.deepEqual(found([{ file: 'src/Mixed.stories.tsx' }]).map((e) => [e.line, e.status]), [[1, 'valid'], [2, 'open'], [5, 'open']])
+  assert.match(found([{ file: 'src/Mixed.stories.tsx' }])[0].replacement, /legacy types file keeps/)
+})
+
+test('a frozen file\'s type import is valid only when the legacy types file declares every name it imports', () => {
+  const frozenAt = (imports) => {
+    put('src/Pinned.stories.tsx', `import type { ${imports} } from '@ladle/react'\nexport default { title: 'Primitives / Pinned' } satisfies StoryDefault\nexport const Plain: Story = () => null\n`)
+    const withPinned = [...files, 'src/Pinned.stories.tsx']
+    const live = laneRegistry({ root: ctx.root, config, files: withPinned.filter(compileGlobs(config.stories.include)), read })
+    return toolEdits({ consumers: [], packages: ['@ladle/react'], registry: live, tool, historical: [], read, files: withPinned, frozen: [{ file: 'src/Pinned.stories.tsx' }] }).find((e) => e.file === 'src/Pinned.stories.tsx' && e.line === 1)
+  }
+  assert.equal(frozenAt('Story').status, 'valid')
+  const open = frozenAt('Story, StoryDecorator')
+  assert.equal(open.status, 'open')
+  assert.match(open.replacement, /export StoryDecorator from the types file/)
+  // once the patch has written the legacy file, its own exports are the names
+  put('src/stories/legacy-story-types.d.ts', "declare module '@ladle/react' {\n  export type Story = () => null\n  export type StoryDecorator = () => null\n}\n")
+  assert.equal(frozenAt('Story, StoryDecorator').status, 'valid')
+  assert.equal(frozenAt('Story, Args').status, 'open')
+})
+
+test('the legacy types file the removal patch adds is not an edit, and a path into the tool\'s package is', () => {
+  const legacy = "// The story types that files still importing @ladle/react use. Written by massimo\ndeclare module '@ladle/react' {\n  export type Story = () => null\n}\n"
+  put('src/stories/legacy-story-types.d.ts', legacy)
+  put('src/loader.test.ts', "import { readFileSync } from 'node:fs'\nexport const src = readFileSync('node_modules/@ladle/react/lib/cli/index.js', 'utf8')\n")
+  const more = [...files, 'src/stories/legacy-story-types.d.ts', 'src/loader.test.ts']
+  const found = toolEdits({ consumers: [], packages: ['@ladle/react'], registry, tool, historical: [], read, files: more })
+  assert.ok(!found.some((e) => e.file === 'src/stories/legacy-story-types.d.ts'))
+  assert.deepEqual(found.filter((e) => e.file === 'src/loader.test.ts').map((e) => [e.line, e.class, e.status, e.uses]), [[2, 'test', 'open', 'package @ladle/react']])
 })
 
 test('a package script is the tool\'s only when it runs one of the tool\'s scripts, directly or through another', () => {
