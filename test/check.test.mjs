@@ -96,3 +96,23 @@ test('the README says what ds:check runs once it is check.mjs, and names the pro
   assert.match(readme, /`npm run ds:check` runs in CI: `node design\/scripts\/check\.mjs`\. It runs every massimo check that applies to the project/)
   assert.match(readme, /It also runs the project's own checks \(`guard\.extraChecks`\): shipped images\./)
 })
+
+test('a csf lane adds a stories check after graph, and no other lane does', () => {
+  const ctx = fresh('csf-lane')
+  assert.equal(run('graph', ctx).status, 0)
+  const ok = run('check', ctx)
+  assert.equal(ok.status, 0, ok.stdout)
+  assert.deepEqual(lines(ok).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass stories', 'skip audit', 'skip tokens', 'skip docs', 'massimo check:'])
+  assert.match(ok.stdout, /^pass {2}stories {2}node \.\.\/project\/scripts\/stories\.mjs --check$/m)
+
+  // A second story with an id that is taken fails the stories line alone, and its output shows under it.
+  writeFileSync(join(ctx.root, 'src', 'Again.stories.tsx'), "export default { title: 'Foundations / Welcome' }\nexport const StartHere = () => null\n")
+  const bad = run('check', ctx)
+  assert.equal(bad.status, 1)
+  assert.deepEqual(lines(bad).filter((l) => /^(pass|fail) /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'fail stories'])
+  assert.match(bad.stdout, /^ {6} {2}\[story-files\] src\/Welcome\.stories\.tsx: StartHere has the id /m)
+
+  // A native lane runs the four checks and no stories line.
+  patch(ctx, (c) => (c.stories.lane = 'native'))
+  assert.doesNotMatch(run('check', ctx).stdout, /stories/)
+})
