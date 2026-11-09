@@ -18,6 +18,10 @@
 //                       story's mount is empty; the sweep's own check decides)
 //   FAKE_SWEEP_ERROR    a page error fires while the page loads
 //   FAKE_SWEEP_FAILED   the page is ready, then marks <html data-story-error>
+//   FAKE_SWEEP_MARKED   the page marks <html data-story-error> and is never ready
+//   FAKE_SWEEP_NOFRAMES the page is ready and healthy, but animation frames never
+//                       fire (a page that stubs requestAnimationFrame)
+//   FAKE_SWEEP_HANG     the page is ready, then answers nothing (a blocked main thread)
 //   FAKE_SLOW           (also a list) goto takes 300 ms and logs gotoEnd
 const { appendFileSync, writeFileSync } = require('node:fs')
 
@@ -104,10 +108,6 @@ const makePage = () => {
     on(event, fn) {
       handlers[event] = fn
     },
-    async waitForSelector(selector, o) {
-      log('waitForSelector', { selector, ...o })
-      if (listed('FAKE_SWEEP_NOMATCH', current)) throw timeout('page.waitForSelector')
-    },
     // The predicate runs against a small document: <html> holding a head and
     // a body, whose one child is the mount, empty under FAKE_SWEEP_EMPTY.
     async waitForFunction(fn, arg, o) {
@@ -117,19 +117,33 @@ const makePage = () => {
       const body = node('BODY', [node('SCRIPT'), mount])
       const html = node('HTML', [node('HEAD'), body])
       const had = globalThis.document
-      globalThis.document = { documentElement: html, body, querySelector: (sel) => (sel.startsWith('html') ? html : mount) }
+      const marked = listed('FAKE_SWEEP_MARKED', current)
+      const never = fn.name === 'SWEEP_MARKED' && listed('FAKE_SWEEP_NOMATCH', current)
+      html.hasAttribute = (name) => marked && name === 'data-story-error'
+      globalThis.document = {
+        documentElement: html,
+        body,
+        querySelector: (sel) => (never || marked ? null : sel.startsWith('html') ? html : mount),
+      }
       try {
         if (!fn(arg)) throw timeout('page.waitForFunction')
       } finally {
         globalThis.document = had
       }
     },
-    // The sweep's settle step runs here and says whether the page is marked as failed.
-    // Otherwise only the diff comes here; the shot settle step works frame by frame.
+    // The sweep's two page steps run here: the frames, and whether the page is
+    // marked as failed. Otherwise only the diff comes here; the shot settle step
+    // works frame by frame.
     async evaluate(fn, arg) {
-      if (fn.name === 'sweepSettle') {
-        log('sweepSettle', arg)
-        return listed('FAKE_SWEEP_FAILED', current)
+      if (fn.name === 'sweepFrames') {
+        log('sweepFrames')
+        if (listed('FAKE_SWEEP_NOFRAMES', current)) return new Promise(() => {})
+        return undefined
+      }
+      if (fn.name === 'sweepErrored') {
+        log('sweepErrored')
+        if (listed('FAKE_SWEEP_HANG', current)) return new Promise(() => {})
+        return listed('FAKE_SWEEP_FAILED', current) || listed('FAKE_SWEEP_MARKED', current)
       }
       log('diff', { threshold: arg.threshold })
       return {

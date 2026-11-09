@@ -722,27 +722,40 @@ test('the sweep reads its flags whole, and the pairs format is still 1', () => {
   assert.equal(FORMATS_READ.pairs, 1)
   const ok = sweepOptions({ sweep: 'http://localhost:4650/', legacy: true })
   assert.deepEqual(ok.problems, [])
-  assert.deepEqual(ok.options, { base: 'http://localhost:4650', workers: 4, timeout: 15, ready: SWEEP_READY, settleMs: 500, legacy: true })
+  assert.deepEqual(ok.options, { base: 'http://localhost:4650', workers: 4, timeout: 15, ready: SWEEP_READY, wait: 500, legacy: true })
   assert.equal(SWEEP_READY, 'html[data-story-ready]')
-  const flags = { sweep: 'http://x.test', workers: '2', timeout: '3.5', ready: '#root > div', 'settle-ms': '0' }
-  assert.deepEqual(sweepOptions(flags).options, { base: 'http://x.test', workers: 2, timeout: 3.5, ready: '#root > div', settleMs: 0, legacy: false })
-  for (const bad of [{ sweep: true }, { sweep: 'x.test' }, { sweep: 'http://x.test', workers: '0' }, { sweep: 'http://x.test', workers: 'many' }, { sweep: 'http://x.test', timeout: '-1' }, { sweep: 'http://x.test', ready: true }, { sweep: 'http://x.test', 'settle-ms': '-1' }, { sweep: 'http://x.test', 'settle-ms': '1.5' }]) {
+  const flags = { sweep: 'http://x.test', workers: '2', timeout: '3.5', ready: '#root > div', wait: '0' }
+  assert.deepEqual(sweepOptions(flags).options, { base: 'http://x.test', workers: 2, timeout: 3.5, ready: '#root > div', wait: 0, legacy: false })
+  for (const bad of [{ sweep: true }, { sweep: 'x.test' }, { sweep: 'http://x.test', workers: '0' }, { sweep: 'http://x.test', workers: 'many' }, { sweep: 'http://x.test', timeout: '-1' }, { sweep: 'http://x.test', ready: true }, { sweep: 'http://x.test', wait: '-1' }, { sweep: 'http://x.test', wait: '1.5' }]) {
     assert.ok(sweepOptions(bad).problems.length > 0, JSON.stringify(bad))
   }
 })
 
-test('a state fails when html[data-story-error] is set after it was ready, and the settle wait is --settle-ms', () => {
-  const r = sweep(['--legacy', '--ids-from', metaFile, '--settle-ms', '40'], { FAKE_SWEEP_FAILED: 'b--two' })
+test('a state fails when html[data-story-error] is set, ready or not, and the wait is --wait', () => {
+  const reason = 'html[data-story-error] is set: the state failed'
+  const r = sweep(['--legacy', '--ids-from', metaFile, '--wait', '40', '--timeout', '3'], { FAKE_SWEEP_FAILED: 'b--two', FAKE_SWEEP_MARKED: 'c--three' })
   assert.equal(r.status, 1)
-  assert.equal(r.lines[0].ready, 3)
-  assert.deepEqual(r.lines[0].failed, [{ id: 'b--two', why: 'html[data-story-error] is set: the state failed after it was ready' }])
-  const waits = r.calls.filter((c) => c.name === 'sweepSettle').map((c) => c.arg)
-  assert.deepEqual(waits, [40, 40, 40, 40])
+  assert.equal(r.lines[0].ready, 2)
+  assert.deepEqual(r.lines[0].failed, [{ id: 'b--two', why: reason }, { id: 'c--three', why: reason }])
+  // the wait is taken on the Node side
+  assert.deepEqual([...new Set(r.calls.filter((c) => c.name === 'wait').map((c) => c.arg))], [40])
+  // a page that is never ready but marked fails with the mark, not with the timeout
+  const marked = sweep(['--legacy', '--ids-from', metaFile, '--timeout', '3'], { FAKE_SWEEP_MARKED: 'a--one', FAKE_SWEEP_NOMATCH: 'a--one' })
+  assert.deepEqual(marked.lines[0].failed, [{ id: 'a--one', why: reason }])
   // the default, and a page that never sets the attribute (a Ladle page)
   const plain = sweep(['--legacy', '--ids-from', metaFile])
   assert.equal(plain.status, 0)
-  assert.deepEqual([...new Set(plain.calls.filter((c) => c.name === 'sweepSettle').map((c) => c.arg))], [500])
-  assert.equal(sweep(['--legacy', '--ids-from', metaFile, '--settle-ms', 'x']).status, 2)
+  assert.deepEqual([...new Set(plain.calls.filter((c) => c.name === 'wait').map((c) => c.arg))], [500])
+  assert.equal(sweep(['--legacy', '--ids-from', metaFile, '--wait', 'x']).status, 2)
+})
+
+test('a page that stubs animation frames passes, and a page that answers nothing fails its own state', () => {
+  const started = Date.now()
+  const r = sweep(['--legacy', '--ids-from', metaFile, '--wait', '0', '--timeout', '1'], { FAKE_SWEEP_NOFRAMES: 'a--one', FAKE_SWEEP_HANG: 'b--two' })
+  assert.equal(r.status, 1)
+  assert.equal(r.lines[0].ready, 3)
+  assert.deepEqual(r.lines[0].failed, [{ id: 'b--two', why: 'the page did not answer within 1 seconds' }])
+  assert.ok(Date.now() - started < 20000)
 })
 
 test('the csf recipe never marks a state ready and failed at once, and keeps its shell code within 100 columns', () => {
@@ -795,7 +808,7 @@ test('--sweep --legacy opens every id from --ids-from in a fresh context, as Lad
   assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg).sort(), ['a--one', 'b--two', 'c--three', 'd--four'].map((id) => `${site}/?story=${id}&mode=preview`))
   assert.equal(r.calls.filter((c) => c.name === 'newContext').length, 4)
   assert.equal(r.calls.filter((c) => c.name === 'contextClose').length, 4)
-  assert.ok(r.calls.filter((c) => c.name === 'waitForSelector').every((c) => c.arg.selector === SWEEP_READY && c.arg.state === 'attached'))
+  assert.ok(r.calls.filter((c) => c.name === 'waitForFunction' && typeof c.arg.arg === 'string').every((c) => c.arg.arg === SWEEP_READY))
 })
 
 test('--ready replaces the selector, and --routes names the ids and where each loads', () => {
@@ -805,7 +818,7 @@ test('--ready replaces the selector, and --routes names the ids and where each l
   assert.equal(r.status, 0, r.stderr)
   assert.equal(r.lines[0].total, 2)
   assert.deepEqual(r.calls.filter((c) => c.name === 'goto').map((c) => c.arg), [`${site}/stories/a/one?mode=preview`, `${site}/stories/b/two?mode=preview`])
-  assert.ok(r.calls.filter((c) => c.name === 'waitForSelector').every((c) => c.arg.selector === '#root > .done'))
+  assert.ok(r.calls.filter((c) => c.name === 'waitForFunction').every((c) => c.arg.arg === '#root > .done'))
   // an id with no route fails and says so
   const some = sweep(['--routes', routes, '--ids-from', metaFile])
   assert.equal(some.status, 1)

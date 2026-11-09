@@ -9,7 +9,7 @@
 //   shoot.mjs --diff <a.png> <b.png> --out <diff.png> [--threshold 0.05]
 //   shoot.mjs --pairs <pairs.json> --out <dir> [--max-diff 0] [--threshold 0.05] [--workers 4]
 //   shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>]
-//             [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--settle-ms 500]
+//             [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--wait 500]
 //
 // --dom also saves what the page holds as text (its accessibility tree, or its
 // HTML on an older Playwright), for reviewers who read a render without a browser.
@@ -49,8 +49,9 @@
 // prints { base, total, ready, failed: [{ id, why }], excused } as one JSON line. A state
 // passes when --ready (default html[data-story-ready]) matches, the matched element holds an
 // element child, and no page error fired before the timeout (seconds, default 15). Then it
-// waits two animation frames and --settle-ms (default 500) and fails the state when
-// html[data-story-error] is set, which a state that fails in an effect sets. The ids
+// waits two animation frames and --wait (milliseconds, default 500 here) and fails the state
+// when html[data-story-error] is set, which a state that fails in an effect sets. A state
+// marked that way is failed at once, without waiting for the ready selector. The ids
 // come from --ids-from (the stories keys of a Ladle-shaped meta.json), else from the server's
 // own /meta.json. --legacy loads each as /?story=<id>&mode=preview; --routes names a JSON
 // file of { "<id>": "<path>" } to load instead, and gives the ids when --ids-from does not.
@@ -89,11 +90,14 @@ import {
   pngSize,
   summarise,
   SWEEP_FILLED,
-  sweepSettle,
+  SWEEP_MARKED,
+  sweepErrored,
+  sweepFrames,
   sweepOptions,
   sweepResult,
   sweepUrl,
   verdict,
+  within,
 } from './lib/shoot.mjs'
 
 const { _: args, flags } = parseArgs()
@@ -433,7 +437,7 @@ function sweepIds(doc, where) {
 async function readSweep() {
   const { options, problems } = sweepOptions(flags)
   if (!flags.legacy && !flags.routes) problems.push('--sweep needs --legacy (load /?story=<id>) or --routes <file> (a path for each id)')
-  if (problems.length) fail(`usage: shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>] [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--settle-ms 500]: ${problems.join('; ')}`, 2)
+  if (problems.length) fail(`usage: shoot.mjs --sweep <base url> [--legacy | --routes <file>] [--ids-from <meta.json>] [--ready <selector>] [--sweep-baseline <results.json>] [--workers 4] [--timeout 15] [--wait 500]: ${problems.join('; ')}`, 2)
   const routes = flags.routes ? jsonFlag('routes') : {}
   const given = flags['ids-from'] ? jsonFlag('ids-from') : null
   const baseline = flags['sweep-baseline'] ? jsonFlag('sweep-baseline') : null
@@ -455,10 +459,15 @@ async function readSweep() {
   return { ...options, ids, routes, baseline }
 }
 
+const SWEEP_ERROR = 'html[data-story-error] is set: the state failed'
+
 // One state in a fresh browser context: ready, with an element inside the
-// ready element, and after the settle wait no page error and no
-// html[data-story-error].
-async function sweepOne(browser, id, url, { ready, timeout, settleMs }) {
+// ready element, and after the wait no page error and no html[data-story-error].
+// A state marked html[data-story-error] fails as soon as the mark is seen, even
+// when it never became ready. The wait runs on this side, not in the page, and
+// every step has a time limit, so a page that stubs timers or blocks its main
+// thread fails its own state instead of the whole sweep.
+async function sweepOne(browser, id, url, { ready, timeout, wait }) {
   if (url === null) return { id, ok: false, why: 'no route for this id' }
   const errors = []
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 } })
@@ -467,12 +476,22 @@ async function sweepOne(browser, id, url, { ready, timeout, settleMs }) {
     page.on('pageerror', (err) => errors.push(err.message))
     const limit = timeout * 1000
     const until = Date.now() + limit
+    const erroredNow = async () => {
+      const read = await within(page.evaluate(sweepErrored), limit)
+      if (!read) throw new Error(`the page did not answer within ${timeout} seconds`)
+      return read.value
+    }
     try {
       await page.goto(url, { waitUntil: 'load', timeout: limit })
-      await page.waitForSelector(ready, { state: 'attached', timeout: Math.max(until - Date.now(), 1) })
+      await page.waitForFunction(SWEEP_MARKED, ready, { timeout: Math.max(until - Date.now(), 1) })
     } catch (err) {
       const why = err.name === 'TimeoutError' ? `${ready} did not match within ${timeout} seconds` : err.message.split('\n')[0]
       return { id, ok: false, why: errors.length ? `page error: ${errors[0]}; ${why}` : why }
+    }
+    try {
+      if (await erroredNow()) return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : SWEEP_ERROR }
+    } catch (err) {
+      return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : err.message }
     }
     try {
       await page.waitForFunction(SWEEP_FILLED, ready, { timeout: Math.max(until - Date.now(), 1) })
@@ -482,12 +501,15 @@ async function sweepOne(browser, id, url, { ready, timeout, settleMs }) {
     }
     let failed
     try {
-      failed = await page.evaluate(sweepSettle, settleMs)
+      // The frames are a courtesy: a page that stubs them is not a failed state.
+      await within(page.evaluate(sweepFrames), Math.min(1000, limit))
+      await page.waitForTimeout(wait)
+      failed = await erroredNow()
     } catch (err) {
       return { id, ok: false, why: errors.length ? `page error: ${errors[0]}` : err.message.split('\n')[0] }
     }
     if (errors.length) return { id, ok: false, why: `page error: ${errors[0]}` }
-    return failed ? { id, ok: false, why: 'html[data-story-error] is set: the state failed after it was ready' } : { id, ok: true }
+    return failed ? { id, ok: false, why: SWEEP_ERROR } : { id, ok: true }
   } catch (err) {
     return { id, ok: false, why: err.message.split('\n')[0] }
   } finally {
