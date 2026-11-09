@@ -127,7 +127,7 @@ export function indexText(registry) {
 // the real checks and can be replaced in a test.
 export function checkLane({ root, config, files = repoFiles(root, config), graph = buildGraph, frozen = frozenProblems }) {
   const registry = registryOf(root, config, files)
-  const problems = [...registry.problems]
+  const problems = []
   const warnings = []
   const notes = []
 
@@ -135,7 +135,8 @@ export function checkLane({ root, config, files = repoFiles(root, config), graph
     problems.push(typeof p === 'string' ? { rule: 'frozen', file: null, detail: p } : { rule: p.rule ?? 'frozen', file: p.file ?? null, detail: p.detail ?? p.message ?? '' })
   }
 
-  // The graph's csf rules. A node with no story is information here, never a fault.
+  // The graph's csf rules, which carry the registry's own problems. A node
+  // with no story is information here, never a fault.
   let storyLane = null
   try {
     const built = graph(root, config, 'stories.mjs')
@@ -150,7 +151,7 @@ export function checkLane({ root, config, files = repoFiles(root, config), graph
       const shown = none.slice(0, 12).map((p) => p.file)
       notes.push(`${plural(none.length, 'live node')} no story reaches: ${shown.join(', ')}${none.length > shown.length ? `, and ${none.length - shown.length} more` : ''}`)
     }
-  }
+  } else problems.push(...registry.problems)
 
   for (const p of cssLayoutProblems({ root, config, files, resolver: createResolver(root, config) })) (p.severity === 'warn' ? warnings : problems).push(p)
 

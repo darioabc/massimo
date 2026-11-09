@@ -105,11 +105,12 @@ test('a csf lane adds a stories check after graph, and no other lane does', () =
   assert.deepEqual(lines(ok).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass stories', 'skip audit', 'skip tokens', 'skip docs', 'massimo check:'])
   assert.match(ok.stdout, /^pass {2}stories {2}node \.\.\/project\/scripts\/stories\.mjs --check$/m)
 
-  // A second story with an id that is taken fails the stories line alone, and its output shows under it.
+  // A second story with an id that is taken fails the stories line, and its output shows under it.
+  // The graph reads the same lane, so its line fails too.
   writeFileSync(join(ctx.root, 'src', 'Again.stories.tsx'), "export default { title: 'Foundations / Welcome' }\nexport const StartHere = () => null\n")
   const bad = run('check', ctx)
   assert.equal(bad.status, 1)
-  assert.deepEqual(lines(bad).filter((l) => /^(pass|fail) /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'fail stories'])
+  assert.deepEqual(lines(bad).filter((l) => /^(pass|fail) /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['fail graph', 'fail stories'])
   assert.match(bad.stdout, /^ {6} {2}\[story-files\] src\/Welcome\.stories\.tsx: StartHere has the id /m)
 
   // A native lane runs the four checks and no stories line.

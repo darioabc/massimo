@@ -106,7 +106,7 @@ import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, wor
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
 import { stateUrl } from './lib/lane-route.mjs'
 import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, writeFileAtomic } from './lib/project.mjs'
-import { idScope, isBinaryPath, mentionCoverage, toolEdits, toolPackages } from './lib/redirects.mjs'
+import { editsSummary, idScope, isBinaryPath, mentionCoverage, toolEdits, toolPackages, writeEditsFile } from './lib/redirects.mjs'
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
@@ -622,17 +622,20 @@ function passLine(cls, c) {
 // Every edit the repo must make before the story tool can go, for the
 // ledger's tool assets that go (decision convert or retire), on a csf lane;
 // null when none does. Specs and docs that name ids are held against the
-// tool's own list when --against gives it.
-function toolEditsFor(ledger, inv) {
-  const going = (ledger.classes.stories?.assets ?? []).filter((a) => a.kind === 'tool' && a.decision !== 'keep' && !a.missing)
+// tool's own list: the ids given, or else the ones --against reads.
+const goingTools = (ledger) => (ledger?.classes?.stories?.assets ?? []).filter((a) => a.kind === 'tool' && a.decision !== 'keep' && !a.missing)
+function toolEditsFor(ledger, inv, ids = undefined) {
+  const going = goingTools(ledger)
   if (config.stories.lane !== 'csf' || going.length === 0) return null
   const { registry, files, pkg } = currentRegistry()
-  let oracleIds = null
-  try {
-    const oracle = readOracle()
-    oracleIds = oracle ? Object.keys(oracle) : null
-  } catch {
-    // the tool's list is only for telling a dead id from a lost one
+  let oracleIds = ids ?? null
+  if (ids === undefined) {
+    try {
+      const oracle = readOracle()
+      oracleIds = oracle ? Object.keys(oracle) : null
+    } catch {
+      // the tool's list is only for telling a dead id from a lost one
+    }
   }
   const edits = going.flatMap((a) => {
     const tool = inv.stories.tools.find((t) => `tool:${t.tool}` === a.id)
@@ -791,6 +794,7 @@ function convertStories() {
   refuseNewerFile(workPath('removal.json'), 'removal', 'format', 'adopt/stories/work/removal.json')
   refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
   const ledger = readLedger()
+  const inv = goingTools(ledger).length > 0 && existsSync(inventoryPath(projectDir)) ? readInventory() : null
   const registry = csfRegistry()
   if (Object.keys(registry.files).length === 0) fail(`stories.include matches no story file (${(config.stories.include ?? []).join(', ') || 'it is empty'}): set it to the glob your story files match`)
   if (registry.problems.length > 0) {
@@ -820,6 +824,9 @@ function convertStories() {
     old = doc.stories
   } else if (registry.ids !== 'ladle') old = ladleMeta(csfRegistry(config, 'ladle')).stories
   const redirects = redirectTable(registry, old)
+  // The edits the repo makes before the tool can go, once the ledger converts
+  // or retires it; --ids-from tells an id that was dead already from a lost one.
+  const toolList = inv ? toolEditsFor(ledger, inv, typeof flags['ids-from'] === 'string' ? Object.keys(old) : null) : null
 
   // Records, the removal edits and the patch, under work/, which git never sees.
   writeFileAtomic(workPath('.gitignore'), '*\n')
@@ -829,6 +836,10 @@ function convertStories() {
   writeJson(workPath('removal.json'), { format: REMOVAL_FORMAT, generatedBy: 'massimo adopt', tool: LADLE_MODULE, types: typesFile, edits })
   writeFileAtomic(workPath('removal.patch'), removalPatch(edits, readSource))
   writeJson(join(projectDir, 'adopt', 'stories', 'redirects.json'), { format: 1, generatedBy: 'massimo adopt', ids: registry.ids, redirects })
+  if (toolList) {
+    const names = goingTools(ledger).map((a) => a.id.replace(/^tool:/, '')).map((n) => n.charAt(0).toUpperCase() + n.slice(1))
+    writeEditsFile(projectDir, toolList, { tool: names.join(' and '), command: scriptCommand(root, projectDir, 'adopt', 'retire stories --dry-run') })
+  }
 
   // The candidates go in the proposed config, for config --write to store.
   if (candidates.length > 0) {
@@ -849,7 +860,7 @@ function convertStories() {
   const expected = records.filter((r) => r.typeImport?.spec === LADLE_MODULE && !r.frozen).length
   if (edited < expected) out.push('', `${plural(expected - edited, 'file')} keep${expected - edited === 1 ? 's' : ''} the tool's import, since ${typesFile} lacks a name ${expected - edited === 1 ? 'it' : 'they'} import.`)
   if (!typesThere) out.push('', `${typesFile} is not there yet: the patch points at it, and the declaration uses the default story types the lane scaffold writes there.`)
-  out.push('', `Wrote ${shown('stories/work/records')} (${plural(records.length, 'file')}), ${shown('stories/work/removal.patch')} (${plural(edited, 'edit')}, applied with git apply from the repo root), removal.json and ${shown('stories/redirects.json')} (${plural(Object.keys(redirects).length, 'id')}).`)
+  out.push('', `Wrote ${shown('stories/work/records')} (${plural(records.length, 'file')}), ${shown('stories/work/removal.patch')} (${plural(edited, 'edit')}, applied with git apply from the repo root), removal.json and ${shown('stories/redirects.json')} (${plural(Object.keys(redirects).length, 'id')})${toolList ? `, and ${shown('stories/edits.md')} (${editsSummary(toolList)})` : ''}.`)
   process.stdout.write(`${out.join('\n')}\n`)
 }
 

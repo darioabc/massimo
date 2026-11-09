@@ -66,12 +66,12 @@ test('index --json prints the format 1 registry, and a problem shows in the text
   assert.match(stories(bad, ['index']).stdout, /\n1 problem: run stories\.mjs --check\n$/)
 })
 
-test('--check passes on the fixture, prints the files per root, and writes nothing', () => {
+test('--check passes on the fixture, prints the files per root and the nodes no story reaches, and writes nothing', () => {
   const t = lane()
   const before = readdirSync(t.root).sort()
   const r = stories(t, ['--check'])
   assert.equal(r.status, 0, r.stderr)
-  assert.match(r.stdout, /^note: files per root: Foundations 1, Primitives 1, Patterns 2, Pages 2, Explorations 1\nmassimo stories: ok \(7 files, 13 states\)\n$/)
+  assert.match(r.stdout, /^note: files per root: Foundations 1, Primitives 1, Patterns 2, Pages 2, Explorations 1\nnote: 1 live node no story reaches: src\/components\/Field\.tsx\nmassimo stories: ok \(7 files, 13 states\)\n$/)
   assert.deepEqual(readdirSync(t.root).sort(), before)
 })
 
@@ -109,6 +109,14 @@ test('a node with no story never fails --check, and other graph rules do', () =>
   assert.deepEqual(checkLane({ ...t, graph: () => ({ json: { storyLane: { problems: [title] } } }) }).problems, [])
   assert.deepEqual(checkLane({ ...t, graph: () => ({ json: {} }) }).problems, [])
   assert.deepEqual(checkLane({ ...t, graph: () => { throw new Error('stories.manifest is missing') } }).problems, [{ rule: 'graph', file: null, detail: 'stories.manifest is missing' }])
+})
+
+test('a registry problem is counted once, whether the graph carries it or not', () => {
+  const t = lane({}, (c) => (c.stories.home = 'nowhere--at-all'))
+  const home = (found) => found.problems.filter((p) => /stories\.home is nowhere--at-all/.test(p.detail))
+  assert.equal(home(checkLane(t)).length, 1)
+  assert.equal(home(checkLane({ ...t, graph: () => ({ json: {} }) })).length, 1)
+  assert.equal(home(checkLane({ ...t, graph: () => { throw new Error('no graph') } })).length, 1)
 })
 
 test('--check carries the frozen design targets that changed', () => {

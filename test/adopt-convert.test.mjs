@@ -498,9 +498,13 @@ test('plan converts the Ladle tool once the lane is csf, and keeps it before; co
   assert.deepEqual([stories().assets[0].decision, stories().assets[0].loss], ['convert', 'carried'])
   assert.match(stories().assets[0].lines.join('\n'), /stay where they are, read in place by the csf lane/)
   assert.equal(stories().converted, undefined)
+  const edits = join(ctx.project, 'adopt', 'stories', 'edits.md')
   const r = convert(ctx)
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 1 })
+  // The tool goes, so convert also writes the edits it needs first.
+  assert.match(readFileSync(edits, 'utf8'), /^# Edits before Ladle can go\n/)
+  assert.match(r.stdout, /edits\.md \(\d+ open edits?, \d+ mentions? that still work/)
   // Planned again, the ledger keeps the counts.
   assert.equal(adopt(ctx, ['plan']).status, 0)
   assert.deepEqual(stories().converted, { at: '2026-11-09', files: 7, states: 13, frozen: 1 })
