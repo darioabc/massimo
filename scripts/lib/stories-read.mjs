@@ -322,13 +322,20 @@ function importBindings(code) {
 }
 
 // `code` with the contents of its strings and templates blanked, offsets
-// kept, so `export default` inside a string is not the module's own.
+// kept, so `export default` inside a string is not the module's own. A
+// template's range holds the strings inside its `${}`, which are listed too,
+// so ranges are taken in order and one inside another is skipped.
 function stringsBlanked(text, code, file) {
+  const ranges = stringLiterals(text, file)
+    .map(({ text: s, start }) => [start, start + s.length])
+    .sort((a, b) => a[0] - b[0] || b[1] - a[1])
   let out = ''
   let from = 0
-  for (const { text: s, start } of stringLiterals(text, file)) {
-    out += code.slice(from, start) + s.replace(/[^\n]/g, ' ')
-    from = start + s.length
+  for (const [start, end] of ranges) {
+    if (end <= from) continue
+    const at = Math.max(start, from)
+    out += code.slice(from, at) + code.slice(at, end).replace(/[^\n]/g, ' ')
+    from = end
   }
   return out + code.slice(from)
 }

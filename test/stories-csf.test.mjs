@@ -105,6 +105,13 @@ test('an export written inside a string is not one, and a statement that declare
   assert.deepEqual(readCsf("export default {}\nexport { D } from './d'\n", 'x.stories.ts').unreadable, [{ story: 'D', field: null, detail: 'D is re-exported from ./d' }])
 })
 
+test('strings inside a template keep every later offset where it was', () => {
+  // A template's `${}` holds strings of its own, which must be blanked once.
+  const csf = readCsf("export default { title: 'X' }\nconst cls = (on) => `btn ${on ? 'btn-on' : 'btn-off'}`\nexport const A = () => <b className={cls(true)} />\nA.storyName = 'First'\n", 'x.stories.tsx')
+  assert.equal(csf.stories[0].storyName, 'First')
+  assert.deepEqual(csf.unreadable, [])
+})
+
 const HISTOIRE = `<script setup>
 import Button from './Button.vue'
 </script>
