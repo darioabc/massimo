@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { checkLane, gitIgnored, layoutEdit, leakReport, typesLine } from '../scripts/stories.mjs'
@@ -325,4 +325,27 @@ test('gitIgnored asks git, and the leak command refuses an unignored folder end 
   assert.equal(ok.status, 0, ok.stdout)
   assert.match(ok.stdout, /^ok: w-\[13\.37rem\] is in the lane's CSS and not the app's\n$/)
   assert.equal(stories(b, ['leak', '--app', b.app]).status, 1)
+})
+
+test('gitIgnored reads a folder the same through a symlink and from a root below the repo\'s top', () => {
+  const b = builds()
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: b.root }).status, 0)
+  writeFileSync(join(b.root, '.gitignore'), 'build/lane/\n')
+  const link = join(dirname(b.root), 'link')
+  symlinkSync(b.root, link)
+  for (const [root, dir] of [
+    [link, b.app],
+    [b.root, join(link, 'build/app')],
+    [link, join(link, 'build/app')],
+    [join(b.root, 'src'), b.app],
+  ]) {
+    assert.equal(gitIgnored(root, dir), false, `${root} ${dir}`)
+  }
+  assert.equal(gitIgnored(link, join(link, 'build/lane')), true)
+  assert.equal(gitIgnored(join(b.root, 'src'), join(link, 'build/lane')), true)
+
+  // End to end, with the root and the folders named through the symlink.
+  const refused = run('stories', { root: link, project: b.ctx.project }, ['leak', '--app', join(link, 'build/app'), '--lane', join(link, 'build/lane'), '--probe', 'w-[13.37rem]'])
+  assert.equal(refused.status, 1)
+  assert.match(refused.stdout, /^--app build\/app is not ignored by git/)
 })

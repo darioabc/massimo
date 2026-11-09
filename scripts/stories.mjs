@@ -48,13 +48,30 @@ export { typesLine }
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
-// Whether git ignores a folder: true, false, or null when git cannot say. A
-// folder outside the repo can never reach a commit, so it counts as ignored.
-export function gitIgnored(root, dir) {
-  const inside = relative(root, dir)
-  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return true
-  const probe = `${inside.split(sep).join('/')}/index`
-  const r = spawnSync('git', ['check-ignore', '-q', '--', probe], { cwd: root })
+// A path with its symlinks resolved, or as given when it does not exist.
+const realPath = (p) => {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
+}
+
+// Whether git ignores a folder: true, false, or null when git cannot say.
+// Git is asked about the folder itself, from the top of the repo that holds
+// it, so a path through a symlink or a --root below that top reads the same.
+// A folder in no repo can never reach a commit, so it counts as ignored.
+export function gitIgnored(_root, dir) {
+  const env = { ...process.env, LC_ALL: 'C' }
+  const real = realPath(dir)
+  const top = spawnSync('git', ['-C', real, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env })
+  if (top.error) return null
+  if (top.status !== 0) return /not a git repository/i.test(top.stderr ?? '') ? true : null
+  const toplevel = realPath(top.stdout.trim())
+  const inside = relative(toplevel, real)
+  if (inside === '') return false
+  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return null
+  const r = spawnSync('git', ['-C', toplevel, 'check-ignore', '-q', '--', `${inside.split(sep).join('/')}/index`], { env })
   if (r.status === 0) return true
   if (r.status === 1) return false
   return null
@@ -201,7 +218,8 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return { ok: false, lines: [`${flag} ${dir} is not a folder`] }
     const ignored = isIgnored(root, dir)
     if (ignored !== true) {
-      const shown = relative(root, dir) || dir
+      const inside = relative(realPath(root), realPath(dir))
+      const shown = inside === '' || inside.startsWith('..') || isAbsolute(inside) ? dir : inside.split(sep).join('/')
       return { ok: false, lines: [`${flag} ${shown} is ${ignored === false ? 'not ignored by git' : 'not a folder git can check'}, so a build could reach a commit; add it to .gitignore and run the check again`] }
     }
   }
@@ -217,7 +235,8 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   // the app's CSS lost counts when the app's own code uses it (`appCode`).
   // The build folders and the files git ignores are read by neither. Every
   // file of the lane's scaffold folder, its stylesheets included, is the lane's.
-  const builds = [app, lane, before].filter(Boolean).map((d) => relative(root, d).split(sep).join('/'))
+  const realRoot = realPath(root)
+  const builds = [app, lane, before].filter(Boolean).map((d) => relative(realRoot, realPath(d)).split(sep).join('/'))
   const ignored = ignoredFiles(root, files)
   const storyWords = new Set()
   const appText = new Set()
