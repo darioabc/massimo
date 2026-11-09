@@ -1,0 +1,279 @@
+#!/usr/bin/env node
+// The csf story lane from the command line: what the registry holds, whether
+// the lane is sound, and whether the lane's CSS leaked into the app's.
+//
+//   stories.mjs index            files, slugs and states per root
+//   stories.mjs index --json     the registry itself (format 1), for tools
+//   stories.mjs --check          exit 1 when the lane has a fault; writes nothing
+//   stories.mjs leak --app <dir> --lane <dir> [--probe <class>] [--before <dir>]
+//                                compare the CSS of an app build and a lane build
+//
+// --check fails on registry problems, a frozen design target that changed,
+// the graph's csf lane problems (except a node with no story), a base CSS
+// that holds `@source not`, app code that imports a module only stories use,
+// and a lane scaffold whose type file is from another format. It warns on
+// story-only modules the app's entry CSS does not exclude, and prints the
+// files per root and the live nodes no story reaches without failing.
+//
+// leak refuses a build folder git does not ignore, so a build never reaches a
+// commit. With --probe the class must be in the lane's CSS and not the app's.
+// Without it, every class found only in story files and story-only modules is
+// looked up in the app's CSS. --before names an earlier app build: the
+// classes the app's CSS lost since then must not occur in an app file.
+//
+// Shared flags: --root <dir> --config <file> --project-dir <dir>
+
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { buildGraph } from './graph.mjs'
+import { compare, compileGlobs, walk } from './lib/glob.mjs'
+import { cssClasses, cssLayoutProblems, sourceWords, storyOnlyModules } from './lib/lane-css.mjs'
+import { frozenProblems } from './lib/convert.mjs'
+import { laneRegistry } from './lib/lane.mjs'
+import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
+import { createResolver, isStoryFile, isTestFile } from './lib/source.mjs'
+
+const LANES = ['native', 'manifest', 'csf']
+const APP_TEXT = /\.(?:tsx?|jsx?|mjs|cjs|mts|cts|vue|svelte|astro|html|mdx)$/
+
+// The first line the scaffold's type file carries for a registry format.
+export const typesLine = (format) => `// massimo lane types, format ${format}`
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// Whether git ignores a folder: true, false, or null when git cannot say. A
+// folder outside the repo can never reach a commit, so it counts as ignored.
+export function gitIgnored(root, dir) {
+  const inside = relative(root, dir)
+  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) return true
+  const probe = `${inside.split(sep).join('/')}/index`
+  const r = spawnSync('git', ['check-ignore', '-q', '--', probe], { cwd: root })
+  if (r.status === 0) return true
+  if (r.status === 1) return false
+  return null
+}
+
+// Every repo file the lane reads: the walk minus the lane build's output folder.
+export function repoFiles(root, config) {
+  const out = (config.stories.outDir ?? '').replace(/^\.\//, '').replace(/\/+$/, '')
+  return walk(root, { ignore: config.ignore }).filter((f) => !out || !(f === out || f.startsWith(`${out}/`)))
+}
+
+export function registryOf(root, config, files) {
+  const include = compileGlobs(config.stories.include)
+  return laneRegistry({ root, config, files: files.filter(include), read: (f) => readFileSync(join(root, f), 'utf8') })
+}
+
+// The registry's counts per root (the first part of a title), in the registry's order.
+export function rootCounts(registry) {
+  const roots = new Map()
+  for (const id of registry.order) {
+    const s = registry.stories[id]
+    const root = s.levels[0] ?? s.slug
+    const r = roots.get(root) ?? roots.set(root, { root, files: new Set(), slugs: new Set(), states: 0 }).get(root)
+    r.files.add(s.file)
+    r.slugs.add(s.slug)
+    r.states += 1
+  }
+  return [...roots.values()].map((r) => ({ root: r.root, files: r.files.size, slugs: r.slugs.size, states: r.states }))
+}
+
+export function indexText(registry) {
+  const roots = rootCounts(registry)
+  const files = Object.keys(registry.files).length
+  const states = registry.order.length
+  const lines = [`massimo stories: ${plural(files, 'file')}, ${plural(Object.keys(registry.slugs).length, 'slug')}, ${plural(states, 'state')} in ${plural(roots.length, 'root')} (ids: ${registry.ids})`]
+  const width = Math.max(0, ...roots.map((r) => r.root.length))
+  for (const r of roots) lines.push(`  ${r.root.padEnd(width)}  ${plural(r.files, 'file')}, ${plural(r.slugs, 'slug')}, ${plural(r.states, 'state')}`)
+  if (registry.home) lines.push(`home: ${registry.home}`)
+  if (registry.problems.length > 0) lines.push(`${plural(registry.problems.length, 'problem')}: run stories.mjs --check`)
+  return `${lines.join('\n')}\n`
+}
+
+// What `--check` finds: { registry, problems, warnings, notes }, each
+// problem and warning { rule, file, detail }. `graph` and `frozen` default to
+// the real checks and can be replaced in a test.
+export function checkLane({ root, config, files = repoFiles(root, config), graph = buildGraph, frozen = frozenProblems }) {
+  const registry = registryOf(root, config, files)
+  const problems = [...registry.problems]
+  const warnings = []
+  const notes = []
+
+  for (const p of frozen(root, config)) {
+    problems.push(typeof p === 'string' ? { rule: 'frozen', file: null, detail: p } : { rule: p.rule ?? 'frozen', file: p.file ?? null, detail: p.detail ?? p.message ?? '' })
+  }
+
+  // The graph's csf rules. A node with no story is information here, never a fault.
+  let storyLane = null
+  try {
+    const built = graph(root, config, 'stories.mjs')
+    storyLane = (built.json ?? built).storyLane ?? null
+  } catch (e) {
+    problems.push({ rule: 'graph', file: null, detail: e instanceof Error ? e.message : String(e) })
+  }
+  if (storyLane?.lane === 'csf') {
+    for (const p of storyLane.problems ?? []) if (p.rule !== 'no-story') problems.push(p)
+    const none = (storyLane.problems ?? []).filter((p) => p.rule === 'no-story')
+    if (none.length > 0) {
+      const shown = none.slice(0, 12).map((p) => p.file)
+      notes.push(`${plural(none.length, 'live node')} no story reaches: ${shown.join(', ')}${none.length > shown.length ? `, and ${none.length - shown.length} more` : ''}`)
+    }
+  }
+
+  for (const p of cssLayoutProblems({ root, config, files, resolver: createResolver(root, config) })) (p.severity === 'warn' ? warnings : problems).push(p)
+
+  // A scaffold written by another format of the plugin reads a registry it may not understand.
+  const expected = typesLine(registry.format)
+  for (const file of files.filter((f) => f === 'massimo.d.ts' || f.endsWith('/massimo.d.ts'))) {
+    const first = readFileSync(join(root, file), 'utf8').split('\n', 1)[0].replace(/^﻿/, '').trimEnd()
+    if (first !== expected) problems.push({ rule: 'scaffold', file, detail: `its first line is "${first}", but this plugin writes "${expected}"; update the lane scaffold` })
+  }
+
+  notes.unshift(`files per root: ${rootCounts(registry).map((r) => `${r.root} ${r.files}`).join(', ') || 'none'}`)
+  const order = (list) => list.sort((a, b) => compare(a.rule, b.rule) || compare(a.file ?? '', b.file ?? '') || compare(a.detail, b.detail))
+  return { registry, problems: order(problems), warnings: order(warnings), notes }
+}
+
+const line = (p) => `  [${p.rule}] ${p.file ? `${p.file}: ` : ''}${p.detail}`
+
+// ── leak ─────────────────────────────────────────────────────────────────────
+
+function cssIn(dir) {
+  const files = walk(dir).filter((f) => f.endsWith('.css'))
+  return cssClasses(files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n'))
+}
+
+// The edit that keeps the exclusions out of the base CSS the lane imports.
+export function layoutEdit(config, storyOnly) {
+  const base = config.stories.appCss?.base ?? '<base css>'
+  const entry = config.stories.appCss?.entry ?? '<entry css>'
+  const from = config.stories.appCss?.entry ? posix.dirname(entry) : '.'
+  const here = (p) => posix.relative(from, p) || '.'
+  const spec = here(base).startsWith('.') ? here(base) : `./${here(base)}`
+  const nots = [...storyOnly, ...config.stories.include].map((p) => `    @source not "${here(p)}";`)
+  return [
+    'The lane and the app must not share a stylesheet that holds @source not (layout A):',
+    `  1. ${base}: take out its @source not lines.`,
+    `  2. ${entry}: start with @import "${spec}"; then the exclusions:`,
+    ...nots,
+    `  3. The app's main module imports ${entry}. The lane's stories.css keeps importing ${base}.`,
+    ...(config.stories.appCss ? [] : ['  4. Set stories.appCss to { "base": ..., "entry": ... } so --check can read the layout.']),
+  ]
+}
+
+// Compare an app build's CSS with a lane build's. Returns { ok, lines }.
+export function leakReport({ root, config, files = repoFiles(root, config), app, lane, probe = null, before = null, isIgnored = gitIgnored }) {
+  const lines = []
+  const folders = [['--app', app], ['--lane', lane], ...(before ? [['--before', before]] : [])]
+  for (const [flag, dir] of folders) {
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) return { ok: false, lines: [`${flag} ${dir} is not a folder`] }
+    const ignored = isIgnored(root, dir)
+    if (ignored !== true) {
+      const shown = relative(root, dir) || dir
+      return { ok: false, lines: [`${flag} ${shown} is ${ignored === false ? 'not ignored by git' : 'not a folder git can check'}, so a build could reach a commit; add it to .gitignore and run the check again`] }
+    }
+  }
+  const appClasses = cssIn(app)
+  const laneClasses = cssIn(lane)
+
+  const include = compileGlobs(config.stories.include)
+  const storyOnly = new Set(storyOnlyModules({ root, config, files, resolver: createResolver(root, config) }))
+  const storyWords = new Set()
+  const appWords = new Map()
+  for (const file of files) {
+    if (!APP_TEXT.test(file) || isTestFile(file) || /\.d\.[cm]?ts$/.test(file)) continue
+    const inLane = isStoryFile(file) || include(file) || storyOnly.has(file)
+    let text
+    try {
+      text = readFileSync(join(root, file), 'utf8')
+    } catch {
+      continue
+    }
+    for (const w of sourceWords(text)) {
+      if (inLane) storyWords.add(w)
+      else if (!appWords.has(w)) appWords.set(w, file)
+    }
+  }
+
+  let leaked = []
+  if (probe !== null) {
+    if (!laneClasses.has(probe)) return { ok: false, lines: [`the class ${probe} is not in the lane's CSS, so this probe proves nothing`] }
+    if (appClasses.has(probe)) leaked = [probe]
+    lines.push(leaked.length > 0 ? `leak: ${probe} is in the app's CSS` : `ok: ${probe} is in the lane's CSS and not the app's`)
+  } else {
+    leaked = [...storyWords].filter((w) => !appWords.has(w) && laneClasses.has(w) && appClasses.has(w)).sort(compare)
+    if (leaked.length > 0) lines.push(`leak: ${plural(leaked.length, 'class')} only stories use ${leaked.length === 1 ? 'is' : 'are'} in the app's CSS: ${leaked.slice(0, 20).join(', ')}${leaked.length > 20 ? `, and ${leaked.length - 20} more` : ''}`)
+    else lines.push('ok: no class only stories use is in the app\'s CSS')
+  }
+
+  let lost = []
+  if (before) {
+    lost = [...cssIn(before)].filter((c) => !appClasses.has(c) && appWords.has(c)).sort(compare)
+    if (lost.length > 0) lines.push(`lost: the app's CSS no longer has ${plural(lost.length, 'class')} an app file uses: ${lost.slice(0, 20).map((c) => `${c} (${appWords.get(c)})`).join(', ')}${lost.length > 20 ? `, and ${lost.length - 20} more` : ''}`)
+    else lines.push('ok: the app\'s CSS lost no class an app file uses')
+  }
+
+  if (leaked.length > 0) lines.push('', ...layoutEdit(config, [...storyOnly].sort(compare)))
+  return { ok: leaked.length === 0 && lost.length === 0, lines }
+}
+
+// ── command line ─────────────────────────────────────────────────────────────
+
+function main() {
+  const { _: args, flags } = parseArgs()
+  const sub = flags.check ? 'check' : args[0]
+  if (!['check', 'index', 'leak'].includes(sub)) fail('usage: stories.mjs index [--json] | --check | leak --app <dir> --lane <dir> [--probe <class>] [--before <dir>]')
+  const { root, config, projectDir } = loadConfig(flags)
+  warnIfVendoredOlder(projectDir, import.meta.url)
+  const lane = String(config.stories.lane ?? 'native')
+  if (!LANES.includes(lane)) fail(`stories.lane is "${lane}", which stories.mjs does not know. Use "native", "manifest" or "csf".`)
+  if (lane !== 'csf') {
+    if (sub === 'check') {
+      process.stdout.write(`massimo stories: nothing to check, stories.lane is "${lane}" and this check reads a csf lane\n`)
+      return
+    }
+    fail(`stories.mjs ${sub} reads a csf lane, and stories.lane is "${lane}". Set stories.lane to "csf" first.`)
+  }
+
+  if (sub === 'index') {
+    const registry = registryOf(root, config, repoFiles(root, config))
+    process.stdout.write(flags.json ? `${JSON.stringify(registry, null, 2)}\n` : indexText(registry))
+    return
+  }
+
+  if (sub === 'leak') {
+    for (const key of ['app', 'lane']) if (typeof flags[key] !== 'string') fail('usage: stories.mjs leak --app <dir> --lane <dir> [--probe <class>] [--before <dir>]')
+    const { ok, lines } = leakReport({
+      root,
+      config,
+      app: resolve(flags.app),
+      lane: resolve(flags.lane),
+      probe: typeof flags.probe === 'string' ? flags.probe : null,
+      before: typeof flags.before === 'string' ? resolve(flags.before) : null,
+    })
+    process.stdout.write(`${lines.join('\n')}\n`)
+    if (!ok) process.exit(1)
+    return
+  }
+
+  const { registry, problems, warnings, notes } = checkLane({ root, config })
+  const counts = `${plural(Object.keys(registry.files).length, 'file')}, ${plural(registry.order.length, 'state')}`
+  for (const n of notes) process.stdout.write(`note: ${n}\n`)
+  if (warnings.length > 0) process.stdout.write(`${warnings.map((w) => `warn${line(w)}`).join('\n')}\n`)
+  if (problems.length > 0) {
+    process.stderr.write(`massimo stories: ${plural(problems.length, 'problem')} (${counts})\n${problems.map(line).join('\n')}\n`)
+    process.exit(1)
+  }
+  process.stdout.write(`massimo stories: ok (${counts})\n`)
+}
+
+const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''
+if (entry === fileURLToPath(import.meta.url)) {
+  try {
+    main()
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err))
+  }
+}
