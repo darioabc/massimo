@@ -127,6 +127,8 @@ test('the object reader never runs code and stops at what it cannot read', () =>
   const src = "module.exports = { a: 'x', b: [1, 'two', { c: true }], d: fn(1, { e: 2 }), 'f-g': `h`, i: `${j}`, ...k, l() { return 1 } }"
   const obj = findObject(src, [/module\.exports\s*=\s*/])
   assert.deepEqual(JSON.parse(JSON.stringify(obj)), { a: 'x', b: [1, 'two', { c: true }], d: { expr: 'fn(1, { e: 2 })' }, 'f-g': 'h', i: { expr: '`${j}`' }, l: { expr: 'l()' } })
+  // A minus or a dot before something other than a digit is not a number.
+  assert.deepEqual(findObject('export default { n: -.5, m: -2 }\nconst KEY = /^sb-.+-token$/', [/export default\s*/]), { n: -0.5, m: -2 })
 })
 
 test('Tokens Studio: sets merged in order, types and shadows converted, themes named', () => {
