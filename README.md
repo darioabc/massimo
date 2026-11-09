@@ -50,7 +50,7 @@ Requires Node 18 or newer. Optional: Playwright in the repo (for screenshots and
 | Phase | Command | What you get |
 |---|---|---|
 | Set up | `/massimo:start` | `massimo.config.json`, the `design-system/` project folder, product grounding |
-| Adopt | `/massimo:adopt` | only for a repo with a setup of its own: massimo reads its story lane, header keys, graph, ratchet and token list, proves it agrees with them, then takes over one class at a time |
+| Adopt | `/massimo:adopt` | only for a repo with a setup of its own: massimo reads its story lane, header keys, graph, ratchet and token list, proves it agrees with them, then takes over one class at a time; a Ladle repo can also move its story files onto massimo's csf lane |
 | Graph | `/massimo:graph` | `design-system/graph.md`: every component, what it composes, what uses it, its story, its tokens, its usage rules |
 | Stories | `/massimo:stories` | a native story lane at `/stories`, gated so it never ships, and baseline stories for your most-used components |
 | Tokens | `/massimo:tokens` | an audit of raw values, then tokens in the W3C Design Tokens format 2025.10, approved group by group, built into CSS, Tailwind 4 or 3, SCSS, TS, JSON or DESIGN.md |
@@ -67,6 +67,10 @@ Skip any phase you do not need. `/massimo:status` shows where things stand.
 ### Adopting a setup the repo already has
 
 Some repos already keep their own design-system data: a story lane with its own manifest, `ds:` header keys, a generated component graph, a ratchet of raw values, a token list, and the scripts that write them. `/massimo:adopt` takes these over instead of generating a second system beside them. It first lists what is there and everything that depends on it, without running any of it. Then it configures massimo to read the repo's own conventions, runs both side by side on pull requests without blocking, and proves they agree, class by class. Only then does it switch each class over, consumers first, one commit you can revert at a time. The old scripts are retired last, only when nothing depends on them and you say yes. `/massimo:start` offers adopt when it finds such a setup.
+
+#### A Ladle repo
+
+A repo whose stories are CSF files for Ladle can go one step further, if you opt in with `adopt.mjs config --write --lane csf`. The story files stay where they are and are never copied. A Vite plugin from massimo builds a lane from them at `/stories`: one state at a time in a fixed-size iframe, a canvas per state at `/stories/<slug>/<state>`, and `/meta.json` in Ladle's own shape. Ladle ids can be kept, so old links, specs and `/?story=<id>` URLs still work. `adopt.mjs convert stories` writes a record per file, the redirect map, the list of edits the repo makes before Ladle can go, and a patch that changes only the type import of each file. Design targets you freeze are pinned by hash and checked in CI. The lane is proved against Ladle's own `meta.json`, a sweep of every state, and shots in both, and the static build can be hosted for a team. Title, coverage and banner rules are options in `stories.policy`, off until you set them. A Ladle repo that does not opt in is planned exactly as in 0.3.0.
 
 ### The design loop
 
@@ -99,6 +103,16 @@ Everything is plain Markdown, JSON and HTML, committed with your code. `npm run 
 ## Supported stacks
 
 Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. Extraction reads CSS (including `@theme`, DaisyUI themes, `light-dark()` and channel triplets), Tailwind 3 configs, CSS-in-JS and JS theme objects, Tokens Studio and DTCG files, and Figma variable exports. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript, JSON and [DESIGN.md](https://github.com/google-labs-code/design.md) for coding agents. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
+
+## Updating from 0.3
+
+Update the plugin, then bring the vendored scripts forward in your repo:
+
+```bash
+node <plugin-root>/scripts/init.mjs --update-scripts
+```
+
+A project that sets no 0.4.0 key behaves as on 0.3.0, and a Ladle repo is planned as before until it opts in. A config that turns on a 0.4.0 key sets `"minScripts": "0.4.0"`, so scripts older than that refuse it by name instead of ignoring the key. The new files (the redirect map and the conversion records) have their own format numbers, and older scripts refuse a newer one with "update massimo".
 
 ## Updating from 0.2
 
