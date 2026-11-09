@@ -21,6 +21,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DOCS_START } from './docs.mjs'
 import { fail, loadConfig, parseArgs, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const here = dirname(fileURLToPath(import.meta.url))
 

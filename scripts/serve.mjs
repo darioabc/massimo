@@ -14,6 +14,9 @@ import { createServer } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { escapeHtml, markdownPage, renderMarkdown } from './lib/markdown.mjs'
 import { loadConfig, parseArgs } from './lib/project.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const { flags } = parseArgs()
 const dir = realpathSync(flags.dir ? resolve(flags.dir) : loadConfig(flags).projectDir)

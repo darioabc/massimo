@@ -113,6 +113,9 @@ import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
 import { truthy } from './lib/text.mjs'
 import { VERIFY_CLASSES, compareGraph, compareLane, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const here = dirname(fileURLToPath(import.meta.url))
 // --write, --force and --shoot take no value, so a positional after them stays one.

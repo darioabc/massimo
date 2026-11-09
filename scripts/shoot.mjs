@@ -90,6 +90,9 @@ import {
   sweepUrl,
   verdict,
 } from './lib/shoot.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const { _: args, flags } = parseArgs()
 if ('playwright' in flags && (typeof flags.playwright !== 'string' || !flags.playwright)) fail('--playwright takes one path', 2)

@@ -19,6 +19,9 @@ import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand,
 import { tierOrder } from './lib/roles.mjs'
 import { isAlias } from './lib/source.mjs'
 import { truthy } from './lib/text.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 export const DOCS_START = '<!-- massimo:docs:start -->'
 export const DOCS_END = '<!-- massimo:docs:end -->'

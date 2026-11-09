@@ -23,6 +23,9 @@ import {
   updateState,
   upsertExploration,
 } from './lib/state.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const { _: args, flags } = parseArgs()
 const [command = 'show', ...rest] = args
