@@ -137,3 +137,34 @@ test('one alias elsewhere in the set leaves the colours no token aliases out of 
   assert.deepEqual(latest.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value), ['--color-ink', '--radius-base'])
   assert.equal(latest.skipped['primitive-read'], undefined)
 })
+
+test("a colour a composite token or a var() in a token's CSS refers to has an alias to read instead", () => {
+  const srgb = (components) => ({ colorSpace: 'srgb', components })
+  const px = (value) => ({ value, unit: 'px' })
+  const doc = {
+    color: {
+      $type: 'color',
+      line: { $value: srgb([0.9, 0.9, 0.9]) },
+      shade: { $value: srgb([0, 0, 0]) },
+      stop: { $value: srgb([0.2, 0.4, 0.8]) },
+      ink: { $value: srgb([0.1, 0.1, 0.1]) },
+      primary: { $value: srgb([0.09, 0.09, 0.09]) },
+      scrim: { $value: srgb([0.1, 0.1, 0.1]), $extensions: { massimo: { css: 'rgb(var(--color-ink) / 0.5)' } } },
+    },
+    border: { card: { $type: 'border', $value: { color: '{color.line}', width: px(1), style: 'solid' } } },
+    shadow: { card: { $type: 'shadow', $value: { color: '{color.shade}', offsetX: px(0), offsetY: px(1), blur: px(2), spread: px(0) } } },
+    gradient: { hero: { $type: 'gradient', $value: [{ color: '{color.stop}', position: 0 }, { color: srgb([1, 1, 1]), position: 1 }] } },
+    radius: { $type: 'dimension', base: { $value: px(4) }, card: { $value: '{radius.base}' } },
+  }
+  const ctx = fresh(withTokens(doc))
+  writeFileSync(
+    join(ctx.root, 'src', 'reads.tsx'),
+    "export const R = () => <p style={{ borderColor: 'var(--color-line)', boxShadow: 'var(--color-shade)', background: 'var(--color-stop)', color: 'var(--color-ink)', outlineColor: 'var(--color-primary)', caretColor: 'var(--color-scrim)' }} />\n",
+  )
+  const latest = audit(ctx)
+  // The border, the shadow and the gradient refer to the line, the shade and
+  // the stop, and the scrim's CSS reads the ink. Nothing refers to the
+  // primary or the scrim, so they are roles of their own.
+  const reads = latest.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value)
+  assert.deepEqual(reads.sort(), ['--color-ink', '--color-line', '--color-shade', '--color-stop'])
+})

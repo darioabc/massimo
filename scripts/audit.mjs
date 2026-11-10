@@ -1177,7 +1177,16 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // no DTCG set yet, the literal colours the token files define, read anywhere
   // but those files.
   const colorPrimitives = config.audit?.primitives === 'color'
-  const aliasTargets = new Set(dtcgTokens.flatMap((t) => [t.value, ...Object.values(t.modes ?? {})].filter(isAlias).map(aliasPath)))
+  // A token aliases another through its value or a theme's, a reference
+  // inside a composite value (a border's colour, a gradient stop), or a
+  // var() its CSS reads, named by that token's custom property.
+  const byCssVar = new Map(dtcgTokens.map((t) => [t.cssVar, t.name]))
+  const refsIn = (v) => {
+    if (isAlias(v)) return [aliasPath(v)]
+    if (typeof v === 'string') return [...v.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => byCssVar.get(m[1])).filter(Boolean)
+    return v && typeof v === 'object' ? Object.values(v).flatMap(refsIn) : []
+  }
+  const aliasTargets = new Set(dtcgTokens.flatMap((t) => [t.value, t.css, ...Object.values(t.modes ?? {}), ...Object.values(t.cssModes ?? {})].flatMap(refsIn)))
   const aliasedOrNoColor = (t) => (t.type ?? t.groupType) !== 'color' || aliasTargets.has(t.name)
   let primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value) && aliasedOrNoColor(t)).map((t) => t.cssVar))
   if (colorPrimitives) {
