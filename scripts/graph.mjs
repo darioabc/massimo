@@ -39,6 +39,7 @@ import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
 import { closeBracket, componentsOf, listFaults, readCsf, readManifest, readStoryStates, slugFiles, slugPath, stateName } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
+import { NUXT_EDGE_KINDS, nuxtApp, nuxtEdges, withNuxt } from './lib/nuxt.mjs'
 
 helpAndExit(import.meta.url)
 
@@ -410,7 +411,10 @@ export function buildGraph(root, config, command = "graph.mjs") {
     (f) => !isStory(f) && !isTestFile(f) && !nodeSet.has(f),
   )
 
-  const resolveImport = createResolver(root, config)
+  // A Nuxt app's aliases, layers and auto-imported components; null in any
+  // other project, which the graph then reads exactly as before.
+  const nuxt = nuxtApp(root, config, all, warnings)
+  const resolveImport = withNuxt(createResolver(root, config), nuxt)
   // Components go by their name; a node of another kind by its path without
   // `src/` and its extension (`pages/work/index`), which reads as its route.
   const nameOf = assignNames(kinds.length > 0 ? nodeFiles.filter((f) => kindOf.get(f) === 'component') : nodeFiles)
@@ -423,6 +427,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     }
   }
   const edgeKinds = new Set([].concat(config.graph?.edges ?? []))
+  for (const kind of NUXT_EDGE_KINDS) edgeKinds.delete(kind)
   for (const kind of edgeKinds) {
     if (!EDGE_KINDS.includes(kind)) warnings.push(`graph.edges lists "${kind}"; its values are "mdx" and "glob", so that one adds no edges`)
   }
@@ -480,6 +485,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
         else edges.push({ file: hit.file, names: imp.names })
       }
       if (edgeKinds.has('glob')) for (const target of globTargets(file, stripComments(source, parseAs))) edges.push({ file: target, names: ['*'] })
+      if (nuxt && !mdx) edges.push(...nuxtEdges(nuxt, file, text))
       let exportsCache = null
       info = { edges, unresolved, packages, reexports, exportNames: () => (exportsCache ??= extractExports(source, parseAs)) }
     }

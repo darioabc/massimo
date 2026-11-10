@@ -12,6 +12,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { compare, compileGlobs, globToRegExp } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
 import { csfScaffold } from './lib/lane-css.mjs'
+import { nuxtComponentFolders, withNuxtFolders } from './lib/nuxt.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
 import { workspacePackages } from './lib/source.mjs'
 import { helpAndExit } from './lib/help.mjs'
@@ -473,7 +474,8 @@ const extByFramework = {
   astro: '{astro,tsx,jsx,vue,svelte}',
 }
 const ext = extByFramework[framework] ?? '{tsx,jsx}'
-const topDirs = dirs.slice(0, 3).map((d) => d.dir)
+// A Nuxt app's components are also the folders Nuxt registers, every layer's included.
+const topDirs = withNuxtFolders(dirs.slice(0, 3).map((d) => d.dir), nuxtComponentFolders(root, files, framework))
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
 
 // The component globs, each one only if it matches a component file: the top

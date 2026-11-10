@@ -1,0 +1,11 @@
+{
+  "framework": "nuxt",
+  "styling": ["css"],
+  "components": {
+    "include": ["app/components/**/*.vue", "app/widgets/**/*.vue", "layers/*/app/components/**/*.vue", "layers/*/components/**/*.vue", "vendor/theme/components/**/*.vue"],
+    "exclude": ["**/*.test.*", "**/*.stories.*", "**/*.story.*"]
+  },
+  "consumers": ["**/*.{ts,vue}"],
+  "stories": { "include": ["app/**/*.story.vue"] },
+  "tokens": { "styleFiles": [] }
+}
