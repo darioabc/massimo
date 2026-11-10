@@ -7,12 +7,13 @@
 //   detect.mjs [--root <dir>]
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
-import { compare } from './lib/glob.mjs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { compare, compileGlobs, globToRegExp } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
 import { csfScaffold } from './lib/lane-css.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
+import { workspacePackages } from './lib/source.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
 helpAndExit(import.meta.url)
@@ -20,7 +21,46 @@ helpAndExit(import.meta.url)
 const { flags } = parseArgs()
 const root = flags.root ? flags.root : findRoot()
 const pkg = readJson(join(root, 'package.json'), {}) ?? {}
-const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies }
+const depsOf = (p) => ({ ...p?.dependencies, ...p?.devDependencies, ...p?.peerDependencies })
+
+// The workspace root a package belongs to: the nearest folder above `dir`, up
+// to the top of the checkout, that declares workspaces; null when there is
+// none or its globs do not name the package.
+function workspaceRootOf(dir) {
+  const real = (p) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  const start = real(dir)
+  let top = null
+  try {
+    top = real(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: start, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim())
+  } catch {
+    // not a git checkout: look up to the root of the file system
+  }
+  for (let at = start; at !== top; ) {
+    const parent = dirname(at)
+    if (parent === at) return null
+    at = parent
+    const globs = workspaceGlobs(at)
+    if (globs.length > 0) return compileGlobs(globs)(relative(at, start).split(sep).join('/')) ? at : null
+  }
+  return null
+}
+
+// A package inside a workspace can use what the workspace root installs, so
+// the root's dependencies count beneath the package's own.
+const workspaceTop = workspaceRootOf(root)
+let hoisted = {}
+try {
+  hoisted = workspaceTop ? depsOf(readJson(join(workspaceTop, 'package.json'), {})) : {}
+} catch {
+  // an unreadable package.json at the workspace root adds nothing
+}
+const deps = { ...hoisted, ...depsOf(pkg) }
 const has = (name) => Object.hasOwn(deps, name)
 const major = (name) => {
   const m = String(deps[name] ?? '').match(/(\d+)/)
@@ -75,38 +115,77 @@ const nested = workspaces
   ? []
   : listed.filter((f) => f !== 'package.json' && f.endsWith('/package.json')).map((f) => f.slice(0, -'package.json'.length))
 const files = listed.filter((f) => !nested.some((dir) => f.startsWith(dir)))
+// At a workspace root, the dependencies of each package it names: they tell
+// the framework and the styling the root's own leave out.
+const members = workspaces ? workspacePackages(root).map((m) => ({ dir: m.dir, deps: depsOf(m.pkg) })) : []
 
-function detectFramework() {
-  const vite = has('vite')
-  if (has('next')) return existsSync(join(root, 'app')) || existsSync(join(root, 'src/app')) ? 'next-app' : 'next-pages'
-  if (has('astro')) return 'astro'
-  if (has('@sveltejs/kit')) return 'sveltekit'
-  if (has('nuxt') || has('nuxt3')) return 'nuxt'
-  if (has('@remix-run/react') || has('@react-router/dev')) return 'react-router'
-  if (has('@angular/core')) return 'angular'
-  if (vite && (has('preact') || has('@preact/preset-vite'))) return 'vite-preact'
-  if (vite && has('vue')) return 'vite-vue'
-  if (vite && has('svelte')) return 'vite-svelte'
-  if (vite && has('solid-js')) return 'vite-solid'
-  if (vite && has('react')) return 'vite-react'
-  if (has('react-scripts') || (has('webpack') && has('react'))) return 'webpack-react'
+function detectFramework(have = has, dir = root) {
+  const vite = have('vite')
+  if (have('next')) return existsSync(join(dir, 'app')) || existsSync(join(dir, 'src/app')) ? 'next-app' : 'next-pages'
+  if (have('astro')) return 'astro'
+  if (have('@sveltejs/kit')) return 'sveltekit'
+  if (have('nuxt') || have('nuxt3')) return 'nuxt'
+  if (have('@remix-run/react') || have('@react-router/dev')) return 'react-router'
+  if (have('@angular/core')) return 'angular'
+  if (vite && (have('preact') || have('@preact/preset-vite'))) return 'vite-preact'
+  if (vite && have('vue')) return 'vite-vue'
+  if (vite && have('svelte')) return 'vite-svelte'
+  if (vite && have('solid-js')) return 'vite-solid'
+  if (vite && have('react')) return 'vite-react'
+  if (have('react-scripts') || (have('webpack') && have('react'))) return 'webpack-react'
   if (vite) return 'vite'
   return 'unknown'
 }
 
+// The framework a package's own dependencies name. Those it sits beneath (a
+// workspace root's) count only when its own name none, or Vite alone, so a
+// framework installed at the workspace root never beats the package's own.
+function frameworkOf(own, beneath, dir) {
+  const found = detectFramework((name) => Object.hasOwn(own, name), dir)
+  if (found !== 'unknown' && found !== 'vite') return found
+  const both = { ...beneath, ...own }
+  return detectFramework((name) => Object.hasOwn(both, name), dir)
+}
+
+// A workspace root that names no framework of its own (none, or Vite alone)
+// takes the one most of its packages use, each package read with the root's
+// dependencies beneath its own.
+function repoFramework(own) {
+  if ((own !== 'unknown' && own !== 'vite') || members.length === 0) return own
+  const counts = new Map()
+  for (const m of members) {
+    const found = frameworkOf(m.deps, deps, join(root, m.dir))
+    if (found !== 'unknown' && found !== 'vite') counts.set(found, (counts.get(found) ?? 0) + 1)
+  }
+  const [best] = [...counts].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
+  return best ? best[0] : own
+}
+
+// CSS with its comments taken out, and with `lines`, the // comments Sass and
+// Less have too. A string or a url() is kept whole, since a glob such as
+// "../**/*.tsx" holds a "/*" and a URL holds a "//".
+const withoutComments = (css, lines = false) =>
+  css.replace(lines ? /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|url\((?!\s*["'])[^)]*\))|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g : /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|url\((?!\s*["'])[^)]*\))|\/\*[\s\S]*?\*\//g, (m, kept) => kept ?? ' ')
+
 function detectStyling() {
   const out = []
+  // A workspace root's styling is its packages' styling too.
+  const used = (name) => has(name) || members.some((m) => Object.hasOwn(m.deps, name))
+  const majorIn = (d) => Number(String(d.tailwindcss ?? '').match(/(\d+)/)?.[1] ?? 0)
   // The package's own Tailwind version decides; the CSS only tells when it is not a dependency.
-  const tw = major('tailwindcss')
-  const cssText = styleFileStats.map((s) => s.text).join('\n')
+  const tw = major('tailwindcss') ?? (members.reduce((n, m) => Math.max(n, majorIn(m.deps)), 0) || null)
+  const cssText = styleFileStats.map((s) => s.css).join('\n')
   if (tw) out.push(tw >= 4 ? 'tailwind4' : 'tailwind3')
   else if (/@import\s+["']tailwindcss["']/.test(cssText)) out.push('tailwind4')
   else if (/@tailwind\s+base/.test(cssText)) out.push('tailwind3')
-  if (has('daisyui')) out.push('daisyui')
+  if (used('daisyui')) out.push('daisyui')
   if (existsSync(join(root, 'components.json'))) out.push('shadcn')
   if (files.some((f) => /\.module\.(css|scss)$/.test(f))) out.push('css-modules')
-  if (has('sass') || has('node-sass') || files.some((f) => /\.s[ac]ss$/.test(f))) out.push('sass')
-  if (has('less')) out.push('less')
+  if (used('sass') || used('node-sass') || files.some((f) => /\.s[ac]ss$/.test(f))) out.push('sass')
+  if (used('less')) out.push('less')
+  // vanilla-extract shows in any of its packages (a bundler plugin at the
+  // root, the runtime in a package) or in its *.css.ts files.
+  const vanillaExtract = () => [deps, ...members.map((m) => m.deps)].some((d) => Object.keys(d).some((k) => k.startsWith('@vanilla-extract/'))) || files.some((f) => /\.css\.ts$/.test(f))
   for (const [dep, id] of [
     ['styled-components', 'styled-components'],
     ['@emotion/react', 'emotion'],
@@ -119,19 +198,27 @@ function detectStyling() {
     ['@mantine/core', 'mantine'],
     ['@radix-ui/themes', 'radix-themes'],
   ]) {
-    if (has(dep)) out.push(id)
+    if (used(dep) || (id === 'vanilla-extract' && vanillaExtract())) out.push(id)
   }
   if (!out.length) out.push('css')
   return out
 }
 
 function detectStoryTools() {
-  const out = []
-  if (Object.keys(deps).some((d) => d === 'storybook' || d.startsWith('@storybook/')) || files.some((f) => f.startsWith('.storybook/'))) out.push('storybook')
-  if (has('@ladle/react') || files.some((f) => f.startsWith('.ladle/'))) out.push('ladle')
-  if (has('histoire')) out.push('histoire')
-  if (has('react-cosmos')) out.push('react-cosmos')
   const storyFiles = files.filter((f) => /\.(stories|story)\.[a-z]+$/.test(f))
+  // The story tools a set of dependencies and a folder's config name.
+  const toolsIn = (d, configured) => {
+    const out = []
+    if (Object.keys(d).some((k) => k === 'storybook' || k.startsWith('@storybook/')) || configured('.storybook')) out.push('storybook')
+    if (Object.hasOwn(d, '@ladle/react') || configured('.ladle')) out.push('ladle')
+    if (Object.hasOwn(d, 'histoire')) out.push('histoire')
+    if (Object.hasOwn(d, 'react-cosmos')) out.push('react-cosmos')
+    return out
+  }
+  const own = toolsIn(depsOf(pkg), (dir) => files.some((f) => f.startsWith(`${dir}/`)))
+  // A package of a workspace that holds stories and names no story tool of
+  // its own uses the one the workspace root installs or configures.
+  const out = own.length === 0 && workspaceTop !== null && storyFiles.length > 0 ? toolsIn(hoisted, (dir) => existsSync(join(workspaceTop, dir))) : own
   return { tools: out, storyFiles: storyFiles.length, sample: storyFiles.slice(0, 5), lane: gatedLane() }
 }
 
@@ -199,14 +286,40 @@ function portOf(cmd, hops = 0) {
   return frameworkPort()
 }
 
-// Folders whose files look like components, ranked by how many they hold.
+// Folders whose files look like components, ranked by how many they hold. A
+// folder of packages that mostly hold one component each (three packages or
+// more, most with three component files or fewer in their src/) is one
+// folder, <parent>/*/src, in place of the named folders inside it.
 function componentDirs() {
+  const isComponent = (f) => COMPONENT_EXT.test(f) && !/\.(stories|story|test|spec)\./.test(f)
+  const packageDirs = new Set(files.filter((f) => f.endsWith('/package.json')).map((f) => f.slice(0, -'/package.json'.length)))
+  const inPackageSrc = (f) => {
+    const m = f.match(/^(.+?)\/([^/]+)\/src\//)
+    return m && packageDirs.has(`${m[1]}/${m[2]}`) ? { parent: m[1], name: m[2] } : null
+  }
+  const byParent = new Map()
+  for (const f of files) {
+    const at = isComponent(f) ? inPackageSrc(f) : null
+    if (!at) continue
+    const sizes = byParent.get(at.parent) ?? new Map()
+    sizes.set(at.name, (sizes.get(at.name) ?? 0) + 1)
+    byParent.set(at.parent, sizes)
+  }
+  const perPackage = new Set(
+    [...byParent]
+      .filter(([, sizes]) => {
+        const small = [...sizes.values()].filter((n) => n <= 3).length
+        return small >= 3 && small * 2 > sizes.size
+      })
+      .map(([parent]) => parent),
+  )
   const counts = new Map()
   for (const f of files) {
-    if (!COMPONENT_EXT.test(f) || /\.(stories|story|test|spec)\./.test(f)) continue
-    const m = f.match(/^(.*?\/(?:components|ui|primitives|design-system|elements|atoms|molecules))\//)
-    if (!m) continue
-    counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
+    if (!isComponent(f)) continue
+    const at = inPackageSrc(f)
+    const dir = at && perPackage.has(at.parent) ? `${at.parent}/*/src` : f.match(/^(.*?\/(?:components|ui|primitives|design-system|elements|atoms|molecules))\//)?.[1]
+    if (!dir) continue
+    counts.set(dir, (counts.get(dir) ?? 0) + 1)
   }
   return [...counts.entries()].map(([dir, count]) => ({ dir, count })).sort((a, b) => b.count - a.count || compare(a.dir, b.dir))
 }
@@ -222,18 +335,22 @@ const styleFileStats = files
     } catch {
       // unreadable, skip
     }
-    const customProps = (text.match(/--[a-zA-Z0-9-_]+\s*:/g) ?? []).length
-    const theme = /@theme\b|@plugin\s+["']daisyui\/theme["']|@tailwind\s+base|@import\s+["']tailwindcss["']/.test(text)
-    return { file: f, customProps, theme, text }
+    // A comment that mentions Tailwind is not Tailwind, and a custom property
+    // in a comment declares nothing.
+    const css = withoutComments(text, /\.(?:scss|sass|less)$/.test(f))
+    const customProps = (css.match(/--[a-zA-Z0-9-_]+\s*:/g) ?? []).length
+    const theme = /@theme\b|@plugin\s+["']daisyui\/theme["']|@tailwind\s+base|@import\s+["']tailwindcss["']/.test(css)
+    return { file: f, customProps, theme, css }
   })
 
 // The project folder's own outputs, such as kit.css, are massimo's, not the
-// repo's.
+// repo's. A file that declares no custom property never outranks one that
+// does as a token source.
 function styleFiles() {
   return styleFileStats
     .filter((s) => !s.file.startsWith(ownDir))
     .filter((s) => s.customProps >= 5 || s.theme)
-    .sort((a, b) => Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || compare(a.file, b.file))
+    .sort((a, b) => Number(b.customProps > 0) - Number(a.customProps > 0) || Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || compare(a.file, b.file))
     .map(({ file, customProps, theme }) => ({ file, customProps, theme }))
 }
 
@@ -303,9 +420,8 @@ function devPort() {
   return frameworkPort()
 }
 
-// The port a framework's dev server uses when none is given.
+// The port the repo's framework serves on when none is given.
 function frameworkPort() {
-  const framework = detectFramework()
   if (framework.startsWith('next') || framework === 'nuxt' || framework === 'react-router') return 3000
   if (framework === 'astro') return 4321
   if (framework === 'angular') return 4200
@@ -313,14 +429,22 @@ function frameworkPort() {
   return null
 }
 
+// The lock file names the package manager. A package of a workspace with no
+// lock file of its own uses the one at the workspace root.
 function packageManager() {
-  if (existsSync(join(root, 'pnpm-lock.yaml'))) return 'pnpm'
-  if (existsSync(join(root, 'yarn.lock'))) return 'yarn'
-  if (existsSync(join(root, 'bun.lockb')) || existsSync(join(root, 'bun.lock'))) return 'bun'
+  const dirs = workspaceTop && !existsSync(join(root, 'package-lock.json')) ? [root, workspaceTop] : [root]
+  for (const dir of dirs) {
+    if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
+    if (existsSync(join(dir, 'yarn.lock'))) return 'yarn'
+    if (existsSync(join(dir, 'bun.lockb')) || existsSync(join(dir, 'bun.lock'))) return 'bun'
+  }
   return 'npm'
 }
 
-const framework = detectFramework()
+// The root's own framework, and the one the repo reports, which a workspace
+// root that names none takes from its packages.
+const ownFramework = frameworkOf(depsOf(pkg), hoisted, root)
+const framework = repoFramework(ownFramework)
 const styling = detectStyling()
 const dirs = componentDirs()
 // A repo may already own a folder named design-system (a package, docs); only
@@ -352,6 +476,38 @@ const ext = extByFramework[framework] ?? '{tsx,jsx}'
 const topDirs = dirs.slice(0, 3).map((d) => d.dir)
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
 
+// The component globs, each one only if it matches a component file: the top
+// component folders; else the components folder by convention; else the top
+// folders that hold component files, most first. None when there is none.
+function componentInclude() {
+  const isComponent = (f) => COMPONENT_EXT.test(f) && !/\.(stories|story|test|spec)\./.test(f) && !/(^|\/)__tests__\//.test(f)
+  const inside = (glob) => {
+    const re = globToRegExp(glob)
+    return files.filter((f) => re.test(f) && isComponent(f))
+  }
+  // The framework's extensions when they match a file in the folder, else
+  // the extensions its component files have; null when it holds none.
+  const globIn = (dir) => {
+    if (inside(`${dir}/**/*.${ext}`).length > 0) return `${dir}/**/*.${ext}`
+    const exts = [...new Set(inside(`${dir}/**/*`).map((f) => f.slice(f.lastIndexOf('.') + 1)))].sort(compare)
+    return exts.length === 0 ? null : `${dir}/**/*.${exts.length === 1 ? exts[0] : `{${exts.join(',')}}`}`
+  }
+  const named = topDirs.map(globIn).filter(Boolean)
+  if (named.length > 0) return named
+  const conventional = globIn(srcRoot === '.' ? 'components' : 'src/components')
+  if (conventional) return [conventional]
+  const counts = new Map()
+  for (const f of files) {
+    if (!isComponent(f) || !f.includes('/') || f.startsWith('.')) continue
+    const top = f.slice(0, f.indexOf('/'))
+    counts.set(top, (counts.get(top) ?? 0) + 1)
+  }
+  return [...counts]
+    .sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
+    .slice(0, 3)
+    .map(([top]) => globIn(top))
+}
+
 // The stories keys 0.3.0 wrote. A key added later is left out, so a config
 // written by init holds none until a project opts in.
 const storiesDefaults = Object.fromEntries(
@@ -365,10 +521,11 @@ const suggestedConfig = {
   packageManager: packageManager(),
   styling,
   components: {
-    include: (topDirs.length ? topDirs : [`${srcRoot === '.' ? '' : 'src/'}components`]).map((d) => `${d}/**/*.${ext}`),
+    include: componentInclude(),
     exclude: DEFAULTS.components.exclude,
   },
-  consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(framework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
+  // The app/ folder only when the root's own Next.js app keeps it there.
+  consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(ownFramework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
   aliases: aliases(),
   // An existing gated lane is the lane: its pages are the stories, and its own
   // dev script and port run it.
@@ -415,7 +572,8 @@ const result = {
   styling,
   storyTools: stories,
   playwright: has('playwright') || has('@playwright/test'),
-  monorepo: workspaces || existsSync(join(root, 'turbo.json')),
+  // A root that holds packages and no framework of its own holds only apps.
+  monorepo: workspaces || existsSync(join(root, 'turbo.json')) || (nested.length > 0 && framework === 'unknown'),
   scripts: { dev: pkg.scripts?.dev ?? null, build: pkg.scripts?.build ?? null },
   devPort: devPort(),
   componentDirs: dirs.slice(0, 10),
