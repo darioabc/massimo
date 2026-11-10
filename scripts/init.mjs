@@ -7,10 +7,11 @@
 //   init.mjs [--root <dir>] [--config-json '<json overrides>'] [--update-scripts] [--no-npm-scripts] [--dry-run]
 
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CONFIG_FILE, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, readJson, rel, vendoredVersion as vendoredVersionOf } from './lib/project.mjs'
+import { globToRegExp } from './lib/glob.mjs'
+import { CONFIG_FILE, DEFAULTS, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, readJson, rel, vendoredVersion as vendoredVersionOf } from './lib/project.mjs'
 import { emptyState, renderStatus, saveState, setPhase } from './lib/state.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -53,6 +54,7 @@ function detect() {
 
 // 1. Config: detect's suggestion, with the caller's overrides on top.
 const configPath = join(root, CONFIG_FILE)
+let planned = null
 if (!existsSync(configPath)) {
   const suggested = detect()?.suggestedConfig ?? {}
   let overrides = {}
@@ -63,12 +65,18 @@ if (!existsSync(configPath)) {
       fail(`--config-json is not valid JSON: ${e.message}`)
     }
   }
-  write(configPath, `${JSON.stringify(deepMerge(suggested, overrides), null, 2)}\n`)
+  planned = deepMerge(suggested, overrides)
+  write(configPath, `${JSON.stringify(planned, null, 2)}\n`)
 } else {
   report.skipped.push(CONFIG_FILE)
 }
 
-const { projectDir, config } = loadConfig({ root })
+// A dry run writes no config, so it reports from the config it would write.
+function plannedConfig(raw) {
+  const config = deepMerge(structuredClone(DEFAULTS), raw)
+  return { config, projectDir: isAbsolute(config.projectDir) ? config.projectDir : join(root, config.projectDir) }
+}
+const { projectDir, config } = dry && planned ? plannedConfig(planned) : loadConfig({ root })
 const projectRel = rel(root, projectDir)
 
 // 2. Project folder and templates.
@@ -167,6 +175,74 @@ if (!flags['no-npm-scripts'] && !existsSync(pkgPath)) {
     if (!dry) writeFileSync(pkgPath, `${JSON.stringify(pkg, null, indent)}\n`)
   }
 }
+
+// 5. A prettier check over the whole repo would flag the vendored scripts and
+// the files massimo writes in the project folder, which keep massimo's own
+// format. When the repo checks its formatting with prettier and its ignore
+// file does not cover the project folder, name the line to add; write nothing.
+const PRETTIER_CONFIGS = ['.prettierrc', ...['json', 'json5', 'yaml', 'yml', 'toml', 'js', 'cjs', 'mjs', 'ts', 'cts', 'mts'].map((e) => `.prettierrc.${e}`), ...['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'].map((e) => `prettier.config.${e}`)]
+
+// Whether a list of ignore patterns, as .prettierignore holds them (the
+// .gitignore syntax), leaves `path` out: the last pattern that matches the
+// path or a folder above it decides, and `!` takes a path back in.
+function ignoredBy(lines, path) {
+  const parts = path.split('/')
+  const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join('/'))
+  let ignored = false
+  for (const raw of lines) {
+    let line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const negate = line.startsWith('!')
+    if (negate) line = line.slice(1)
+    line = line.replace(/\/+$/, '')
+    // A pattern with a slash is read from the ignore file's folder; one
+    // without matches a name at any depth.
+    const anchored = line.includes('/')
+    const re = globToRegExp(line.replace(/^\/+/, ''))
+    if (prefixes.some((p) => re.test(anchored ? p : p.slice(p.lastIndexOf('/') + 1)))) ignored = !negate
+  }
+  return ignored
+}
+
+function prettierWarnings() {
+  const real = (p) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  const here = real(root)
+  let top = here
+  try {
+    top = real(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: here, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim())
+  } catch {
+    // not a git checkout: the root alone
+  }
+  const out = []
+  for (const dir of [...new Set([here, top])]) {
+    let pkg = {}
+    try {
+      pkg = readJson(join(dir, 'package.json'), {}) ?? {}
+    } catch {
+      // an unreadable package.json says nothing about prettier
+    }
+    const workflows = join(dir, '.github', 'workflows')
+    const ci = dir === top && existsSync(workflows) && readdirSync(workflows).some((f) => /\.ya?ml$/.test(f) && /\bprettier\b/.test(readFileSync(join(workflows, f), 'utf8')))
+    const script = Object.values(pkg.scripts ?? {}).some((cmd) => /\bprettier\b/.test(String(cmd)))
+    const uses = PRETTIER_CONFIGS.some((f) => existsSync(join(dir, f))) || Object.hasOwn(pkg, 'prettier') || Object.hasOwn({ ...pkg.dependencies, ...pkg.devDependencies }, 'prettier') || script || ci
+    if (!uses) continue
+    const folder = rel(dir, join(here, projectRel))
+    if (!folder || folder.startsWith('..')) continue
+    const ignoreFile = join(dir, '.prettierignore')
+    const lines = existsSync(ignoreFile) ? readFileSync(ignoreFile, 'utf8').split(/\r?\n/) : []
+    if (['scripts/init.mjs', 'STATUS.md'].every((f) => ignoredBy(lines, `${folder}/${f}`))) continue
+    const shown = rel(here, ignoreFile)
+    out.push(`this repo checks its formatting with prettier and ${shown} does not cover ${folder}/, so a format check would flag the vendored scripts and the files massimo writes there; add the line "${folder}/" to ${shown}`)
+  }
+  return out
+}
+report.warnings.push(...prettierWarnings())
 
 report.projectDir = projectRel
 report.framework = config.framework
