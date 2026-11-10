@@ -878,6 +878,14 @@ export function nuxtComponentFolders(root, files, framework) {
   return outer.length > 0 ? outer : null
 }
 
+// The source folder of a Nuxt app, root-relative: app/ in Nuxt 4's layout,
+// the literal srcDir its config sets, '' for the root; null for a project
+// that is not a Nuxt app.
+export function nuxtSrcDir(root, files, framework) {
+  if (!isNuxtApp(root, framework, files)) return null
+  return srcDirOf(root, '', readConfig(root, '', [])?.config ?? {}, nuxtMajor(root))
+}
+
 // detect's component folders, `dirs`, with the ones a Nuxt app registers,
 // `nuxt`, added: the outermost of both, sorted. Without `nuxt`, `dirs` as
 // they are.

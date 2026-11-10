@@ -12,7 +12,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { compare, compileGlobs, globToRegExp } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
 import { csfScaffold } from './lib/lane-css.mjs'
-import { nuxtComponentFolders, withNuxtFolders } from './lib/nuxt.mjs'
+import { nuxtComponentFolders, nuxtSrcDir, withNuxtFolders } from './lib/nuxt.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
 import { workspacePackages } from './lib/source.mjs'
 import { helpAndExit } from './lib/help.mjs'
@@ -477,6 +477,11 @@ const ext = extByFramework[framework] ?? '{tsx,jsx}'
 // A Nuxt app's components are also the folders Nuxt registers, every layer's included.
 const topDirs = withNuxtFolders(dirs.slice(0, 3).map((d) => d.dir), nuxtComponentFolders(root, files, framework))
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
+// A Nuxt app's story lane sits in its source folder, where `~` points: app/
+// in Nuxt 4's layout. One whose source folder is the root gets the stories
+// exclude any other app gets.
+const nuxtSrc = nuxtSrcDir(root, files, framework)
+const nuxtStories = nuxtSrc ? `${nuxtSrc}/stories/**` : null
 
 // The component globs, each one only if it matches a component file: the top
 // component folders; else the components folder by convention; else the top
@@ -553,7 +558,10 @@ const suggestedConfig = {
   audit: {
     include: [`${srcRoot === '.' ? '' : 'src/'}**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}`],
     // A lane stages components with fixture values on purpose: not drift.
-    exclude: [...DEFAULTS.audit.exclude.map((g) => (srcRoot === '.' ? g.replace(/^src\//, '') : g)), ...(lane && !DEFAULTS.audit.exclude.includes(`${lane.dir}/**`) ? [`${lane.dir}/**`] : [])],
+    exclude: [
+      ...DEFAULTS.audit.exclude.map((g) => (nuxtStories && g === 'src/stories/**' ? nuxtStories : srcRoot === '.' ? g.replace(/^src\//, '') : g)),
+      ...(lane && !DEFAULTS.audit.exclude.includes(`${lane.dir}/**`) && `${lane.dir}/**` !== nuxtStories ? [`${lane.dir}/**`] : []),
+    ],
   },
 }
 

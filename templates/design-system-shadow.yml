@@ -16,6 +16,12 @@ jobs:
     name: Design system (shadow, not required)
     runs-on: ubuntu-latest
     continue-on-error: true
+    # A project kept in a package (init.mjs --root <package>) runs in that
+    # package: uncomment these lines and set the package's path from the
+    # repo root.
+    # defaults:
+    #   run:
+    #     working-directory: <package>
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -11,6 +11,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpat
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, globToRegExp } from './lib/glob.mjs'
+import { parseArrayAt } from './lib/jsobject.mjs'
+import { stripComments } from './lib/source.mjs'
 import { CONFIG_FILE, DEFAULTS, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, readJson, rel, vendoredVersion as vendoredVersionOf } from './lib/project.mjs'
 import { emptyState, renderStatus, saveState, setPhase } from './lib/state.mjs'
 import { helpAndExit } from './lib/help.mjs'
@@ -255,7 +257,9 @@ function ciFormatChecks(dirs, top, pkgs, workflowText) {
   return checks
 }
 
-function formatWarnings() {
+// The folder that holds the project and the top of its checkout, real paths;
+// `dirs` is both, the root first.
+function checkoutDirs() {
   const real = (p) => {
     try {
       return realpathSync(p)
@@ -270,7 +274,11 @@ function formatWarnings() {
   } catch {
     // not a git checkout: the root alone
   }
-  const dirs = [...new Set([rootDir, top])]
+  return { rootDir, top, dirs: [...new Set([rootDir, top])] }
+}
+
+function formatWarnings() {
+  const { rootDir, top, dirs } = checkoutDirs()
   const pkgs = new Map(
     dirs.map((dir) => {
       try {
@@ -351,6 +359,86 @@ function formatWarnings() {
   return out
 }
 report.warnings.push(...formatWarnings())
+
+// 6. ESLint over the project folder would lint the vendored scripts, which
+// keep massimo's own style. When a folder runs ESLint (eslint is a dependency
+// of its package, or one of its package scripts runs eslint) and the flat
+// config ESLint finds from there leaves the project folder in, name the
+// ignore to add; write nothing.
+const ESLINT_CONFIGS = ['js', 'mjs', 'cjs', 'ts', 'mts', 'cts'].map((e) => `eslint.config.${e}`)
+// A command that runs eslint.
+const RUNS_ESLINT = /(?:^|[\s;&|(])eslint(?=$|[\s;&|)])/
+
+// The ignore patterns a flat config lists as literals, in order: each
+// `ignores` array and each globalIgnores() call.
+function eslintIgnores(text, file) {
+  const code = stripComments(text, file)
+  const out = []
+  for (const m of code.matchAll(/(?:(?<![\w$])["']?ignores["']?\s*:|\bglobalIgnores\s*\()\s*(?=\[)/g)) {
+    for (const p of parseArrayAt(code, m.index + m[0].length) ?? []) if (typeof p === 'string') out.push(p)
+  }
+  return out
+}
+
+// Whether flat config ignore patterns, read from the config's folder, leave
+// `path` out: a pattern matches the path or a folder above it, the last one
+// that matches decides, and "!" takes a path back in.
+function eslintIgnored(patterns, path) {
+  const parts = path.split('/')
+  const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join('/'))
+  let ignored = false
+  for (const raw of patterns) {
+    const negate = raw.startsWith('!')
+    const pattern = (negate ? raw.slice(1) : raw).replace(/^(?:\.\/|\/)+/, '').replace(/\/+$/, '')
+    if (!pattern) continue
+    const re = globToRegExp(pattern)
+    if (prefixes.some((p) => re.test(p))) ignored = !negate
+  }
+  return ignored
+}
+
+function eslintWarnings() {
+  const { rootDir, top, dirs } = checkoutDirs()
+  const out = []
+  const seen = new Set()
+  for (const dir of dirs) {
+    let pkg = {}
+    try {
+      pkg = readJson(join(dir, 'package.json'), {}) ?? {}
+    } catch {
+      // an unreadable package.json says nothing about linting
+    }
+    const scripts = Object.entries(pkg.scripts ?? {}).filter(([, cmd]) => RUNS_ESLINT.test(String(cmd))).map(([name]) => name).sort(compare)
+    const dependency = Object.hasOwn({ ...pkg.dependencies, ...pkg.devDependencies }, 'eslint')
+    if (!dependency && scripts.length === 0) continue
+    // The flat config ESLint finds from this folder: the nearest one up to the top of the checkout.
+    let configDir = dir
+    let config = null
+    for (;;) {
+      config = ESLINT_CONFIGS.find((f) => existsSync(join(configDir, f))) ?? null
+      if (config || configDir === top || dirname(configDir) === configDir) break
+      configDir = dirname(configDir)
+    }
+    if (!config) continue
+    const path = join(configDir, config)
+    if (seen.has(path)) continue
+    seen.add(path)
+    const folder = rel(configDir, join(rootDir, projectRel))
+    if (!folder || folder.startsWith('..')) continue
+    let text = ''
+    try {
+      text = readFileSync(path, 'utf8')
+    } catch {
+      continue
+    }
+    if (eslintIgnored(eslintIgnores(text, config), `${folder}/scripts/init.mjs`)) continue
+    const why = [...(dependency ? ['eslint is a dependency'] : []), ...(scripts.length > 0 ? [`${scripts.length === 1 ? 'the script' : 'the scripts'} ${scripts.join(', ')} ${scripts.length === 1 ? 'runs' : 'run'} it`] : [])].join(' and ')
+    const shown = rel(rootDir, path)
+    out.push(`this repo lints with ESLint (${why}) and ${shown} does not ignore ${folder}/, so a lint would flag the vendored scripts, which keep massimo's own style; add { ignores: ["${folder}/**"] } as its own entry in ${shown}`)
+  }
+  return out
+}
+report.warnings.push(...eslintWarnings())
 
 report.projectDir = projectRel
 report.framework = config.framework
