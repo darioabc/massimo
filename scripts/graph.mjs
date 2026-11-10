@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
-import { fail, loadConfig, parseArgs, readJson, rel, scriptCommand } from './lib/project.mjs'
+import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
 import {
   classLibraries,
   componentName,
@@ -549,6 +549,9 @@ function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { flags } = parseArgs(argv)
   const { root, config, projectDir } = loadConfig(flags)
+  warnIfVendoredOlder(projectDir, import.meta.url)
+  // A graph.json from a newer massimo is never checked against or overwritten.
+  refuseNewer('graph', readJson(join(projectDir, 'graph.json'), null)?.version, 'graph.json')
   const { json, markdown, warnings } = buildGraph(root, config, scriptCommand(root, projectDir, 'graph'))
   if (json.faults.length > 0 && !truthy(flags.check)) {
     process.stderr.write(`massimo graph: ${json.faults.length} header ${json.faults.length === 1 ? 'fault' : 'faults'}; see "Header faults" in graph.md\n`)

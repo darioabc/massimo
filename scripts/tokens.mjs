@@ -44,7 +44,7 @@ import {
   writeTokenSet,
 } from './lib/dtcg.mjs'
 import { compare, expandGlobs } from './lib/glob.mjs'
-import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, rel, scriptCommand, today } from './lib/project.mjs'
+import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, vendoredOlder, vendoredVersion, warnIfVendoredOlder } from './lib/project.mjs'
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
 import { FAMILIES, propose } from './lib/propose.mjs'
@@ -1089,6 +1089,7 @@ function buildDesignMd(model, config, root, projectDir) {
   const shadows = model.tokens.filter((t) => typeOf(t) === 'shadow').map((t) => ({ name: t.name, css: valueText(model, t, 'default'), description: t.description }))
   const contrast = model.tokens.filter((t) => t.on).map((t) => ({ token: t.name, on: t.on, needs: t.contrast, use: t.use ? USE_TEXT[t.use].replace(/^for /, '') : null }))
   const graph = readJson(join(projectDir, 'graph.json'), null)
+  refuseNewer('graph', graph?.version, 'graph.json')
   const components = (graph?.nodes ?? [])
     .filter((n) => n.rules?.['use-when'] || n.rules?.never)
     .map((n) => ({ name: n.name, useWhen: n.rules['use-when'] ?? null, never: n.rules.never ?? null }))
@@ -1341,18 +1342,34 @@ function figmaMirror(root, projectDir, config, files) {
 function figmaCommand({ root, config, projectDir, flags, shown, tokens }) {
   const record = typeof flags.record === 'string' ? flags.record : null
   const drift = typeof flags.drift === 'string' ? flags.drift : null
-  if (!record === !drift) fail('usage: tokens.mjs figma --record <export.json> [--file-key <key>] | --drift <export.json>', 2)
-  const exportPath = resolve(record ?? drift)
+  const pairsOnly = typeof flags.pairs === 'string' ? flags.pairs : null
+  if ([record, drift, pairsOnly].filter(Boolean).length !== 1) fail('usage: tokens.mjs figma --pairs <export.json> | --record <export.json> [--file-key <key>] | --drift <export.json>', 2)
+  const exportPath = resolve(record ?? drift ?? pairsOnly)
   if (!existsSync(exportPath)) fail(`no export at ${exportPath}; save what read-library.js returns there first`)
   const exported = readJson(exportPath)
   const { files } = buildOutputs(root, projectDir, config, tokens)
   const wanted = JSON.parse(files.find((f) => f.path.endsWith('figma-variables.json')).text)
   const mirrorPath = join(projectDir, 'figma', 'mirror.json')
+  // Read only: which Figma variables pair with which tokens, and what differs,
+  // before anything is written to Figma. The mirror is left as it was.
+  if (pairsOnly) {
+    const previous = readJson(mirrorPath, {}) ?? {}
+    const fileKey = typeof flags['file-key'] === 'string' ? flags['file-key'] : undefined
+    const { mirror, mismatches, notes } = recordMirror(wanted, exported, { fileKey, date: today(), previous })
+    for (const n of notes) process.stderr.write(`  note: ${n}\n`)
+    for (const m of mismatches) process.stderr.write(`  differs: ${m}\n`)
+    const by = (match) => Object.values(mirror.variables).filter((v) => (v.match ?? 'name') === match).length
+    const total = Object.keys(mirror.variables).length
+    const wantedCount = (wanted.collections ?? []).reduce((n, c) => n + (c.variables?.length ?? 0), 0)
+    process.stdout.write(`massimo tokens figma: ${total} of ${wantedCount} variables pair with the file (${by('name')} by name, ${by('id')} by id, ${by('code')} by code syntax), ${mismatches.length} ${mismatches.length === 1 ? 'difference' : 'differences'}; nothing written\n`)
+    return
+  }
   if (record) {
     const previous = readJson(mirrorPath, {}) ?? {}
     const fileKey = typeof flags['file-key'] === 'string' ? flags['file-key'] : undefined
-    const { mirror, mismatches } = recordMirror(wanted, exported, { fileKey, tokensHash: tokensHash(root, tokens.files), date: today(), previous })
+    const { mirror, mismatches, notes } = recordMirror(wanted, exported, { fileKey, tokensHash: tokensHash(root, tokens.files), date: today(), previous })
     writeText(mirrorPath, jsonText(mirror))
+    for (const n of notes) process.stderr.write(`  note: ${n}\n`)
     for (const m of mismatches) process.stderr.write(`  mismatch: ${m}\n`)
     const count = Object.keys(mirror.variables).length
     process.stdout.write(`massimo tokens figma: recorded ${count} variables, ${Object.keys(mirror.textStyles).length} text styles and ${Object.keys(mirror.effectStyles).length} effect styles in ${shown(mirrorPath)}${mirror.modes === 'default only' ? '; the file allows one mode per collection, so only the default mode is mirrored' : ''}; ${mismatches.length} ${mismatches.length === 1 ? 'mismatch' : 'mismatches'} with code\n`)
@@ -1398,19 +1415,6 @@ function buildOutputs(root, projectDir, config, tokens) {
 
 // ── Migration between the two dialects ─────────────────────────────────────
 
-const versionParts = (v) => String(v).split('.').map((n) => Number.parseInt(n, 10) || 0)
-function olderThan(a, b) {
-  const [x, y] = [versionParts(a), versionParts(b)]
-  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0)
-  return false
-}
-
-// The version of the scripts vendored in the project, or null when there are none.
-function vendoredVersion(projectDir) {
-  const p = join(projectDir, 'scripts', 'lib', 'project.mjs')
-  return existsSync(p) ? (readFileSync(p, 'utf8').match(/SCRIPTS_VERSION = '([^']+)'/)?.[1] ?? null) : null
-}
-
 // Outputs as text with their "Generated by" lines left out, to compare two builds.
 const bodyOf = (text) => text.split('\n').filter((l) => !l.includes('Generated by massimo') && !l.startsWith('/* Source: ')).join('\n')
 
@@ -1433,7 +1437,7 @@ function migrate({ root, config, projectDir, configPath, flags, shown }) {
   const loaded = loadTokens(root, config)
   if (!loaded) fail(`no token source at ${config.tokens.source}`)
   const vendored = vendoredVersion(projectDir)
-  if (vendored && olderThan(vendored, SCRIPTS_VERSION)) {
+  if (vendoredOlder(vendored)) {
     fail(`the scripts in ${shown(join(projectDir, 'scripts'))} are ${vendored}, older than this ${SCRIPTS_VERSION}; update them first (init.mjs --update-scripts), or CI and teammates on ${vendored} cannot read the new files`)
   }
   const dir = dirname(join(root, config.tokens.source))
@@ -1488,6 +1492,7 @@ function main() {
   const MODES = ['extract', 'build', 'kit', 'check', 'preview', 'hash', 'migrate', 'figma']
   if (!MODES.includes(mode)) fail(`usage: tokens.mjs <${MODES.join('|')}> [--strict]`, 2)
   const { root, config, projectDir, configPath } = loadConfig(flags)
+  warnIfVendoredOlder(projectDir, import.meta.url)
   if (typeof flags.source === 'string') {
     if (!['preview', 'kit', 'check', 'hash'].includes(mode)) fail('--source reads another token set for preview, kit, check or hash only; build always reads tokens.source', 2)
     config.tokens.source = rel(root, resolve(flags.source))

@@ -25,7 +25,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deltaE, parseColor, toHex } from './lib/color.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
-import { fail, loadConfig, parseArgs, readJson, rel, scriptCommand, today } from './lib/project.mjs'
+import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, warnIfVendoredOlder } from './lib/project.mjs'
 import {
   classLibraries,
   flattenDtcg,
@@ -494,14 +494,19 @@ function baselineDocument(offenders, skipped) {
 
 // What --lower would record, and what rose. Each offender keeps the lower of
 // its baseline and current count; new or rising offenders are never recorded.
-// A kind the baseline lacks starts at its current counts.
+// A kind the baseline lacks starts at its current counts. A kind skipped this
+// run, or one a newer massimo records and this one does not know, stands as
+// it was: lowering never drops what it did not measure.
 function lowerBaseline(baseline, offenders, skipped) {
   const kinds = {}
   const rises = []
   let lowered = 0
   let dropped = 0
   for (const kind of KINDS) {
-    if (skipped.has(kind)) continue
+    if (skipped.has(kind)) {
+      if (baseline.kinds?.[kind]) kinds[kind] = baseline.kinds[kind]
+      continue
+    }
     const base = baseline.kinds?.[kind]
     const current = offenders[kind]
     if (!base) {
@@ -523,8 +528,13 @@ function lowerBaseline(baseline, offenders, skipped) {
     }
     kinds[kind] = { count: Object.values(kept).reduce((a, b) => a + b, 0), offenders: kept }
   }
-  return { document: { ...baseline, kinds }, rises, lowered, dropped }
+  const unknown = unknownKinds(baseline)
+  for (const kind of unknown) kinds[kind] = baseline.kinds[kind]
+  return { document: { ...baseline, kinds }, rises, lowered, dropped, unknown }
 }
+
+// Kinds in a baseline that this version of the audit does not measure.
+const unknownKinds = (baseline) => Object.keys(baseline.kinds ?? {}).filter((k) => !KINDS.includes(k)).sort(compare)
 
 // Offenders that rose or are new against the baseline; kinds the baseline does
 // not track are left out, and `fell` counts offenders that dropped or vanished.
@@ -885,6 +895,7 @@ function main() {
   const argv = process.argv.slice(2).map((a) => (a.startsWith('--') && BOOLEAN_FLAGS.has(a.slice(2)) ? `${a}=true` : a))
   const { flags } = parseArgs(argv)
   const { root, config, projectDir } = loadConfig(flags)
+  warnIfVendoredOlder(projectDir, import.meta.url)
   const check = truthy(flags.check)
   const wantBaseline = truthy(flags.baseline)
   const wantLower = truthy(flags.lower)
@@ -911,7 +922,9 @@ function main() {
       process.stderr.write(`massimo audit: no baseline at ${shown('baseline.json')}. Run: ${scriptCommand(root, projectDir, 'audit', '--baseline')}\n`)
       process.exit(2)
     }
-    const { rises, fell, untracked } = compareToBaseline(readJson(baselinePath, {}), offenders, skipped)
+    const baseline = readJson(baselinePath, {})
+    refuseNewer('baseline', baseline.version, 'audits/baseline.json')
+    const { rises, fell, untracked } = compareToBaseline(baseline, offenders, skipped)
     if (rises.length > 0) {
       for (const r of rises) {
         process.stderr.write(`  ${r.kind}  ${r.key}  ${r.from === 0 ? 'new' : `${r.from} -> ${r.to}`}${r.from === 0 && r.to > 1 ? ` (x${r.to})` : ''}\n`)
@@ -922,6 +935,8 @@ function main() {
     const hints = []
     if (fell > 0) hints.push(`${fell} ${fell === 1 ? 'offender' : 'offenders'} fell: run --lower to record it`)
     if (untracked.length > 0) hints.push(`not in the baseline yet: ${untracked.join(', ')} (run --lower to start tracking)`)
+    const unknown = unknownKinds(baseline)
+    if (unknown.length > 0) hints.push(`the baseline also tracks ${unknown.join(', ')}, which these scripts do not check: update massimo`)
     process.stdout.write(`massimo audit: within baseline (${stats})${hints.length > 0 ? `. ${hints.join('; ')}` : ''}\n`)
     return
   }
@@ -935,6 +950,7 @@ function main() {
   writeFileSync(join(auditsDir, 'latest.md'), renderMarkdown(result, date, scriptCommand(root, projectDir, 'audit')))
   let extra = ''
   if (wantBaseline) {
+    refuseNewer('baseline', readJson(baselinePath, null)?.version, 'audits/baseline.json')
     writeFileSync(baselinePath, `${JSON.stringify(baselineDocument(offenders, skipped), null, 2)}\n`)
     extra = `; baseline written to ${shown('baseline.json')}`
   } else if (wantLower) {
@@ -942,12 +958,14 @@ function main() {
       process.stderr.write(`massimo audit: no baseline to lower at ${shown('baseline.json')}. Run: ${scriptCommand(root, projectDir, 'audit', '--baseline')}\n`)
       process.exit(2)
     }
-    const lowered = lowerBaseline(readJson(baselinePath, {}), offenders, skipped)
+    const before = readJson(baselinePath, {})
+    refuseNewer('baseline', before.version, 'audits/baseline.json')
+    const lowered = lowerBaseline(before, offenders, skipped)
     writeFileSync(baselinePath, `${JSON.stringify(lowered.document, null, 2)}\n`)
     for (const r of lowered.rises) {
       process.stderr.write(`  not recorded: ${r.kind}  ${r.key}  ${r.from === 0 ? 'new' : `${r.from} -> ${r.to}`}\n`)
     }
-    extra = `; baseline lowered (${lowered.lowered} lowered, ${lowered.dropped} dropped${lowered.rises.length > 0 ? `, ${lowered.rises.length} rises not recorded` : ''})`
+    extra = `; baseline lowered (${lowered.lowered} lowered, ${lowered.dropped} dropped${lowered.rises.length > 0 ? `, ${lowered.rises.length} rises not recorded` : ''}${lowered.unknown.length > 0 ? `, kept ${lowered.unknown.join(', ')}, which these scripts do not measure` : ''})`
   }
   const c = result.canon
   process.stdout.write(
