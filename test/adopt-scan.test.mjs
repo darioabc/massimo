@@ -350,7 +350,7 @@ test('story tools: CSF files read statically, and what is not readable is listed
     const r = adopt(root, ['--json'])
     assert.equal(r.status, 0, r.stderr)
     const out = JSON.parse(r.stdout)
-    assert.deepEqual(out.stories.tools, [{ tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle', 'ladle:build'], port: 61000, files: 3, stories: 2, withArgs: 1, notReadable: 2, settings: { stories: null, storyOrder: null, defaultStory: null, port: null, widths: null, outDir: null } }])
+    assert.deepEqual(out.stories.tools, [{ tool: 'ladle', config: ['.ladle/config.mjs'], scripts: ['ladle', 'ladle:build'], port: 61000, files: 3, stories: 2, withArgs: 1, notReadable: 2, settings: { stories: null, storyOrder: null, defaultStory: null, port: null, previewPort: null, widths: null, outDir: null } }])
     const button = out.stories.files.find((f) => f.file === 'src/Button.stories.tsx')
     assert.deepEqual([button.title, button.stories, button.args], ['Primitives / Button', ['Solid fill', 'Sized'], true])
     assert.match(out.stories.files.find((f) => f.file === 'src/Old.stories.tsx').unreadable[0], /storiesOf/)
@@ -410,5 +410,128 @@ test('a csf lane keeps the port its dev script sets, over stories.port', () => {
     assert.equal(found.assets.find((a) => a.id === 'lane:src/stories').port, 7000)
   } finally {
     csf.cleanup()
+  }
+})
+
+// A repo written from `files` (an object body is JSON) in a fresh folder.
+function tree(files) {
+  const root = mkdtempSync(join(tmpdir(), 'massimo-adopt-'))
+  for (const [f, body] of Object.entries(files)) {
+    mkdirSync(join(root, f, '..'), { recursive: true })
+    writeFileSync(join(root, f), typeof body === 'string' ? body : JSON.stringify(body, null, 2))
+  }
+  return root
+}
+
+test('a Ladle story file of named stories with no default export is read; only a file with neither is not a CSF file', () => {
+  const root = tree({
+    'package.json': { devDependencies: { '@ladle/react': '5', react: '18', vite: '5' }, scripts: { ladle: 'ladle serve' } },
+    '.ladle/config.mjs': 'export default {}\n',
+    'src/panel/PanelHeader.stories.tsx': "import type { Story } from '@ladle/react'\nexport const TitleOnly: Story = () => null\nexport const WithAction: Story = () => null\n",
+    'src/Empty.stories.tsx': 'const unused = 1\n',
+  })
+  try {
+    const r = adopt(root, ['--json'])
+    assert.equal(r.status, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    const ladle = out.stories.tools.find((t) => t.tool === 'ladle')
+    assert.deepEqual([ladle.files, ladle.stories, ladle.notReadable], [2, 2, 1])
+    const file = (f) => out.stories.files.find((x) => x.file === f)
+    assert.deepEqual([file('src/panel/PanelHeader.stories.tsx').title, file('src/panel/PanelHeader.stories.tsx').unreadable], [null, []])
+    assert.deepEqual(file('src/Empty.stories.tsx').unreadable, ['it has no default export, so it is not a CSF file'])
+    assert.ok(!adopt(root).stdout.includes('PanelHeader.stories.tsx: it has no default export'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a story tool's own command line makes a consumer: a Playwright web server, a workflow step and a shell script", () => {
+  const root = tree({
+    'package.json': { devDependencies: { '@ladle/react': '5', react: '18', vite: '5', '@playwright/test': '1' }, scripts: { ladle: 'ladle serve', vr: 'ladle build -o .ladle-build && playwright test' } },
+    '.ladle/config.mjs': 'export default {}\n',
+    'src/Button.stories.tsx': "export default { title: 'Button' }\nexport const Solid = () => null\n",
+    'playwright.config.ts': "export default {\n  // the stories, built by `ladle build`\n  webServer: { command: 'ladle preview -o .ladle-build --port 4100' },\n}\n",
+    '.github/workflows/visual.yml': 'jobs:\n  stories:\n    steps:\n      - run: npx ladle build -o .ladle-build\n',
+    'scripts/vr.sh': '#!/bin/sh\nset -e\nladle build -o .ladle-build && playwright test\n',
+  })
+  try {
+    const out = JSON.parse(adopt(root, ['--json']).stdout)
+    const consumers = out.assets.find((a) => a.id === 'tool:ladle').consumers.map((c) => [c.file, c.line, c.class, c.how])
+    assert.deepEqual(consumers, [
+      ['.github/workflows/visual.yml', 4, 'ci', 'names'],
+      ['playwright.config.ts', 3, 'deploy', 'names'],
+      ['scripts/vr.sh', 3, 'hand-run', 'names'],
+    ])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('scan below the toplevel of its checkout says that the files above it, its workflows among them, are not read', (t) => {
+  if (spawnSync('git', ['--version']).status !== 0) return t.skip('git is not installed')
+  const root = tree({
+    '.github/workflows/visual.yml': 'jobs:\n  stories:\n    steps:\n      - run: scripts/vr-ci.sh\n',
+    'apps/desktop/package.json': { devDependencies: { '@ladle/react': '5', react: '18', vite: '5' }, scripts: { ladle: 'ladle serve' } },
+    'apps/desktop/.ladle/config.mjs': 'export default {}\n',
+    'apps/desktop/src/Button.stories.tsx': "export default { title: 'Button' }\nexport const Solid = () => null\n",
+  })
+  try {
+    assert.equal(spawnSync('git', ['init', '-q'], { cwd: root }).status, 0)
+    const below = adopt(join(root, 'apps', 'desktop'), ['--json'])
+    assert.equal(below.status, 0, below.stderr)
+    assert.deepEqual(JSON.parse(below.stdout).notes, [
+      "scan reads only the files in apps/desktop, which sits below the git toplevel: files above it, such as the toplevel's 1 workflow in .github/workflows, are not read, so a CI job or script there that uses what this inventory lists is not among its consumers.",
+    ])
+    assert.match(adopt(join(root, 'apps', 'desktop')).stdout, /^Note: scan reads only the files in apps\/desktop/m)
+    // At the toplevel there is nothing above it.
+    assert.equal(JSON.parse(adopt(root, ['--json']).stdout).notes, undefined)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a hosting config's deploy build runs package scripts: they are deploy, and the config is a deploy consumer", () => {
+  const root = tree({
+    'package.json': {
+      devDependencies: { storybook: '8', react: '18', vite: '5' },
+      scripts: { storybook: 'storybook dev -p 6006', 'build:storybook': 'storybook build', 'docs:build': 'vite build', 'build:site': 'pnpm docs:build && pnpm build:storybook', preview: 'pnpm build:storybook' },
+    },
+    'pnpm-workspace.yaml': "packages:\n  - 'packages/*'\n",
+    '.storybook/main.ts': 'export default {}\n',
+    'src/Button.stories.tsx': "export default { title: 'Button' }\nexport const Solid = () => null\n",
+    'packages/docs/package.json': { name: 'docs', scripts: { build: 'vite build' } },
+    // The workspace root's script, from the docs package's folder; [dev] serves locally.
+    'packages/docs/netlify.toml': '# ships the docs and the stories\n[build]\n  command = "pnpm -w run build:site"\n  publish = "dist"\n\n[dev]\n  command = "pnpm -w run preview"\n',
+    // In a folder with a package of its own, `npm run` runs that package's scripts.
+    'packages/site/package.json': { name: 'site', scripts: { 'build:storybook': 'echo' } },
+    'packages/site/vercel.json': { buildCommand: 'npm run build:storybook' },
+  })
+  try {
+    const out = JSON.parse(adopt(root, ['--json']).stdout)
+    const consumers = out.assets.find((a) => a.id === 'tool:storybook').consumers
+    const at = (file, script) => consumers.find((c) => c.file === file && c.script === script)
+    assert.deepEqual(at('packages/docs/netlify.toml'), { file: 'packages/docs/netlify.toml', line: 3, class: 'deploy', how: 'runs', via: 'build:site' })
+    assert.equal(at('package.json', 'build:site').class, 'deploy')
+    assert.equal(at('package.json', 'preview').class, 'hand-run')
+    assert.equal(at('packages/site/vercel.json'), undefined)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a vercel.json at the root runs the root's scripts in its buildCommand", () => {
+  const root = tree({
+    'package.json': { devDependencies: { storybook: '8', react: '18', vite: '5' }, scripts: { 'build:storybook': 'storybook build', ship: 'npm run build:storybook' } },
+    '.storybook/main.ts': 'export default {}\n',
+    'src/Button.stories.tsx': "export default { title: 'Button' }\nexport const Solid = () => null\n",
+    'vercel.json': '{\n  "buildCommand": "npm run ship",\n  "outputDirectory": "storybook-static"\n}\n',
+  })
+  try {
+    const out = JSON.parse(adopt(root, ['--json']).stdout)
+    const consumers = out.assets.find((a) => a.id === 'tool:storybook').consumers
+    assert.deepEqual(consumers.find((c) => c.file === 'vercel.json'), { file: 'vercel.json', line: 2, class: 'deploy', how: 'runs', via: 'ship' })
+    assert.equal(consumers.find((c) => c.script === 'ship').class, 'deploy')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })

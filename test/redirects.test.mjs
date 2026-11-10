@@ -345,3 +345,62 @@ test('a frozen file and the files the lane\'s recipe writes are not listed for t
   // the project's own frame keeps its line
   assert.deepEqual(prose({ frozen: [{ file: 'src/Kept.stories.tsx', sha256: 'x' }], lane: recipeFiles(ctx.root) }), ['src/stories/frame.tsx'])
 })
+
+test('a test or code file that reads a tool script by its exact name holds the retirement; a bare quoted tool name counts only as a key', () => {
+  put('scripts/deploy-config.test.ts', [
+    'it.each([',
+    "  ['wrangler.app.jsonc', 'build:worker'],",
+    "  ['wrangler.design.jsonc', 'ladle:build'],",
+    "])('%s drops _redirects', (file, script) => expect(PACKAGE.scripts[script]).toBeDefined())",
+    "expect(PACKAGE.scripts['ladle']).toBeDefined()",
+    "const mode = 'ladle'",
+    '',
+  ].join('\n'))
+  const found = toolEdits({ consumers: [], packages: [], registry, tool, historical: [], read, files: [...files, 'scripts/deploy-config.test.ts'] })
+  const line = (n) => found.find((e) => e.file === 'scripts/deploy-config.test.ts' && e.line === n)
+  assert.deepEqual(line(3), { file: 'scripts/deploy-config.test.ts', line: 3, class: 'test', uses: 'script ladle:build by its name', replacement: "it reads the script by its name: point it at the lane's script", status: 'open' })
+  assert.equal(line(5).uses, 'script ladle by its name')
+  assert.equal(line(5).status, 'open')
+  assert.equal(line(6).status, 'prose')
+  assert.equal(line(2), undefined)
+})
+
+test("the tool's output folder in code and config is an edit to point at the lane's; a comment, Vite's command and a job's name are not", () => {
+  put('wrangler.design.jsonc', [
+    '{',
+    '  // `npm run ladle:build` deletes _redirects from build/ before this deploys.',
+    '  "assets": {',
+    '    "directory": "build"',
+    '  }',
+    '}',
+    '',
+  ].join('\n'))
+  put('eslint.config.js', "export default [\n  { ignores: ['dist/**', 'build/**'] }, // the tool's output (npm run ladle:build)\n]\n")
+  put('vite.config.ts', "export default ({ command }) => ({ base: command === 'build' ? '/app/' : '/' })\n")
+  put('.github/workflows/pages.yml', 'jobs:\n  deploy:\n    needs: build\n    steps:\n      - uses: actions/upload-pages-artifact@v3\n        with:\n          path: build\n')
+  put('docs/deploy.md', 'The stories build into `build/`.\n')
+  put('tools/notes.ts', '// Carried from .ladle/vite.config.ts: revalidate the optimized deps.\nexport const notes = 1\n')
+  const added = ['wrangler.design.jsonc', 'eslint.config.js', 'vite.config.ts', '.github/workflows/pages.yml', 'docs/deploy.md', 'tools/notes.ts']
+  const found = toolEdits({ consumers: [], packages: [], registry, tool, historical: [], read, files: [...files, ...added], laneOutDir: 'dist-stories' })
+  const at = (file, n) => found.find((e) => e.file === file && e.line === n)
+  const change = "point it at the lane's output folder, stories.outDir (dist-stories)"
+  assert.deepEqual(at('wrangler.design.jsonc', 4), { file: 'wrangler.design.jsonc', line: 4, class: 'code', uses: 'output folder build', replacement: change, status: 'open' })
+  // A comment line in JSONC is a comment, and names the script, not the folder.
+  assert.deepEqual([at('wrangler.design.jsonc', 2).class, at('wrangler.design.jsonc', 2).uses], ['comment', 'script ladle:build'])
+  // The use in the line's code is the edit; its trailing comment's script goes.
+  assert.deepEqual(at('eslint.config.js', 2), { file: 'eslint.config.js', line: 2, class: 'code', uses: 'output folder build', replacement: change, status: 'open' })
+  assert.equal(at('vite.config.ts', 1), undefined)
+  assert.equal(at('.github/workflows/pages.yml', 3), undefined)
+  assert.deepEqual([at('.github/workflows/pages.yml', 7).class, at('.github/workflows/pages.yml', 7).uses], ['ci', 'output folder build'])
+  assert.ok(!found.some((e) => e.file === 'docs/deploy.md'))
+  assert.deepEqual([at('tools/notes.ts', 1).class, at('tools/notes.ts', 1).uses], ['comment', '.ladle/vite.config.ts'])
+  // A folder the config names, or one a tool script passes with -o, is the folder instead.
+  const named = toolEdits({ consumers: [], packages: [], registry, tool: { ...tool, settings: { outDir: 'ladle-static' } }, historical: [], read, files: [...files, ...added] })
+  assert.ok(!named.some((e) => /output folder build/.test(e.uses)))
+  const pkg = JSON.stringify({ scripts: { ladle: 'ladle serve', 'ladle:build': 'ladle build -o .ladle-out' } }, null, 2)
+  put('tests/visual.spec.ts', "const dir = join(here, '.ladle-out')\n")
+  const flagged = toolEdits({ consumers: [], packages: [], registry, tool: { ...tool, settings: { outDir: null, notLiteral: ['outDir'] } }, historical: [], read: (f) => (f === 'package.json' ? pkg : read(f)), files: [...files, ...added, 'tests/visual.spec.ts'] })
+  assert.equal(flagged.find((e) => e.file === 'tests/visual.spec.ts').uses, 'output folder .ladle-out')
+  // An outDir set with code gives no default folder.
+  assert.ok(!flagged.some((e) => /output folder build/.test(e.uses)))
+})

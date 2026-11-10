@@ -47,7 +47,7 @@ Once these files are written, massimo knows them as its own lane: `stories.lane`
 
 ## Config
 
-The opt-in proposes most of this from the old tool's config; check it before scaffolding. A config that sets any of these keys needs `"minScripts": "0.4.0"`, and the vendored scripts must be 0.4.0 (`init.mjs --update-scripts`).
+`adopt.mjs config --lane csf` proposes part of this from Ladle's config and the saved inventory: `lane`, `ids`, `include`, `order`, `home`, `viewports`, `port`, `url` and `storyUrl`, with `minScripts`; `convert stories --freeze` adds `frozen`. The rest is hand work, done while scaffolding: `frame`, `switchers`, `banners`, `sideBySide`, `appCss`, `storyOnly`, `outDir`, `hostFiles` and `devCommand`. A Ladle setting written as code, such as a `stories` list built when the config runs or a `storyOrder` function, is not guessed: the command proposes nothing from it and prints a note naming the key to set by hand. Check the proposal before scaffolding. A config that sets any of these keys needs `"minScripts": "0.4.0"`, and the vendored scripts must be 0.4.0 (`init.mjs --update-scripts`).
 
 ```json
 "stories": {
@@ -81,10 +81,36 @@ The opt-in proposes most of this from the old tool's config; check it before sca
 ```
 
 - `ids: "ladle"` keeps Ladle's ids, so old links, specs and the redirect map stay exact.
-- `order` and `home` come from Ladle's `storyOrder` and `defaultStory`; `viewports` from its width options, with a height each. Label each viewport with its option's name when stories set `meta.width` to a name, since the canvas maps a name through the labels.
-- A switch names the `<html>` attribute it sets; its `unset` value removes the attribute; a `default` of null asks the frame. Use a query name the app does not read itself.
+- `order` and `home` come from Ladle's `storyOrder` and `defaultStory`; `viewports` from its width options. When Ladle's config sets no width options, the proposal has one viewport for each of Ladle's default width names that the stories' `meta.width` uses (`xsmall` 414, `small` 640, `medium` 768, `large` 1024), labelled with the name, then Full. A proposed viewport has a height of 0, which fills the pane: give each a height. Label each viewport with its option's name when stories set `meta.width` to a name, since the shell opens a state at the viewport whose width the name maps to.
+- A switch with an `attribute` sets it on `<html>`; its `unset` value removes the attribute; a `default` of null asks the frame. Use a query name the app does not read itself. For a theme the app applies as a class, see "A class-based theme" below.
 - `banners` maps a meta key to the banner a state shows when its merged meta sets that key to a non-empty string.
-- Pick a port the old tool does not hold while both run.
+- Pick a port the old tool does not hold while both run. The proposal takes the first port above Ladle's `port` (61000 unless set) that is not its `previewPort` (8080 unless set), which `ladle preview` serves on.
+
+### A class-based theme
+
+The canvas sets a switch's value as an attribute on `<html>`, which suits a theme read from `data-theme`. An app that applies its theme as a class, such as Tailwind's `dark` class, needs the class instead. Give the switch `"attribute": null`, so the canvas sets nothing on `<html>`, and apply the class in the frame from its `switches` prop, which holds every switch's value in the shell's frames and in a canvas opened alone:
+
+```json
+"switchers": [
+  { "name": "scheme", "label": "Theme", "attribute": null, "values": ["light", "dark"], "unset": null, "default": "light" }
+]
+```
+
+```tsx
+import { useLayoutEffect } from 'react'
+import type { FrameProps } from 'virtual:massimo-stories'
+
+export default function Frame({ switches, children }: FrameProps) {
+  const dark = switches.scheme === 'dark'
+  // Before the state paints, as the canvas sets an attribute.
+  useLayoutEffect(() => {
+    document.documentElement.classList.toggle('dark', dark)
+  }, [dark])
+  return <div className="min-h-screen">{children}</div>
+}
+```
+
+Never set `"attribute": "class"`: the canvas would set `<html class>` to the value and drop every other class on it, such as a scope class the app's CSS needs. A switch for a palette or any other class works the same way, with its own name in `switches`.
 
 ## stories.html
 
@@ -114,17 +140,18 @@ Copy what the app's `index.html` puts in `<head>` that affects rendering, such a
 // massimo's plugin reads massimo.config.json and adds the lane's routes, the
 // aliases from tsconfig paths, React pinned to the install root, the
 // dependency scan's entries, its cache folder, port and build output.
-import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { massimoStories } from './<project>/scripts/lib/vite-stories.mjs'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), massimoStories()],
+  plugins: [react(), massimoStories()],
 })
 ```
 
-Replace `<project>` with the project folder (`projectDir`). Add the Vite plugins the stories need to render, the ones the old tool's Vite config had (React, Tailwind, SVG imports), and the extras it carried that are not about the tool itself: dependencies it pre-bundled (`optimizeDeps: { include: [...] }`) and a cleanup call it made at load, such as removing a stray `node_modules` link. Leave out its aliases and React pinning, which the plugin adds, and any workaround for the tool's own generated code. Vite loads this file itself; it needs no tsconfig.
+Replace `<project>` with the project folder (`projectDir`). Add the Vite plugins the stories need to render, the ones the old tool's Vite config had (React, SVG imports), and the extras it carried that are not about the tool itself: dependencies it pre-bundled (`optimizeDeps: { include: [...] }`) and a cleanup call it made at load, such as removing a stray `node_modules` link. Leave out its aliases and React pinning, which the plugin adds, and any workaround for the tool's own generated code. Vite loads this file itself; it needs no tsconfig.
+
+Keep Tailwind on the entry the repo already uses. With `@tailwindcss/postcss` in the repo's PostCSS config, Vite runs it for the lane as it does for the app, and the lane needs no Tailwind plugin: adding `@tailwindcss/vite` would generate the CSS outside the PostCSS chain and skip any plugin that runs after Tailwind there. Only when the app's own Vite config runs `@tailwindcss/vite` does the lane add it too: `import tailwindcss from '@tailwindcss/vite'`, and `tailwindcss()` before `massimoStories()`.
 
 ## src/stories/main.tsx
 

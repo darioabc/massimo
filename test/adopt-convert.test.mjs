@@ -439,6 +439,7 @@ test("config --lane csf proposes the csf lane from Ladle's own settings and no f
     storyOrder: ['foundations--*', 'primitives--*', '*'],
     defaultStory: 'foundations--welcome--start-here',
     port: 6100,
+    previewPort: null,
     widths: [{ label: 'Mobile', width: 375 }, { label: 'Tablet', width: 768 }, { label: 'Full', width: 0 }],
     outDir: null,
   })
@@ -679,6 +680,59 @@ test("config --lane csf proposes Ladle's default glob and port when its config l
   const c = convert(ctx)
   assert.equal(c.status, 0, c.stderr)
   assert.match(c.stdout, /^massimo adopt convert stories: 7 records/)
+})
+
+test("config --lane csf proposes a port that neither Ladle's port nor its preview port holds", () => {
+  const ctx = ladleRepo()
+  put(ctx, '.ladle/config.mjs', "export default { stories: 'src/**/*.stories.{tsx,ts}', port: 61000, previewPort: 61001 }\n")
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const r = adopt(ctx, ['config', '--lane', 'csf'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /^\+ stories\.port: 61002$/m)
+  assert.match(r.stdout, /^\+ stories\.url: "http:\/\/localhost:61002\/stories"$/m)
+  // Ladle's own preview port is 8080 when its config leaves it out.
+  put(ctx, '.ladle/config.mjs', "export default { stories: 'src/**/*.stories.{tsx,ts}', port: 8079 }\n")
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  assert.match(adopt(ctx, ['config', '--lane', 'csf']).stdout, /^\+ stories\.port: 8081$/m)
+})
+
+test("config --lane csf proposes a viewport for each of Ladle's default width names the stories use, when Ladle sets no width options", () => {
+  const ctx = ladleRepo()
+  put(ctx, '.ladle/config.mjs', "export default { stories: 'src/**/*.stories.{tsx,ts}' }\n")
+  put(ctx, 'src/views/Countries.stories.tsx', "export default { title: 'Views / Countries', meta: { width: 'medium' } }\nexport const Default = () => null\nDefault.meta = { width: 'xsmall' }\nexport const Wide = () => null\nWide.meta = { width: 'huge' }\n")
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const r = adopt(ctx, ['config', '--write', '--lane', 'csf'])
+  assert.equal(r.status, 0, r.stderr)
+  const written = JSON.parse(readFileSync(join(ctx.root, 'massimo.config.json'), 'utf8'))
+  assert.deepEqual(written.stories.viewports, [
+    { label: 'xsmall', width: 414, height: 0 },
+    { label: 'medium', width: 768, height: 0 },
+    { label: 'Full', width: 0, height: 0 },
+  ])
+})
+
+test('config --lane csf guesses nothing from a Ladle setting written as code, and says what to set by hand', () => {
+  const ctx = ladleRepo()
+  put(ctx, '.ladle/config.mjs', [
+    "const roots = ['packages/ui/src', 'packages/tokens/src']",
+    "const stories = roots.map((root) => `${root}/**/*.stories.tsx`)",
+    'export default {',
+    '  stories,',
+    '  storyOrder: (ids) => [...ids].sort(),',
+    '  port: 6100,',
+    '}',
+    '',
+  ].join('\n'))
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const inventory = JSON.parse(readFileSync(join(ctx.project, 'adopt', 'inventory.json'), 'utf8'))
+  assert.deepEqual(inventory.stories.tools[0].settings.notLiteral, ['stories', 'storyOrder'])
+  const r = adopt(ctx, ['config', '--lane', 'csf'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.ok(!r.stdout.split('\n').some((l) => /^[+~=] stories\.(?:include|order)/.test(l)), r.stdout)
+  assert.deepEqual(r.stdout.split('\n').filter((l) => l.startsWith('note: ')), [
+    "note: Ladle's stories setting is code that massimo does not run, so nothing is proposed from it: set stories.include by hand to the globs of the story files Ladle serves.",
+    "note: Ladle's storyOrder setting is code that massimo does not run, so nothing is proposed from it: set stories.order by hand to id-prefix globs in the order Ladle lists the stories.",
+  ])
 })
 
 test('convert fails when stories.include matches no story file', () => {

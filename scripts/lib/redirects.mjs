@@ -155,11 +155,36 @@ function toolScripts(tool, read) {
   return [...found].sort(compare)
 }
 
+// The folders a story tool builds to: its config's `outDir`, else the tool's
+// default (Ladle's `build`) when the config leaves it out rather than setting
+// it with code, and each `-o` or `--outDir` its scripts pass to its build or
+// preview. Repo-relative, without `./` or a trailing slash.
+const OUT_DIR_DEFAULT = { ladle: 'build' }
+function toolOutDirs(tool, name, commands) {
+  const s = tool.settings ?? {}
+  const out = new Set()
+  if (typeof s.outDir === 'string') out.add(s.outDir)
+  else if (!(s.notLiteral ?? []).includes('outDir') && OUT_DIR_DEFAULT[name]) out.add(OUT_DIR_DEFAULT[name])
+  const flag = new RegExp(`\\b${escapeRe(name)}\\s+(?:build|preview)\\b[^;&|]*?\\s(?:-o|--outDir|--out-dir)[ =]([^\\s;&|'"\`]+)`, 'g')
+  for (const cmd of commands) for (const m of String(cmd).matchAll(flag)) out.add(m[1])
+  return [...out]
+    .map((d) => d.replace(/^\.\//, '').replace(/\/+$/, ''))
+    .filter((d) => d && d !== '.' && !d.startsWith('..') && !d.startsWith('/'))
+    .sort(compare)
+}
+
 export const isBinaryPath = (file) => BINARY.test(file)
 const BINARY = /\.(?:png|jpe?g|gif|webp|avif|ico|icns|bmp|svg|woff2?|ttf|otf|eot|mp[34]|mov|webm|wav|ogg|pdf|zip|gz|tgz|tar|map|wasm|lock|lockb|snap|sqlite|db|bin|psd|ai|sketch|fig)$/i
 const LOCKFILE = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|massimo\.config\.json)$/
-const CODE_COMMENTS = /\.(?:[cm]?[jt]sx?|css|scss|less|astro|vue|svelte)$/
-const HASH_COMMENTS = /\.(?:ya?ml|sh|toml|env|gitignore|npmrc|conf)$|(?:^|\/)\.[\w.-]+ignore$|(?:^|\/)\.[\w.-]*rc$/
+const CODE_COMMENTS = /\.(?:[cm]?[jt]sx?|css|scss|less|astro|vue|svelte|jsonc|json5)$/
+// Config data, where a folder is a quoted value (`"directory": "build"`).
+const DATA_FILE = /\.(?:json|jsonc|json5|toml|ya?ml)$/
+// Vite's own command names, which code compares as bare strings (`command
+// === 'build'`), so a bare quoted folder of that name in code is not one.
+const VITE_COMMANDS = new Set(['build', 'serve'])
+// YAML keys whose value is a folder, such as an upload step's `path`.
+const YAML_FOLDER_KEYS = ['path', 'paths', 'dir', 'directory', 'folder', 'publish', 'publish_dir', 'publish-dir', 'output', 'out', 'outdir', 'out_dir', 'out-dir', 'output_dir', 'output-dir', 'outputdirectory', 'dist', 'dist_dir', 'dist-dir', 'build_dir', 'build-dir', 'source', 'root'].join('|')
+const HASH_COMMENTS = /\.(?:ya?ml|sh|toml|env|gitignore|npmrc|conf)$|(?:^|\/)\.[\w.-]+ignore$|(?:^|\/)\.[\w.-]*rc$|(?:^|\/)_(?:headers|redirects)$/
 const DOC_FILE = /\.(?:md|mdx|markdown|txt|rst)$/i
 
 // The class of a file: ci, skill, test, docs or code. A mention on a line
@@ -193,14 +218,20 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // class, uses, replacement, status }` sorted by file and line, one entry per
 // line. Four passes join: (a) the consumer index's files, with every line
 // that names the tool's folders, scripts, commands or port, not only the
-// first; (b) the tool's package name in code, tests, CI and docs, and a path
+// first, and in code, tests, CI and config (not docs, not comments) the
+// tool's output folder as a path (`build/`) or a value (`"build"` in JSON or
+// TOML, and in YAML under a key that names a folder, `path: build`) and a
+// tool script read by its exact name as a quoted string (`'ladle:build'`); (b) the
+// tool's package name in code, tests, CI and docs, and a path
 // into its folder of node_modules, leaving out the one type import of a story
 // file that the removal patch rewrites (a frozen file's is still valid: the
 // legacy types file keeps it declared); (c) the story
 // ids and prefixes that specs, scripts, skills and docs use; (d) the tool's
 // name as a word, anywhere.
 //
-// `class` is code, test, ci, skill, docs, comment or prose. `status` is
+// `class` is code, test, ci, skill, docs, comment or prose; a line whose uses
+// are all in a comment, a whole line or the end of one, is a comment, and a
+// use in a line's code drops the ones its trailing comment names. `status` is
 // `open` (to make before retire), `valid` (still works on the lane: a port,
 // an id that resolves), `dead` (an id the tool's own ids never had either),
 // `historical` (in a path the ledger marks historical) or `prose` (the tool's
@@ -214,8 +245,9 @@ const isHistorical = (file, historical) => historical.some((h) => file === h || 
 // declares every name it imports; otherwise it stays open. `lane` lists the
 // files the lane's recipe writes as they are (see recipeFiles), which name
 // the tool on purpose. Neither those nor a frozen file, which stays byte for
-// byte, are listed for the tool's name as a word.
-export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [], legacyTypes = LEGACY_TYPES_FILE, lane = [] } = {}) {
+// byte, are listed for the tool's name as a word. `laneOutDir` is the lane's
+// own output folder, named in the change an output folder needs.
+export function toolEdits({ consumers = [], packages = [], registry, tool, historical = [], read, files = [], oracleIds = null, skip = [], frozen = [], legacyTypes = LEGACY_TYPES_FILE, lane = [], laneOutDir = null } = {}) {
   if (!tool || typeof read !== 'function') return []
   const name = tool.tool ?? tool.name
   if (!name) return []
@@ -239,6 +271,33 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   const scripts = toolScripts(tool, read)
   const scriptRes = scripts.map((s) => new RegExp(`(?:\\b(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?|["']run["']\\s*,\\s*["'])(${escapeRe(s)})(?![\\w:.-])`))
   const scriptKeys = scripts.map((s) => new RegExp(`^\\s*"(${escapeRe(s)})"\\s*:`))
+  // A tool script read by its exact name, as a test that checks the script
+  // reads `PACKAGE.scripts['ladle:build']`. A script named as the tool is,
+  // which a quoted `'ladle'` may mean, counts only as a key in brackets.
+  const scriptNames = scripts.map((s) => new RegExp(s === name ? `\\[\\s*(["'\`])(${escapeRe(s)})\\1\\s*\\]` : `(["'\`])(${escapeRe(s)})\\1`))
+  // The tool's output folder, as a path or as a value.
+  let commands = []
+  try {
+    const all = JSON.parse(read('package.json') || '{}').scripts ?? {}
+    commands = scripts.map((s) => all[s]).filter((c) => typeof c === 'string')
+  } catch {
+    // a package.json that does not parse passes no output folder
+  }
+  const outDirs = toolOutDirs(tool, name, commands)
+  const outDirRes = outDirs.map((d) => {
+    const at = `(?:\\.\\/)?${escapeRe(d)}`
+    return {
+      dir: d,
+      // `build/` anywhere in code or config.
+      path: new RegExp(`(?<![\\w.@/$-])${at}\\/`),
+      // `"build"` as a value, never a key (`"build": "vite build"`).
+      quoted: new RegExp(`(["'\`])${at}\\/?\\1(?!\\s*:)`),
+      // In YAML only under a key that names a folder (`path: build`), since
+      // `needs: build` or `name: build` name a job.
+      yaml: new RegExp(`(?:^|[\\s{,])(?:${YAML_FOLDER_KEYS})["']?\\s*:\\s*(["']?)${at}\\/?\\1\\s*(?:[,}#].*)?$`, 'i'),
+    }
+  })
+  const inOutDir = (file) => outDirs.some((d) => file.startsWith(`${d}/`))
   const commandRe = new RegExp(`\\b(?:npx\\s+|bunx\\s+|pnpm\\s+exec\\s+|yarn\\s+)?(${escapeRe(name)}\\s+(?:serve|dev|build|preview|start))\\b`)
   const packageRes = packages.map((p) => new RegExp(`(?<![\\w@./-])(${escapeRe(p)})(?![\\w-])`))
   const modulePathRes = packages.map((p) => new RegExp(`node_modules/(${escapeRe(p)})(?![\\w-])`))
@@ -249,7 +308,7 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   for (const c of consumers) if (!consumerAt.has(c.file)) consumerAt.set(c.file, c)
 
   const out = []
-  const scan = [...new Set([...files, ...consumerAt.keys(), 'package.json'])].filter((f) => !BINARY.test(f) && !LOCKFILE.test(f) && !own(f) && f !== legacyTypes).sort(compare)
+  const scan = [...new Set([...files, ...consumerAt.keys(), 'package.json'])].filter((f) => !BINARY.test(f) && !LOCKFILE.test(f) && !own(f) && !inOutDir(f) && f !== legacyTypes).sort(compare)
   for (const file of scan) {
     const text = read(file)
     if (!text) continue
@@ -275,36 +334,69 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       const to = from + text.slice(patched.start, patched.end).split('\n').length - 1
       for (let n = from; n <= to; n++) patchedLines.add(n)
     }
+    // Each line's code, its comments blanked, to tell a use in code from one
+    // a comment names; read once a line has a use. A file with no comment
+    // syntax massimo reads is all code.
+    let codeOf
+    const kindOfFile = fileClass(file)
+    const codeFile = kindOfFile === 'code' || kindOfFile === 'test' || kindOfFile === 'ci'
+    const yaml = /\.ya?ml$/.test(file)
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i]
       if (!l) continue
       const n = i + 1
+      const liveLine = () => {
+        if (codeOf === undefined) codeOf = codeLines(file, text)
+        return codeOf ? (codeOf[i] ?? '') : l
+      }
+      const comment = (re) => !re.test(liveLine())
       let used = false
       for (const re of pathRes) {
         const m = re.exec(l)
         if (m) {
-          const token = m[1].replace(/[.,]+$/, '')
-          hit(n, { kind: 'open', uses: token, replacement: pathReplacement(token) })
+          const token = m[1].replace(/[.,:]+$/, '')
+          hit(n, { kind: 'open', uses: token, replacement: pathReplacement(token), comment: comment(re) })
           used = true
         }
       }
       for (const re of scriptRes) {
         const m = re.exec(l)
         if (!m) continue
-        hit(n, { kind: 'open', uses: `script ${m[1]}`, replacement: "run the lane's script instead (see the vite-csf recipe)" })
+        hit(n, { kind: 'open', uses: `script ${m[1]}`, replacement: "run the lane's script instead (see the vite-csf recipe)", comment: comment(re) })
         used = true
       }
+      let scriptKey = false
       if (file === 'package.json') {
         for (const re of scriptKeys) {
           const m = re.exec(l)
           if (!m) continue
           hit(n, { kind: 'open', uses: `script ${m[1]}`, replacement: 'remove it, or point it at the lane' })
           used = true
+          scriptKey = true
+        }
+      } else if (codeFile && !noProse.has(file)) {
+        for (const re of scriptNames) {
+          const m = re.test(l) ? re.exec(liveLine()) : null
+          if (!m) continue
+          hit(n, { kind: 'open', uses: `script ${m[2]} by its name`, replacement: "it reads the script by its name: point it at the lane's script" })
+          used = true
+        }
+      }
+      // The tool's output folder in code and config, never in a comment; on
+      // a tool script's own line it goes with the script. The lane's own
+      // files and a frozen file are left as they are.
+      if (codeFile && !scriptKey && !noProse.has(file)) {
+        for (const re of outDirRes) {
+          const value = (live) => (yaml ? re.yaml.test(live) : DATA_FILE.test(file) || !VITE_COMMANDS.has(re.dir) ? re.quoted.test(live) : false)
+          if (!value(l) && !re.path.test(l)) continue
+          if (!value(liveLine()) && !re.path.test(liveLine())) continue
+          hit(n, { kind: 'open', uses: `output folder ${re.dir}`, replacement: `point it at the lane's output folder, stories.outDir${laneOutDir ? ` (${laneOutDir})` : ''}` })
+          used = true
         }
       }
       const cmd = commandRe.exec(l)
       if (cmd) {
-        hit(n, { kind: 'open', uses: `command ${cmd[1].replace(/\s+/g, ' ')}`, replacement: "run the lane's dev and build scripts instead" })
+        hit(n, { kind: 'open', uses: `command ${cmd[1].replace(/\s+/g, ' ')}`, replacement: "run the lane's dev and build scripts instead", comment: comment(commandRe) })
         used = true
       }
       for (const re of packageRes) {
@@ -321,13 +413,13 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
           else hit(n, { kind: 'skip' })
           continue
         }
-        hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: file === 'package.json' ? 'remove the dependency once nothing imports it' : "import the types from the lane's story.ts, or drop the import" })
+        hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: file === 'package.json' ? 'remove the dependency once nothing imports it' : "import the types from the lane's story.ts, or drop the import", comment: comment(re) })
         used = true
       }
       for (const re of modulePathRes) {
         const m = re.exec(l)
         if (!m) continue
-        hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: 'the package goes with the tool: read the file from somewhere else, or drop the use' })
+        hit(n, { kind: 'open', uses: `package ${m[1]}`, replacement: 'the package goes with the tool: read the file from somewhere else, or drop the use', comment: comment(re) })
         used = true
       }
       if (portRe?.test(l)) {
@@ -348,12 +440,14 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
     for (const [line, h] of hits) {
       if (h.skip?.length && !h.open.length && !h.prose.length && !h.valid.length) continue
       const open = h.open.length > 0
+      // With a use in the line's code, what its trailing comment names goes.
+      const inCode = h.open.filter((r) => !r.comment)
       const kind = open ? 'open' : h.dead.length ? 'dead' : h.valid.length ? 'valid' : 'prose'
-      const reasons = open ? h.open : kind === 'dead' ? h.dead : kind === 'valid' ? h.valid : h.prose
+      const reasons = open ? (inCode.length > 0 ? inCode : h.open) : kind === 'dead' ? h.dead : kind === 'valid' ? h.valid : h.prose
       const uses = [...new Set(reasons.map((r) => r.uses))].join(', ')
       const replacement = [...new Set(reasons.map((r) => r.replacement))].join('; ')
       let cls = kind === 'prose' ? 'prose' : fileClass(file)
-      if (kind !== 'prose' && cls !== 'docs') cls = commentLine(file, text, line) ? 'comment' : cls
+      if (kind !== 'prose' && cls !== 'docs') cls = commentLine(file, text, line) || (open && inCode.length === 0) ? 'comment' : cls
       const status = isHistorical(file, historical) && kind !== 'prose' ? 'historical' : kind
       out.push({ file, line, class: cls, uses, replacement, status })
     }
@@ -365,6 +459,19 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
     }
   }
   return out.sort((a, b) => compare(a.file, b.file) || a.line - b.line)
+}
+
+// The lines of `text` with their comments blanked, or null for a file whose
+// comments massimo does not read (all of it is then code). In a YAML, shell
+// or TOML file, a comment is a line that starts with `#`.
+function codeLines(file, text) {
+  if (HASH_COMMENTS.test(file)) return text.split('\n').map((l) => (l.trimStart().startsWith('#') ? '' : l))
+  if (!CODE_COMMENTS.test(file)) return null
+  try {
+    return stripComments(text, file).split('\n')
+  } catch {
+    return null
+  }
 }
 
 // Whether line `n` (1-based) of `text` holds only a comment, so that whatever

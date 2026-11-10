@@ -6,8 +6,8 @@
 // the start skill can offer adopt.
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, statSync } from 'node:fs'
-import { basename, join, posix } from 'node:path'
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { basename, isAbsolute, join, posix, relative, sep } from 'node:path'
 import { readDesignMd } from './designmd.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './glob.mjs'
 import { findObject } from './jsobject.mjs'
@@ -270,14 +270,16 @@ const TOOL_CONFIG = {
 const portIn = (cmd) => Number((/--port[ =](\d+)/.exec(cmd) ?? /(?:^|\s)-p[ =]?(\d+)/.exec(cmd) ?? /\bPORT=(\d+)/.exec(cmd))?.[1]) || null
 
 // Each story file of the tools detect found, read statically, with what it
-// could not read. A file no reader knows (MDX, Svelte CSF) is listed as not
-// statically readable.
+// could not read, and for a CSF file the `meta.width` values it sets
+// (`widths`, only when it sets one). A file no reader knows (MDX, Svelte
+// CSF) is listed as not statically readable.
 function storyFileRecords(root, files, tools, text) {
   const out = []
   for (const f of files) {
     if (isTestFile(f)) continue
     if (CSF_FILE.test(f)) {
       const csf = readCsf(text(f), f)
+      const widths = metaWidths(csf)
       out.push({
         file: f,
         format: 'csf',
@@ -288,6 +290,7 @@ function storyFileRecords(root, files, tools, text) {
         args: csf.args,
         argTypes: csf.argTypes,
         unreadable: csf.unreadable.map((u) => (u.story ? `${u.story}: ${u.detail}` : u.detail)),
+        ...(widths.length > 0 ? { widths } : {}),
       })
     } else if (HISTOIRE_FILE.test(f) && tools.includes('histoire')) {
       const h = readHistoire(text(f))
@@ -314,22 +317,43 @@ const LADLE_OBJECT = [/export\s+default\s*(?:\(\s*)?/, /module\.exports\s*=\s*/,
 
 // Ladle's settings that the csf lane takes over, read from `.ladle/config`
 // without running it: the story glob, `storyOrder`, `defaultStory`, the
-// port, the width options (`[{ label, width }]`, 0 last) and `outDir`. A
-// setting that is missing or not a literal is null.
+// port and `previewPort`, the width options (`[{ label, width }]`, 0 last)
+// and `outDir`. A setting that is missing or not a literal is null; one the
+// config sets with code (a glob list built when it runs, a function) is also
+// named in `notLiteral`, so nothing is guessed in its place.
 function ladleSettings(files, text) {
   const config = files.find((f) => LADLE_CONFIG.test(f))
   const obj = config ? findObject(text(config) ?? '', LADLE_OBJECT) : null
   const strings = (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : null)
   const options = obj?.addons?.width?.options
-  const widths = options && typeof options === 'object' && !Array.isArray(options) && !('expr' in options) ? Object.entries(options).filter(([k, v]) => /^\d+$/.test(k) && typeof v === 'string').map(([k, v]) => ({ label: v, width: Number(k) })) : []
-  return {
+  const literalOptions = options && typeof options === 'object' && !Array.isArray(options) && !('expr' in options)
+  const widths = literalOptions ? Object.entries(options).filter(([k, v]) => /^\d+$/.test(k) && typeof v === 'string').map(([k, v]) => ({ label: v, width: Number(k) })) : []
+  const settings = {
     stories: typeof obj?.stories === 'string' ? obj.stories : strings(obj?.stories),
     storyOrder: strings(obj?.storyOrder),
     defaultStory: typeof obj?.defaultStory === 'string' ? obj.defaultStory : null,
     port: typeof obj?.port === 'number' ? obj.port : null,
+    previewPort: typeof obj?.previewPort === 'number' ? obj.previewPort : null,
     widths: widths.length > 0 ? widths.sort((a, b) => (a.width === 0) - (b.width === 0) || a.width - b.width) : null,
     outDir: typeof obj?.outDir === 'string' ? obj.outDir : null,
   }
+  const set = (key) => obj && Object.prototype.hasOwnProperty.call(obj, key)
+  const notLiteral = ['stories', 'storyOrder', 'defaultStory', 'port', 'previewPort', 'outDir'].filter((key) => set(key) && settings[key] === null)
+  if (options !== undefined && !literalOptions) notLiteral.push('widths')
+  return notLiteral.length > 0 ? { ...settings, notLiteral } : settings
+}
+
+// The values stories give `meta.width`, Ladle's width per state: the file's
+// own meta and each story's, as written (a name such as `xsmall`, or px).
+function metaWidths(csf) {
+  const out = new Set()
+  const add = (meta) => {
+    const w = meta?.width
+    if (typeof w === 'string' || typeof w === 'number') out.add(w)
+  }
+  add(csf.meta?.meta)
+  for (const s of csf.stories) add(s.meta)
+  return [...out].sort((a, b) => compare(String(a), String(b)))
 }
 
 // The tools detect found, each with its config, the package scripts that run
@@ -498,11 +522,12 @@ function writerNamed(text, files) {
 }
 
 // The files a package script runs directly (node, tsx, bun, python, sh),
-// and the other package scripts it runs.
+// and the other package scripts it runs, past flags with no value before
+// or after `run` (`pnpm -w run build:site`).
 export function scriptRuns(cmd) {
   const s = String(cmd)
   const runs = [...s.matchAll(/(?:^|[\s;&|(])(?:node|tsx|ts-node|bun|deno run|python3?|sh|bash)\s+(?:-{1,2}[\w-]+(?:[ =]\S+)?\s+)*\.?\/?([\w@./-]+\.(?:mjs|cjs|js|ts|mts|py|sh))\b/g)].map((m) => m[1].replace(/^\.\//, ''))
-  const scripts = [...s.matchAll(/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([\w:.-]+)/g)].map((m) => m[1]).filter((n) => !['ci', 'install', 'i', 'exec', 'x', 'run'].includes(n))
+  const scripts = [...s.matchAll(/\b(?:npm|pnpm|yarn|bun)\s+(?:-{1,2}[\w-]+\s+)*(?:run\s+)?(?:-{1,2}[\w-]+\s+)*([\w:.-]+)(?=$|[\s;&|)'"`])/g)].map((m) => m[1]).filter((n) => !n.startsWith('-') && !['ci', 'install', 'i', 'exec', 'x', 'run'].includes(n))
   return { files: [...new Set(runs)], scripts: [...new Set(scripts)] }
 }
 
@@ -620,7 +645,7 @@ export function assetList({ lane, tools, own, styleFiles = [] }) {
   }
   for (const t of tools) {
     const dirs = t.config.some((f) => f.includes('/')) ? [...new Set(t.config.filter((f) => f.includes('/')).map((f) => f.split('/')[0]))] : []
-    add({ id: `tool:${t.tool}`, class: 'stories', kind: 'tool', paths: t.config.filter((f) => !f.includes('/')), dirs, scripts: t.scripts, port: t.port, family: `tool:${t.tool}` })
+    add({ id: `tool:${t.tool}`, class: 'stories', kind: 'tool', paths: t.config.filter((f) => !f.includes('/')), dirs, scripts: t.scripts, port: t.port, command: TOOL_COMMAND[t.tool] ?? null, family: `tool:${t.tool}` })
   }
   for (const f of styleFiles) add({ id: `styles:${f}`, class: 'tokens', kind: 'styles', paths: [f] })
   const generated = new Set()
@@ -649,9 +674,11 @@ const NOT_CONSUMERS = /^(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lo
 const TYPE_CHECK = /\b(?:astro\s+check|tsc\b|vue-tsc|svelte-check|nuxi\s+typecheck)/
 
 // The text patterns that name an asset: its paths, its folders, its package
-// scripts as run by a package manager, its port, its route and its build
-// folder. `basenames` lists the file names that count only beside their
-// folder, for a writer that joins the two.
+// scripts as run by a package manager, its port, its route, its build
+// folder, and for a story tool its own command line (`ladle preview`,
+// `storybook build`), as a Playwright config, a workflow or a script runs it.
+// `basenames` lists the file names that count only beside their folder, for
+// a writer that joins the two.
 function needlesOf(asset) {
   const out = []
   const path = (p) => new RegExp(`(?<![\\w.-])${escapeRe(p)}(?![\\w-])`)
@@ -660,6 +687,7 @@ function needlesOf(asset) {
   if (asset.port) out.push(new RegExp(`(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0):${asset.port}(?!\\d)|--port[ =]${asset.port}(?!\\d)|\\bPORT=${asset.port}(?!\\d)|["']?port["']?\\s*:\\s*${asset.port}(?!\\d)`))
   if (asset.route) out.push(new RegExp(`(?<![\\w.-])${escapeRe(asset.route)}(?=[/"'\`\\s)?#]|$)`, 'm'))
   if (asset.outDir) out.push(path(asset.outDir))
+  if (asset.command) out.push(asset.command)
   return out
 }
 
@@ -873,6 +901,52 @@ export function workflowText(text) {
   return lines.join('\n')
 }
 
+// A hosting config, at any depth, whose build command deploys the repo:
+// Netlify's netlify.toml and Vercel's vercel.json.
+const HOSTING = /(?:^|\/)(?:netlify\.toml|vercel\.json)$/
+// A shell script, which may run a package script or a story tool's command.
+const SHELL = /\.(?:sh|bash)$/
+
+// The deploy commands of a hosting config, as { folder, commands }: each
+// command with its line, and the repo-relative folder they run in ('' for
+// the root). netlify.toml's `command` under [build] or a [context.*]
+// section (not [dev], which serves locally) runs in its `base`, a path from
+// the repo root, else in its own folder; vercel.json's `buildCommand` runs
+// in its own folder.
+export function hostingCommands(text, file) {
+  const own = dirOf(file)
+  if (file.endsWith('.toml')) {
+    const commands = []
+    let base = null
+    let section = ''
+    text.split(/\r?\n/).forEach((l, i) => {
+      const head = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(l)
+      if (head) {
+        section = head[1].replace(/["']/g, '')
+        return
+      }
+      if (section !== 'build' && !section.startsWith('context.')) return
+      const m = /^\s*(command|base)\s*=\s*(["'])(.*?)\2\s*(?:#.*)?$/.exec(l)
+      if (!m) return
+      if (m[1] === 'base') base ??= m[3]
+      else commands.push({ command: m[3], line: i + 1 })
+    })
+    const folder = base === null ? own : posix.normalize(base.replace(/^\/+/, '') || '.').replace(/^\.$/, '').replace(/\/$/, '')
+    return { folder, commands }
+  }
+  const json = readJsonText(text)
+  const at = text.search(/"buildCommand"\s*:/)
+  return { folder: own, commands: typeof json?.buildCommand === 'string' ? [{ command: json.buildCommand, line: at === -1 ? null : lineAt(text, at) }] : [] }
+}
+
+// A hosting config as text is searched: TOML comments blanked, and the lines
+// in `elsewhere` (commands that run another package's scripts), lines kept.
+const hostingText = (text, file, elsewhere = []) =>
+  text
+    .split(/\r?\n/)
+    .map((l, i) => (elsewhere.includes(i + 1) ? '' : file.endsWith('.toml') ? l.replace(/(^|\s)#.*$/, '$1') : l))
+    .join('\n')
+
 // The job of a workflow that holds a line: its key under `jobs:` and its
 // `name:`, or null when the line is outside every job.
 export function workflowJob(text, line) {
@@ -958,15 +1032,31 @@ function firstMention(text, asset, needles) {
 
 // Who depends on each asset: imports read from the repo's code (and CSS
 // @import), the targets of Markdown links, and a plain text search of
-// package.json scripts, workflows, .claude, the config files at the root,
-// docs and code. Each consumer is classed deploy (app code or build config
-// imports or reads it), ci (a workflow runs it), hand-run (a package script,
-// a file under scripts/, or tooling under .claude) or docs (Markdown, or a
-// code comment). A workflow that runs a package script which depends on an
-// asset depends on it through that script.
+// package.json scripts, workflows, hosting configs, shell scripts, .claude,
+// the config files at the root, docs and code. Each consumer is classed
+// deploy (app code or build config imports or reads it, or a hosting
+// config's build runs it), ci (a workflow runs it), hand-run (a package
+// script, a file under scripts/, or tooling under .claude) or docs
+// (Markdown, or a code comment). A workflow or a hosting config that runs a
+// package script which depends on an asset depends on it through that
+// script.
 export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text: read = (f) => readText(root, f) } = {}) {
-  const text = (f) => (/^\.github\/workflows\//.test(f) ? workflowText(read(f)) : read(f))
   const fileSet = new Set(files)
+  // Each hosting config's commands that run the root's package scripts. One
+  // run in a folder with a package.json of its own runs that package's
+  // scripts, unless pnpm's `-w` names the workspace root's: its line is
+  // blanked, as a workflow step run in another folder is.
+  const ownPackage = (folder) => {
+    for (let d = folder; d; d = dirOf(d)) if (fileSet.has(`${d}/package.json`)) return true
+    return false
+  }
+  const hosting = new Map()
+  for (const h of files.filter((f) => HOSTING.test(f))) {
+    const { folder, commands } = hostingCommands(read(h), h)
+    const atRoot = (c) => !ownPackage(folder) || /\bpnpm\b[^;&|]*?\s(?:-w|--workspace-root)(?=\s|$)/.test(c.command)
+    hosting.set(h, { folder, commands: commands.filter(atRoot), elsewhere: commands.filter((c) => !atRoot(c)).map((c) => c.line) })
+  }
+  const text = (f) => (/^\.github\/workflows\//.test(f) ? workflowText(read(f)) : hosting.has(f) ? hostingText(read(f), f, hosting.get(f).elsewhere) : read(f))
   const owns = (a, f) => a.paths.includes(f) || a.dirs.some((d) => f.startsWith(`${d}/`))
   const families = new Map()
   for (const a of assets) if (a.family) families.set(a.family, [...(families.get(a.family) ?? []), a])
@@ -995,6 +1085,17 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
   }
   const ciScripts = new Set([...workflowRuns.values()].flatMap((r) => r.scripts.flatMap((n) => scriptsRunBy(n))))
   const ciFiles = new Set([...[...workflowRuns.values()].flatMap((r) => r.files), ...scripts.filter((s) => ciScripts.has(s.name)).flatMap((s) => s.files)])
+  // Hosting configs run the deploy build: the root's package scripts their
+  // commands run are deploy scripts.
+  const hostingRuns = new Map()
+  for (const [h, { folder, commands }] of hosting) {
+    for (const { command, line } of commands) {
+      const runs = scriptRuns(command)
+      hostingRuns.set(h, [...(hostingRuns.get(h) ?? []), { line, scripts: runs.scripts, files: runs.files.map((f) => posix.join(folder || '.', f)) }])
+    }
+  }
+  const deployScripts = new Set([...hostingRuns.values()].flat().flatMap((r) => r.scripts.flatMap((n) => scriptsRunBy(n))))
+  const deployFiles = new Set([...[...hostingRuns.values()].flat().flatMap((r) => r.files), ...scripts.filter((s) => deployScripts.has(s.name)).flatMap((s) => s.files)])
   const runners = (f) => scripts.filter((s) => s.files.includes(f)).map((s) => s.name).sort(compare)
   const testsInCi = [...workflowRuns.values()].some((r) => r.scripts.some((n) => /^test/.test(n))) || workflows.some((w) => /\bnpx\s+(?:vitest|jest|playwright)\b/.test(text(w)))
   const classOf = (f, how) => {
@@ -1002,7 +1103,7 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
     if (/\.md$/i.test(f) || how === 'comment' || how === 'links' || how === 'mentions') return 'docs'
     if (f.startsWith('.claude/')) return 'hand-run'
     if (isTestFile(f)) return testsInCi ? 'ci' : 'hand-run'
-    if (SCRIPT_DIRS.includes(f.split('/')[0]) && f.includes('/')) return ciFiles.has(f) ? 'ci' : 'hand-run'
+    if ((SCRIPT_DIRS.includes(f.split('/')[0]) && f.includes('/')) || SHELL.test(f)) return deployFiles.has(f) ? 'deploy' : ciFiles.has(f) ? 'ci' : 'hand-run'
     return 'deploy'
   }
   // A doc that names its writer is regenerated, never edited by hand.
@@ -1062,7 +1163,7 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
   const searchable = (f) =>
     !NOT_CONSUMERS.test(f) &&
     !outputs.has(f) &&
-    (CODE_EXT.test(f) || /\.md$/i.test(f) || /^\.github\/workflows\//.test(f) || (f.startsWith('.claude/') && /\.(?:json|md|ya?ml|txt)$/.test(f)) || ROOT_CONFIG.test(f))
+    (CODE_EXT.test(f) || /\.md$/i.test(f) || /^\.github\/workflows\//.test(f) || HOSTING.test(f) || SHELL.test(f) || (f.startsWith('.claude/') && /\.(?:json|md|ya?ml|txt)$/.test(f)) || ROOT_CONFIG.test(f))
   for (const f of files) {
     if (!searchable(f)) continue
     const t = text(f)
@@ -1123,7 +1224,7 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
   }
   for (const s of scripts) {
     for (const [a, how] of reach(s.name)) {
-      const cls = BUILD_SCRIPTS.includes(s.name) ? 'deploy' : ciScripts.has(s.name) ? 'ci' : 'hand-run'
+      const cls = BUILD_SCRIPTS.includes(s.name) || deployScripts.has(s.name) ? 'deploy' : ciScripts.has(s.name) ? 'ci' : 'hand-run'
       const entry = { file: 'package.json', script: s.name, line: null, class: cls, how: how.startsWith('runs') || how.startsWith('through') ? 'runs' : how }
       if (how.includes(' ')) entry.via = how.split(' ').pop()
       record(a, `package.json#${s.name}`, entry)
@@ -1136,8 +1237,18 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
       const reached = reach(name)
       for (const a of assets) {
         if (!ownScript(a, name) && !reached.has(a)) continue
-        const m = new RegExp(`\\b(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?${escapeRe(name)}(?![\\w:.-])`).exec(t)
+        const m = new RegExp(`\\b(?:npm|pnpm|yarn|bun)\\s+(?:-{1,2}[\\w-]+\\s+)*(?:run\\s+)?(?:-{1,2}[\\w-]+\\s+)*${escapeRe(name)}(?![\\w:.-])`).exec(t)
         record(a, w, { file: w, line: m ? lineAt(t, m.index) : null, class: 'ci', how: 'runs', via: name })
+      }
+    }
+  }
+  // Hosting configs whose deploy build runs an asset's script, or a package
+  // script that depends on it.
+  for (const [h, list] of hostingRuns) {
+    for (const { line, scripts: names } of list) {
+      for (const name of names) {
+        const reached = reach(name)
+        for (const a of assets) if (ownScript(a, name) || reached.has(a)) record(a, h, { file: h, line, class: 'deploy', how: 'runs', via: name })
       }
     }
   }
@@ -1188,6 +1299,35 @@ function styleFileReason(root, entry, matched, ignore) {
   }
 }
 
+// Where scan runs when it sits below git's toplevel, as { folder, workflows }:
+// its path from the toplevel, and how many workflows the toplevel keeps in
+// .github/workflows. Null at the toplevel or outside git. Scan reads no file
+// above the folder it runs in, so the inventory says so.
+function belowToplevel(root) {
+  let top
+  try {
+    top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return null
+  }
+  const real = (p) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return p
+    }
+  }
+  const folder = top ? relative(real(top), real(root)) : ''
+  if (!folder || folder.startsWith('..') || isAbsolute(folder)) return null
+  let workflows = 0
+  try {
+    workflows = readdirSync(join(top, '.github', 'workflows')).filter((f) => /\.ya?ml$/.test(f)).length
+  } catch {
+    // no workflows at the toplevel
+  }
+  return { folder: folder.split(sep).join('/'), workflows }
+}
+
 // The whole inventory of a repo, from detect's report (its framework, story
 // tools, lane and style files) and the repo's files. Read-only. `configured`
 // is false before init, when the config is the one detect suggests.
@@ -1232,6 +1372,12 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   const toolRecords = storyTools(tools, files, pkg, records, text)
   const assets = assetList({ lane, tools: toolRecords, own, styleFiles })
   const consumers = consumerIndex(root, files, assets, { pkg, config, text })
+  // Below the git toplevel, what sits above the folder is not read: said, not left out silently.
+  const below = assets.length > 0 ? belowToplevel(root) : null
+  if (below) {
+    const above = below.workflows > 0 ? `, such as the toplevel's ${plural(below.workflows, 'workflow')} in .github/workflows,` : ''
+    notes.push(`scan reads only the files in ${below.folder}, which sits below the git toplevel: files above it${above} are not read, so a CI job or script there that uses what this inventory lists is not among its consumers.`)
+  }
   return {
     format: INVENTORY_FORMAT,
     generatedBy: 'massimo adopt',
