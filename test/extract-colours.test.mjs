@@ -188,3 +188,114 @@ test('a cluster is covered by the nearest token, and a transparent token covers 
   assert.doesNotMatch(note('color.transparent'), /covers/)
   assert.equal(colours(out)['color.overlay.black-5'], '#0000000d')
 })
+
+test('a size aliased in a group named like a role is no semantic layer: the body rule still gives the semantic colours', () => {
+  const r = repo(
+    {
+      'tailwind.config.js': "module.exports = { theme: { extend: { fontSize: { body: 'var(--font-body)' } } } }\n",
+      'src/vars.css': ':root { --font-body: 14px; }\nbody { background: #f7f7f7; color: #222222; }\n',
+      'src/app.css': '.a { color: #333333; } .b { color: #333333; } .c { color: #333333; }\n',
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['tailwind3'], tokens: { styleFiles: ['src/vars.css'], tailwindConfig: 'tailwind.config.js' } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    const report = read(draft(r.root, 'report.md'))
+    const target = (alias) => alias.slice(1, -1).split('.').reduce((node, k) => node[k], base)
+    assert.equal(target(base.color.text.default.$value).$value.hex, '#222222')
+    assert.match(report, /\| `color\.bg\.default` \| \{color\.neutral\.\d+\} \| the page's background, set on body in src\/vars\.css \|/)
+    assert.match(report, /\| `color\.text\.default` \| \{color\.neutral\.\d+\} \| the page's text colour, set on body in src\/vars\.css \|/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test("a dark app's :root is its page, never a light theme's selector", () => {
+  const r = repo(
+    {
+      'src/main.css': ':root { background: #0b0b0b; color: #eeeeee; }\n.light { background: #ffffff; color: #111111; }\n',
+      'src/app.css': '.a { color: #999999; } .b { color: #999999; }\n',
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['css'], tokens: { styleFiles: ['src/main.css'], defaultMode: 'dark' } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    const report = read(draft(r.root, 'report.md'))
+    const target = (alias) => alias.slice(1, -1).split('.').reduce((node, k) => node[k], base)
+    assert.equal(target(base.color.bg.default.$value).$value.hex, '#0b0b0b')
+    assert.equal(target(base.color.text.default.$value).$value.hex, '#eeeeee')
+    assert.match(report, /\| `color\.bg\.default` \| \{color\.neutral\.\d+\} \| the page's background, set on :root in src\/main\.css \|/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test("a dark theme that sets only the page's colours says the other semantic colours have none", () => {
+  const r = repo(
+    {
+      'src/main.css': 'body { background: #ffffff; color: #1f2937; }\n.dark body { background: #111827; color: #f3f4f6; }\n',
+      'src/app.css': [
+        '.a { color: #6b7280; } .b { color: #6b7280; } .c { color: #6b7280; }',
+        '.d { border: 1px solid #e5e7eb; } .e { border: 1px solid #e5e7eb; }',
+        '.f { background: #f3f4f6; } .g { background: #f3f4f6; }',
+        '',
+      ].join('\n'),
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['css'], tokens: { styleFiles: ['src/main.css'], defaultMode: 'light', darkSelector: '.dark' } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const dark = readJson(draft(r.root, 'theme', 'dark.tokens.json'))
+    assert.deepEqual(Object.keys(dark.color).filter((k) => !k.startsWith('$')).sort(), ['bg', 'text'])
+    const report = read(draft(r.root, 'report.md'))
+    assert.match(report, /- The dark theme sets only color\.bg\.default and color\.text\.default, from \.dark body in src\/main\.css; the other semantic colours keep their default values there, so add their dark values when reviewing colour semantics\./)
+    assert.doesNotMatch(report, /No dark theme is proposed/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a body rule outside the style files gets a note naming its file, since the page colours are read from the style files only', () => {
+  const files = {
+    'src/colors.css': ':root { --c1: #222222; --c2: #ffffff; }\n',
+    'src/base.css': 'body { color: var(--c1); background: var(--c2); font-size: 16px; }\n',
+    'src/app.css': '.a { color: #555555; } .b { color: #555555; }\n',
+    'package.json': '{"name":"acme"}',
+  }
+  const note = "No page colour was read: extract takes the page's background and text colour from a body, html or :root rule in tokens.styleFiles, and the body size came from body in src/base.css, which tokens.styleFiles does not list. If that rule sets the page's colours, add src/base.css to tokens.styleFiles and extract again."
+  const outside = repo(files, { styling: ['css'], tokens: { styleFiles: ['src/colors.css'] } })
+  try {
+    const out = extract(outside.root)
+    assert.equal(out.status, 0, out.stderr)
+    assert.ok(read(draft(outside.root, 'report.md')).includes(`- ${note}`), read(draft(outside.root, 'report.md')))
+  } finally {
+    outside.cleanup()
+  }
+  // Listed, its body rule gives the page's colours, and no note.
+  const listed = repo(files, { styling: ['css'], tokens: { styleFiles: ['src/colors.css', 'src/base.css'] } })
+  try {
+    assert.equal(extract(listed.root).status, 0)
+    const base = readJson(draft(listed.root, 'base.tokens.json'))
+    assert.equal(base.color.bg.default.$value, '{color.c2}')
+    assert.equal(base.color.text.default.$value, '{color.c1}')
+    assert.doesNotMatch(read(draft(listed.root, 'report.md')), /No page colour was read/)
+  } finally {
+    listed.cleanup()
+  }
+  // A style file whose body rule sets no colour gets no note either.
+  const plain = repo({ ...files, 'src/base.css': 'body { font-size: 16px; }\n' }, { styling: ['css'], tokens: { styleFiles: ['src/colors.css', 'src/base.css'] } })
+  try {
+    assert.equal(extract(plain.root).status, 0)
+    assert.doesNotMatch(read(draft(plain.root, 'report.md')), /No page colour was read/)
+  } finally {
+    plain.cleanup()
+  }
+})

@@ -192,6 +192,20 @@ function describeByName(name) {
   return null
 }
 
+// Whether a source token is a colour: typed as one, or an alias whose
+// references reach a colour. A size aliased in a group named like a role
+// (Tailwind's fontSize reads into text: text.body = {text.base}) is not.
+// `byPath` holds the source tokens by path.
+function isColourToken(t, byPath) {
+  if (t.type === 'color') return true
+  for (let hop = 0, at = t; at && isAlias(at.value) && hop < 8; hop++) {
+    const to = aliasPath(at.value)
+    at = byPath.get(to) ?? byPath.get(`${to}.$root`)
+    if (at?.type === 'color' || (at && !at.type && !isAlias(at.value) && parseColor(String(at.value)))) return true
+  }
+  return false
+}
+
 // The contrast pair a name implies: `primary-content` sits on `primary`.
 function pairByName(t, byLast) {
   const last = t.path.filter((p) => p !== '$root').pop()
@@ -247,10 +261,13 @@ function backgroundOfGroup(t, byLast) {
 
 // `tailwind` is the Tailwind version the repo styles with, or null; `page`
 // is what the style files' body, html or :root rules paint (readCss's
-// page); `unread` says a source left colours unread, which may use any of
-// Tailwind's names; `gaps.reason`, when set, says why no semantic colour
-// came out.
-function proposeColors(existing, audit, report, outliers, minCount, { tailwind = null, page = null, defaultMode = 'light', gaps = {}, unread = false } = {}) {
+// page), and `styleFile` says whether a file is one of them; `unread` says
+// a source left colours unread, which may use any of Tailwind's names;
+// `gaps.reason`, when set, says why no semantic colour came out,
+// `gaps.partialDark` that the dark theme has only the page's own colours,
+// and `gaps.pageFile` that the body rule is in a file the page's colours
+// are not read from.
+function proposeColors(existing, audit, report, outliers, minCount, { tailwind = null, page = null, styleFile = () => false, defaultMode = 'light', gaps = {}, unread = false } = {}) {
   const out = []
   const colorTokens = existing.filter((t) => t.type === 'color' || (!t.type && !isAlias(t.value) && parseColor(String(t.value))))
   // A fully transparent token paints nothing, so it covers no colour.
@@ -354,7 +371,7 @@ function proposeColors(existing, audit, report, outliers, minCount, { tailwind =
   const pageParts = []
   for (const [mode, parts] of Object.entries(page ?? {})) {
     for (const [part, p] of Object.entries(parts)) {
-      const at = { mode, part, where: `set on ${p.selector} in ${p.file}` }
+      const at = { mode, part, place: `${p.selector} in ${p.file}`, where: `set on ${p.selector} in ${p.file}` }
       const v = /^var\(\s*(--[\w-]+)\s*\)$/.exec(p.value ?? '')?.[1]
       const token = v ? byVar.get(v) : p.class ? byClass.get(p.class) : null
       if (token) {
@@ -417,7 +434,8 @@ function proposeColors(existing, audit, report, outliers, minCount, { tailwind =
   // Semantics: only when the sources have no semantic layer of their own.
   const all = [...existing, ...out]
   const byLast = new Map(all.map((t) => [key(t.path), t]))
-  const hasSemantics = existing.some((t) => (t.type === 'color' || isAlias(t.value)) && describeByName(key(t.path)))
+  const sourceByPath = new Map(existing.map((t) => [key(t.path), t]))
+  const hasSemantics = existing.some((t) => isColourToken(t, sourceByPath) && describeByName(key(t.path)))
   if (hasSemantics) {
     for (const t of existing) {
       if (t.type !== 'color' && !(isAlias(t.value) && t.type === 'color')) continue
@@ -460,6 +478,14 @@ function proposeColors(existing, audit, report, outliers, minCount, { tailwind =
     const semantic = {}
     const isNeutral = (cl) => familyOf(parseColor(cl.representative)) === 'neutral'
     const pageAt = (mode, part) => pageParts.find((p) => p.mode === mode && p.part === part) ?? null
+    // The page's colours are read from the style files only. When none set
+    // one and the body size came from a rule in another file, a repo with
+    // colours is told so.
+    const sized = audit?.forExtract?.bodySize
+    const coloured = colorTokens.length > 0 || (audit?.colorClusters ?? []).length > 0
+    if (coloured && !page?.default && sized?.file && !styleFile(sized.file)) {
+      gaps.pageFile = `No page colour was read: extract takes the page's background and text colour from a body, html or :root rule in tokens.styleFiles, and the body size came from ${sized.selector} in ${sized.file}, which tokens.styleFiles does not list. If that rule sets the page's colours, add ${sized.file} to tokens.styleFiles and extract again.`
+    }
     // A light default theme sits on a light background, a dark one on a dark one.
     const light = defaultMode !== 'dark'
     const isLight = (c) => oklch(c).L >= 0.5
@@ -536,13 +562,23 @@ function proposeColors(existing, audit, report, outliers, minCount, { tailwind =
       semantic[role] = picked
     }
     // The dark theme's page colours, from the style files' dark selector.
+    // They are the only dark values proposed, so a note says the other
+    // semantic colours have none yet.
     if (light) {
+      const darkened = []
       for (const [role, part] of [['bg', 'background'], ['text', 'color']]) {
         const dark = pageAt('dark', part)
         const t = semantic[role]?.[0] && out.find((x) => key(x.path) === key(semantic[role][0].path))
         if (!dark || !t || t.value === `{${dark.key}}`) continue
         t.modes = { dark: `{${dark.key}}` }
         noteOn(report, key(t.path), `dark theme {${dark.key}}, the page's own, ${dark.where}`)
+        darkened.push({ token: key(t.path), place: dark.place })
+      }
+      const roles = new Set(['bg', 'text', 'border', 'accent'])
+      const rest = out.filter((t) => t.path[0] === 'color' && roles.has(t.path[1]) && Object.keys(t.modes).length === 0)
+      if (darkened.length > 0 && rest.length > 0) {
+        const both = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0])
+        gaps.partialDark = `The dark theme sets only ${both(darkened.map((d) => d.token))}, from ${both([...new Set(darkened.map((d) => d.place))])}; the other semantic colours keep their default values there, so add their dark values when reviewing colour semantics.`
       }
     }
     const bg = semantic.bg?.[0]
@@ -593,7 +629,8 @@ function colorGaps(existing, colors, audit, minCount, defaultMode, daisy = null,
   if (!any && !daisy) return []
   const notes = []
   const many = (n, one, more) => `${n} ${n === 1 ? one : more}`
-  const named = existing.some((t) => (t.type === 'color' || isAlias(t.value)) && describeByName(key(t.path)))
+  const byPath = new Map(existing.map((t) => [key(t.path), t]))
+  const named = existing.some((t) => isColourToken(t, byPath) && describeByName(key(t.path)))
   // A colour the sources already alias to another is a semantic layer of
   // their own, whatever its name (--card: var(--gray-50)).
   const aliased = existing.some((t) => t.type === 'color' && [t.value, ...Object.values(t.modes ?? {})].some(isAlias))
@@ -624,7 +661,17 @@ const pxOf = (text) => {
   const m = /^(-?\d*\.?\d+)(px|rem)$/.exec(String(text).trim())
   return m ? Number(m[1]) * (m[2] === 'rem' ? 16 : 1) : null
 }
-const existingPx = (tokens, groups) => new Set(tokens.filter((t) => groups.includes(t.path[0])).map((t) => pxOf(t.value)).filter((n) => n !== null))
+// The px sizes the tokens of some groups hold, through their references,
+// which are looked up in `all`: a Tailwind step that aliases a style file's
+// variable holds that variable's size.
+const existingPx = (tokens, groups, all = tokens) => {
+  const byPath = new Map(all.map((t) => [key(t.path), t]))
+  const valueOf = (t) => {
+    for (let hop = 0; t && isAlias(t.value) && hop < 8; hop++) t = byPath.get(aliasPath(t.value)) ?? byPath.get(`${aliasPath(t.value)}.$root`)
+    return t?.value
+  }
+  return new Set(tokens.filter((t) => groups.includes(t.path[0])).map((t) => pxOf(valueOf(t))).filter((n) => n !== null))
+}
 // A number as a token name: a dot is not allowed in one, so 0.5 is 0_5.
 const numberName = (n) => String(n).replace('.', '_')
 
@@ -873,8 +920,11 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
     const path = ['font', 'size', name]
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
     const bodyNote = ruled ? `the body size, set on ${ruled.selector} in ${ruled.file}` : 'the most used size, taken as the body size'
-    const twNote = TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size"
-    const note = !onScale ? `${tailwind ? `${twNote}; ` : ''}${bodyNote}, which the sources' type scale lacks` : tailwind ? twNote : name === 'base' ? bodyNote : ''
+    const renamed = name === wanted ? '' : `the sources already use ${cssVarFor(['font', 'size', wanted])}, so named by its size`
+    const twNote = renamed || (TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size")
+    const note = !onScale
+      ? [tailwind ? twNote : renamed, `${bodyNote}, which the sources' type scale lacks`].filter(Boolean).join('; ')
+      : tailwind ? twNote : [renamed, wanted === 'base' ? bodyNote : ''].filter(Boolean).join('; ')
     report.push({ family: 'typography', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note })
   }
   // Composites: exact from a Tailwind config's type steps, otherwise one per
@@ -1079,9 +1129,12 @@ export function propose({ sources, audit, fromCss, minCount = 2, styling = [], d
   // Groups some of whose values a source left unread (a spread, or a value
   // from another module), by the readers' group names.
   const partial = new Set(sources.flatMap((s) => s.partial ?? []))
-  const colors = proposeColors(existing, audit, report, outliers, minCount, { tailwind: tailwindVersion, page, defaultMode, gaps, unread: partial.has('color') })
+  const styleFile = sources.find((s) => s.kind === 'css')?.reads ?? (() => false)
+  const colors = proposeColors(existing, audit, report, outliers, minCount, { tailwind: tailwindVersion, page, styleFile, defaultMode, gaps, unread: partial.has('color') })
   const daisy = sources.map((s) => s.daisyThemes).find(Boolean) ?? null
   notes.push(...colorGaps(existing, colors, audit, minCount, defaultMode, daisy, gaps.reason ?? null))
+  if (gaps.pageFile) notes.push(gaps.pageFile)
+  if (gaps.partialDark) notes.push(gaps.partialDark)
   const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
   // Three or more steps the sources define close a scale: the code's other
   // values are drift. Not when they come from a Tailwind config's
@@ -1090,7 +1143,7 @@ export function propose({ sources, audit, fromCss, minCount = 2, styling = [], d
   // another module): then the code's values fill the gaps, with a note.
   const extendOnly = new Set(sources.filter((s) => s.kind === 'tailwind').flatMap((s) => (s.extendOnly ?? []).flatMap((g) => [...new Set(s.tokens.map((t) => t.source))].map((file) => `${file}\n${g}`))))
   const closed = (family, groups) => {
-    const steps = existingPx(existing.filter((t) => !extendOnly.has(`${t.source}\n${t.path[0]}`)), groups).size >= 3
+    const steps = existingPx(existing.filter((t) => !extendOnly.has(`${t.source}\n${t.path[0]}`)), groups, existing).size >= 3
     if (steps && groups.some((g) => partial.has(g))) {
       notes.push(`The sources leave part of the ${family} scale unread (see the notes on the Tailwind config), so the code's own ${family} values were proposed beside the steps that were read; check them against the part left out.`)
       return false

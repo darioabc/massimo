@@ -12,7 +12,7 @@
 import { parseColor, toHex } from './color.mjs'
 import { compare, compileGlobs } from './glob.mjs'
 import { PREFIX_GROUPS, SUFFIX_GROUPS, channelColor } from './readers.mjs'
-import { atRuleKind, classifyMember, interpolationEnd, scanSource, selectorMembers } from './source.mjs'
+import { DECLARED_PROPERTY, atRuleKind, classifyMember, interpolationEnd, scanSource, selectorMembers } from './source.mjs'
 
 const clean = (s) => s.replace(/\s+/g, ' ').trim()
 
@@ -110,7 +110,7 @@ export function cssRules(css, file = 'x.css') {
     const colon = stmt.indexOf(':')
     if (colon === -1) return
     const prop = stmt.slice(0, colon).trim()
-    if (!/^[-\w]+$/.test(prop)) return
+    if (!DECLARED_PROPERTY.test(prop)) return
     const lead = leading(boundary, at)
     const trail = css[end] === ';' ? trailing(end) : null
     const opens = lead && (lead.rule || (lead.first && trail))

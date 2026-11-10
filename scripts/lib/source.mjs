@@ -743,6 +743,10 @@ export function interpolationEnd(text, i) {
   return text.length - 1
 }
 
+// A declaration's property: letters, digits, `_` and `-`, with Sass
+// interpolation in it (`--#{$prefix}radius`) as written.
+export const DECLARED_PROPERTY = /^(?:[-\w]|#\{[^{}]*\})+$/
+
 // Walk CSS and return every block that holds declarations, as
 // `{ headers, decls: [{ prop, value }] }`; `headers` is the chain of selectors
 // and at-rule preludes from the outermost block in. Comments are ignored. A
@@ -769,7 +773,7 @@ export function parseCssBlocks(css, file = 'x.css') {
     const colon = stmt.indexOf(':')
     if (colon === -1) return
     const prop = stmt.slice(0, colon).trim()
-    if (!/^[-\w]+$/.test(prop)) return
+    if (!DECLARED_PROPERTY.test(prop)) return
     const value = clean(stmt.slice(colon + 1)).replace(/\s*!important$/i, '')
     top.decls.push({ prop, value })
   }
@@ -961,13 +965,15 @@ function classifyBlock(block) {
 }
 
 // Every custom property declared in a stylesheet:
-// `{ name, value, mode, scope, selector }`, in source order.
-export function parseCustomProperties(css, file = 'x.css') {
+// `{ name, value, mode, scope, selector }`, in source order. A name with
+// Sass interpolation (`--#{$prefix}radius`) is no name a var() can read, so
+// it is left out unless `interpolated` asks for it.
+export function parseCustomProperties(css, file = 'x.css', { interpolated = false } = {}) {
   const out = []
   for (const block of parseCssBlocks(css, file)) {
     const ctx = classifyBlock(block)
     for (const { prop, value } of block.decls) {
-      if (prop.startsWith('--')) out.push({ name: prop, value, ...ctx })
+      if (prop.startsWith('--') && (interpolated || !prop.includes('#{'))) out.push({ name: prop, value, ...ctx })
     }
   }
   return out
