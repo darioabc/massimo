@@ -4,7 +4,14 @@
 
 Fixes from running massimo on public repos it had never seen. After updating, run `init.mjs --update-scripts`, then `adopt.mjs scan` before the next `plan`. No file format changes: the inventory gains a few fields (`widths` on a story file that sets `meta.width`, and Ladle's `previewPort` and `notLiteral`) that older scripts ignore.
 
+### Added
+
+- The graph reads a Nuxt app. Nuxt's aliases (`~`, `@`, `~~`, `@@`, `#shared`, `#layers/<name>` and the `alias` option) resolve, with `~` and `@` inside a layer pointing at that layer. A template tag, a `resolveComponent()` call or an import from `#components` that names a component Nuxt auto-imports counts as a use, by Nuxt's own naming rule, and shadcn-nuxt's component folder is included. The folders under `layers/` that hold a `nuxt.config` and the local paths in `extends` are read in Nuxt's own layer order; a remote or package layer is listed as a warning. `graph.edges: ["!nuxt"]` turns the auto-import edges off and keeps the aliases. `scripts/lib/nuxt.mjs` ports Nuxt 4.6.4's component naming rule, scule's case splitting and shadcn-nuxt 2.9.0's component registration, and carries their MIT notices.
+- detect suggests every components folder a Nuxt app registers as `components.include`, each layer's included.
+
 ### Changed
+
+- An import that starts with `@/` or `~/` and resolves to nothing is listed as unresolved, in any project, instead of as a package.
 
 - `tokens.mjs check` says how many contrast pairs it checked when none fails (`0 contrast failures in 12 pairs`), and says plainly when it checked none, where it used to print `0 contrast failures` either way.
 - The audit skips `primitive-read`, with the reason in `latest.md`, against a token set where no token aliases another, so adopting a flat draft no longer flags every read of the repo's own variables. Baseline entries of that kind are not checked until the set gains an alias.
