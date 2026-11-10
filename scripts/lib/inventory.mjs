@@ -76,9 +76,10 @@ const lineAt = (text, index) => text.slice(0, index).split('\n').length
 const dirOf = (f) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '')
 
 // The file a Sass @use, @forward or @import in `from` loads, as Sass finds
-// it beside `from`: the path as written, else with .scss, .sass or .css
-// added, the partial with a leading underscore, or the folder's index file.
-// Null for a built-in module (sass:math), a URL, or a file the repo lacks.
+// it beside `from`: the path as written or its partial with a leading
+// underscore, else with .scss, .sass or .css added, as is or as the partial,
+// or the folder's index file. Null for a built-in module (sass:math), a URL,
+// or a file the repo lacks.
 function sassTarget(from, spec, fileSet) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(spec) || spec.startsWith('/')) return null
   const base = posix.normalize(posix.join(dirOf(from) || '.', spec))
@@ -87,6 +88,7 @@ function sassTarget(from, spec, fileSet) {
   const exts = ['.scss', '.sass', '.css']
   const candidates = [
     base,
+    ...(exts.some((ext) => name.endsWith(ext)) ? [posix.join(dir, `_${name}`)] : []),
     ...exts.flatMap((ext) => [`${base}${ext}`, posix.join(dir, `_${name}${ext}`)]),
     ...exts.flatMap((ext) => [`${base}/_index${ext}`, `${base}/index${ext}`]),
   ]
@@ -1245,9 +1247,11 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
         if (hit.file) targets.push({ file: hit.file, how: 'imports', index: t.indexOf(imp.spec) })
       }
       if (STYLE_EXT.test(f) || /\.(?:astro|vue|svelte)$/.test(f)) {
+        const sassStyle = /\.s[ac]ss$/.test(f) || (/\.(?:astro|vue|svelte)$/.test(f) && /<style\b[^>]*\blang\s*=\s*["']s[ac]ss["']/.test(t))
         for (const m of stripComments(t, f).matchAll(/@(import|use|forward)\s+(?:url\(\s*)?["']([^"']+)["']/g)) {
-          // Sass loads a partial the way it finds one; a CSS @import names its file.
-          const sass = m[1] !== 'import' || /\.s[ac]ss$/.test(f)
+          // Sass loads a partial the way it finds one, in a Sass file or a
+          // component's Sass style block; a CSS @import names its file.
+          const sass = m[1] !== 'import' || sassStyle
           const target = sass ? sassTarget(f, m[2], fileSet) : posix.normalize(posix.join(dirOf(f) || '.', m[2]))
           if (target && fileSet.has(target)) targets.push({ file: target, how: 'imports', index: m.index })
         }

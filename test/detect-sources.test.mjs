@@ -159,6 +159,26 @@ test('a file git ignores is never read as source: the file list leaves it out, a
   )
 })
 
+test('a stylesheet git ignores is not audited, yet still defines the variables a component reads', (t) => {
+  if (!hasGit()) return t.skip('git is not installed')
+  repo(
+    {
+      'package.json': { dependencies: { vue: '3', vite: '5' } },
+      'massimo.config.json': { version: 1, framework: 'vite-vue', components: { include: ['src/components/**/*.vue'] }, audit: { include: ['src/**/*.{css,vue}'] } },
+      // A token stylesheet a build generates, which git ignores.
+      '.gitignore': 'src/generated/\n',
+      'src/generated/tokens.css': ':root { --brand: #112233; --space-2: 8px; }\n',
+      'src/components/Card.vue': '<template><div class="card" /></template>\n<style>.card { color: var(--brand); padding: var(--space-2); }</style>\n',
+    },
+    (root) => {
+      const audit = run('audit', root)
+      assert.equal(audit.status, 0, audit.stderr)
+      assert.deepEqual(readJsonAt(root, 'design-system', 'audits', 'latest.json').findings, [])
+    },
+    { git: true },
+  )
+})
+
 test("detect leaves a Nuxt app's server folder and Capacitor's folders out of the audit, and suggests no token source there", () => {
   const vars = ':root { --a: 1px; --b: 2px; --c: 3px; --d: 4px; --e: 5px; }\n'
   repo(
@@ -166,15 +186,21 @@ test("detect leaves a Nuxt app's server folder and Capacitor's folders out of th
       ...NUXT,
       'server/api/categories.ts': "export default defineEventHandler(() => [{ name: 'Food', color: '#06b6d4' }])\n",
       'server/utils/email.css': vars,
+      // The email templates' theme and the seed data's tokens are not the app's.
+      'server/email/theme.ts': "export const theme = { brand: '#4338ca', text: '#374151' }\n",
+      'server/data/tokens.json': { color: { brand: { $type: 'color', $value: '#4338ca' } } },
       'capacitor.config.ts': "// webDir: 'www',\nconst config = { appId: 'app.example', webDir: 'native-web' }\nexport default config\n",
       'native-web/offline.html': '<style>body { color: #2a1f5c; }</style>\n',
       'native-web/shell.css': vars,
+      'native-web/theme.js': "export const theme = { surface: '#2a1f5c' }\n",
       'android/app/build.gradle': "apply plugin: 'com.android.application'\n",
     },
     (root) => {
       const out = detect(root)
       assert.deepEqual(out.suggestedConfig.audit.exclude, ['**/*.test.*', '**/*.spec.*', '**/*.d.ts', '**/*.stories.*', '**/*.story.*', 'stories/**', 'server/**', 'android/**', 'native-web/**'])
       assert.deepEqual(out.suggestedConfig.tokens.styleFiles, [])
+      assert.deepEqual(out.suggestedConfig.tokens.themeFiles, [])
+      assert.deepEqual(out.suggestedConfig.tokens.importFiles, [])
     },
   )
   // A webDir in a build folder every script skips, and no native project yet: nothing more.
@@ -183,7 +209,7 @@ test("detect leaves a Nuxt app's server folder and Capacitor's folders out of th
   )
 })
 
-test('the Tailwind config and the theme files are token sources, never audited as raw values', () => {
+test('the Tailwind config is a token source, never audited as raw values', () => {
   repo(
     {
       'package.json': { dependencies: { react: '18', vite: '5', tailwindcss: '3' } },
@@ -203,10 +229,19 @@ test('the Tailwind config and the theme files are token sources, never audited a
       const audit = run('audit', root)
       assert.equal(audit.status, 0, audit.stderr)
       const latest = readJsonAt(root, 'design-system', 'audits', 'latest.json')
-      assert.deepEqual([...new Set(latest.findings.map((f) => f.file))], ['src/Card.tsx'])
+      // A theme file is audited as before.
+      assert.deepEqual([...new Set(latest.findings.map((f) => f.file))], ['src/Card.tsx', 'src/theme.ts'])
     },
   )
 })
+
+// Each style asset's consumers in what scan prints before init, as [file, line, how].
+function consumersOf(root) {
+  const r = run('adopt', root, ['--json'])
+  assert.equal(r.status, 0, r.stderr)
+  const inv = JSON.parse(r.stdout)
+  return (id) => inv.assets.find((a) => a.id === id).consumers.map((c) => [c.file, c.line, c.how])
+}
 
 test('scan sees a Sass @use and @forward of a partial as a consumer', () => {
   const vars = (p) => `:root { ${['a', 'b', 'c', 'd', 'e'].map((n, i) => `--${p}-${n}: ${i + 1}px;`).join(' ')} }\n`
@@ -220,12 +255,27 @@ test('scan sees a Sass @use and @forward of a partial as a consumer', () => {
       'src/main.ts': "import './styles/main.scss'\n",
     },
     (root) => {
-      const r = run('adopt', root, ['--json'])
-      assert.equal(r.status, 0, r.stderr)
-      const inv = JSON.parse(r.stdout)
-      const by = (id) => inv.assets.find((a) => a.id === id).consumers.map((c) => [c.file, c.line, c.how])
+      const by = consumersOf(root)
       assert.deepEqual(by('styles:src/styles/variables/_colors.scss'), [['src/styles/variables/index.scss', 2, 'imports']])
       assert.deepEqual(by('styles:src/styles/variables/_radius.scss'), [['src/styles/variables/index.scss', 3, 'imports']])
+    },
+  )
+  // A partial named with its extension, and an @import in a component's Sass style block.
+  repo(
+    {
+      'package.json': { dependencies: { vue: '3', vite: '5', sass: '1' } },
+      'src/styles/_colors.scss': vars('color'),
+      'src/styles/_radius.scss': vars('radius'),
+      'src/styles/_type.scss': vars('type'),
+      'src/styles/main.scss': "@import 'colors.scss';\n@use './radius.scss' as r;\n",
+      'src/main.ts': "import './styles/main.scss'\n",
+      'src/App.vue': '<template><main /></template>\n<style lang="scss">\n@import \'./styles/type\';\n</style>\n',
+    },
+    (root) => {
+      const by = consumersOf(root)
+      assert.deepEqual(by('styles:src/styles/_colors.scss'), [['src/styles/main.scss', 1, 'imports']])
+      assert.deepEqual(by('styles:src/styles/_radius.scss'), [['src/styles/main.scss', 2, 'imports']])
+      assert.deepEqual(by('styles:src/styles/_type.scss'), [['src/App.vue', 3, 'imports']])
     },
   )
 })
@@ -265,4 +315,5 @@ test('the start skill says that before init only --root reaches the chosen packa
   const kickoff = skill.slice(skill.indexOf('## Kickoff'), skill.indexOf('## Resume'))
   assert.match(kickoff, /Until init has written `massimo\.config\.json` there, only `--root <package>` reaches the package: a script run from inside it before then still reads the repo top\./)
   assert.match(kickoff, /pass the same `--root <package>` to detect and to `adopt\.mjs scan` in step 3 too/)
+  assert.match(kickoff, /`node <plugin>\/scripts\/adopt\.mjs scan`, with `--root <package>` when step 1 chose a package,/)
 })

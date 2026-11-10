@@ -1241,14 +1241,13 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // Generated token outputs are skipped whole. Style files are audited too:
   // only their custom property declarations are where raw values belong, so
   // those are masked (maskTokenDeclarations) and every other rule is checked.
-  // A Tailwind config and the theme files are token sources, where every
-  // value belongs: skipped whole, like the outputs. They still define custom
-  // properties for the undefined-var check below.
+  // A Tailwind config is a token source, where every value belongs: skipped
+  // whole, like the outputs. It still defines custom properties for the
+  // undefined-var check below.
   const outputSet = new Set(outputPaths)
   const styleSet = new Set(styleFiles)
   const tailwindConfig = typeof config.tokens.tailwindConfig === 'string' ? config.tokens.tailwindConfig.replace(/^\.\//, '') : null
-  const isThemeFile = compileGlobs([].concat(config.tokens.themeFiles ?? []).filter((p) => typeof p === 'string'))
-  const isTokenSource = (f) => f === tailwindConfig || /(?:^|\/)tailwind\.config\.[cm]?[jt]s$/.test(f) || isThemeFile(f)
+  const isTokenSource = (f) => f === tailwindConfig || /(?:^|\/)tailwind\.config\.[cm]?[jt]s$/.test(f)
   const scanned = expandGlobs(root, [...config.audit.include, ...styleFiles], config.audit.exclude, config.ignore, all).filter(
     (f) => !outputSet.has(f) && !isProjectFile(f) && !isTokenSource(f),
   )
@@ -1291,7 +1290,9 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // Definitions also come from token files and from every other stylesheet,
   // component, content and script file in the repo (inline `style="--x: 1"`,
   // MDX, setProperty), so a var set outside audit.include is not "undefined".
-  for (const f of all) {
+  // What git ignores counts here, for the variables it defines and nothing
+  // else: a token stylesheet a build generates still defines them.
+  for (const f of walk(root, { ignore: config.ignore, gitignore: false })) {
     if (scannedSet.has(f) || !(tokenFiles.has(f) || DEFINITION_SOURCES.test(f))) continue
     const text = readFileSync(join(root, f), 'utf8')
     if (text.length < 1_000_000) collectDefinitions(text, defined)

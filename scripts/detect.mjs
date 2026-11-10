@@ -373,17 +373,18 @@ function styleFiles() {
 
 // Other places the repo keeps design values, for `tokens.mjs extract`: a
 // Tailwind 3 config, theme or token modules, and token JSON files (DTCG or
-// Tokens Studio). Read by name and, for JSON, by a quick look inside.
+// Tokens Studio). Read by name and, for JSON, by a quick look inside. None
+// from the folders that hold no UI styling.
 function tokenSources(projectDir) {
-  const ours = (f) => f.startsWith(`${projectDir}/`)
+  const leftOut = (f) => f.startsWith(`${projectDir}/`) || notUi.some((dir) => f.startsWith(`${dir}/`))
   const tailwindConfig = tailwindConfigFile
   const themeFiles = files
     .filter((f) => /(^|\/)(theme|tokens|design-tokens|stitches\.config|panda\.config)\.(ts|tsx|js|mjs|cjs)$/.test(f) || /\.css\.ts$/.test(f) && /(theme|tokens|vars)/i.test(f))
-    .filter((f) => !ours(f))
+    .filter((f) => !leftOut(f))
     .slice(0, 5)
   const importFiles = files
     .filter((f) => /\.tokens\.json$|(^|\/)tokens\.json$|(^|\/)\$themes\.json$|(^|\/)tokens\/[^/]+\.json$/.test(f))
-    .filter((f) => !ours(f) && f !== 'package.json')
+    .filter((f) => !leftOut(f) && f !== 'package.json')
     .filter((f) => {
       try {
         const p = join(root, f)
