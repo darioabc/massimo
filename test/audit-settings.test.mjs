@@ -260,6 +260,7 @@ test('primitives limited to colour: a colour role is no primitive, by its collec
       neutral: { 500: { $value: srgb([0.47, 0.47, 0.47]) } },
       line: { $value: srgb([0, 0, 0], 0.12), $extensions: { massimo: { collection: 'Semantic' } } },
       scrim: { $value: srgb([0, 0, 0], 0.5), $extensions: { massimo: { css: 'rgb(var(--ink) / 0.5)' } } },
+      text: { $value: '{color.neutral.500}' },
     },
   })
   contexts.push(ctx)

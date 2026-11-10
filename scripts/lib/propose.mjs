@@ -6,7 +6,7 @@
 // spacing), the proposal says it assumed it. Every value records where it
 // came from, so a reviewer can approve or change it family by family.
 //
-// propose({ sources, audit }) returns { tokens, report, outliers, notes }:
+// propose({ sources, audit, defaultMode }) returns { tokens, report, outliers, notes }:
 // tokens in the readers' shape, a report line per token
 // ({ family, token, value, from, note }), the values the code uses that did not become a
 // token, and plain notes.
@@ -207,6 +207,28 @@ function pairByName(t, byLast) {
   return null
 }
 
+// A text colour no name pairs sits on the background of its group: text,
+// text-dim and fg-muted on bg (or background), a nested text.muted on the
+// bg beside its group. Text on something else (text-on-primary, an inverse
+// text) is left to a pair by hand, and disabled text, which needs no
+// contrast, is not paired.
+const TEXT_NAME = /^(?:text|fg|foreground|ink)(?:-(?!on-)[\w-]+)?$/
+function backgroundOfGroup(t, byLast) {
+  const parts = t.path.filter((p) => p !== '$root')
+  const last = parts[parts.length - 1]
+  const textual = TEXT_NAME.test(last) || parts.slice(1, -1).some((p) => /^(?:text|fg|foreground)$/.test(p))
+  if (!textual || /inverse|inverted|disabled|(?:^|-)on-/.test(last)) return null
+  for (let n = parts.length - 1; n >= 1; n--) {
+    for (const name of ['bg', 'background']) {
+      for (const tail of [[], ['default'], ['DEFAULT'], ['$root']]) {
+        const g = byLast.get(key([...parts.slice(0, n), name, ...tail]))
+        if (g && g !== t && g.type === 'color') return key(g.path)
+      }
+    }
+  }
+  return null
+}
+
 function proposeColors(existing, audit, report, outliers, minCount) {
   const out = []
   const colorTokens = existing.filter((t) => t.type === 'color' || (!t.type && !isAlias(t.value) && parseColor(String(t.value))))
@@ -333,6 +355,11 @@ function proposeColors(existing, audit, report, outliers, minCount) {
         t.contrast = { on, use: 'text' }
         noteOn(report, key(t.path), `contrast checked as text on ${on}`)
       }
+      const bg = on || t.contrast ? null : backgroundOfGroup(t, byLast)
+      if (bg) {
+        t.contrast = { on: bg, use: 'text' }
+        noteOn(report, key(t.path), `contrast checked as text on ${bg}, guessed as its group's background`)
+      }
     }
   } else {
     const byRole = { bg: [], text: [], border: [] }
@@ -383,6 +410,37 @@ function proposeColors(existing, audit, report, outliers, minCount) {
     }
   }
   return out
+}
+
+// What the colour proposal leaves out, and why: no semantic colour (text,
+// background, border, accent), or no theme beyond the default when the
+// default is not dark itself. Said only when the repo has colours at all:
+// tokens, or Tailwind palette classes.
+function colorGaps(existing, colors, audit, minCount, defaultMode) {
+  const all = [...existing, ...colors].filter((t) => t.type === 'color')
+  const classes = audit?.colorClasses
+  if (all.length === 0 && !(classes?.count > 0)) return []
+  const notes = []
+  const many = (n, one, more) => `${n} ${n === 1 ? one : more}`
+  const named = existing.some((t) => (t.type === 'color' || isAlias(t.value)) && describeByName(key(t.path)))
+  // A colour the sources already alias to another is a semantic layer of
+  // their own, whatever its name (--card: var(--gray-50)).
+  const aliased = existing.some((t) => t.type === 'color' && [t.value, ...Object.values(t.modes ?? {})].some(isAlias))
+  if (!named && !aliased && !colors.some((t) => isAlias(t.value))) {
+    const top = (classes?.top ?? []).map((c) => c.name)
+    const examples = top.length > 1 ? `${top.slice(0, -1).join(', ')} and ${top[top.length - 1]}` : top[0]
+    const why = classes?.count > 0
+      ? `the code sets its colours with ${many(classes.count, 'Tailwind palette class', 'Tailwind palette classes')}${examples ? ` (most used: ${examples})` : ''}, which extract does not turn into semantic tokens, and the sources name no colour by its job`
+      : `the sources name no colour by its job (such as bg, text or border), and the code uses no raw colour as a background, text or border ${minCount} times or more`
+    notes.push(`No semantic colour is proposed: ${why}. Add the text, background, border and accent tokens when reviewing colour semantics, each an alias of a primitive.`)
+  }
+  if (defaultMode !== 'dark' && !all.some((t) => Object.keys(t.modes ?? {}).length > 0)) {
+    const why = classes?.dark > 0
+      ? `the code switches its colours with ${many(classes.dark, 'dark: variant', 'dark: variants')} of Tailwind palette classes, which extract does not read, and the sources set no colour for a dark theme`
+      : 'the sources set no colour for a dark theme'
+    notes.push(`No dark theme is proposed: ${why}. If the app has one theme only, nothing is missing; if that theme is dark, set tokens.defaultMode to dark.`)
+  }
+  return notes
 }
 
 // ── Scales: spacing, radius, type ──────────────────────────────────────────
@@ -695,7 +753,7 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
 // ── The whole proposal ─────────────────────────────────────────────────────
 
 // `fromCss` is dtcg.mjs's converter, passed in so this module stays small.
-export function propose({ sources, audit, fromCss, minCount = 2, styling = [] }) {
+export function propose({ sources, audit, fromCss, minCount = 2, styling = [], defaultMode = 'light' }) {
   const { tokens: existing, notes } = mergeSources(sources)
   const report = []
   const outliers = []
@@ -708,6 +766,7 @@ export function propose({ sources, audit, fromCss, minCount = 2, styling = [] })
     report.push({ family, token: key(t.path), value: isObject(t.value) || Array.isArray(t.value) ? JSON.stringify(t.value) : String(t.value), from: t.source, note: '' })
   }
   const colors = proposeColors(existing, audit, report, outliers, minCount)
+  notes.push(...colorGaps(existing, colors, audit, minCount, defaultMode))
   const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
   const tailwind = (styling ?? []).some((s) => /^tailwind/.test(s))
   const out = [

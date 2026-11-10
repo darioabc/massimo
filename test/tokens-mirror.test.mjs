@@ -245,7 +245,7 @@ test('mirror --check and tokens check fail while the mirror is behind the CSS', 
   const ok = run('tokens', ctx, ['mirror', '--check'])
   assert.equal(ok.status, 0, ok.stderr)
   assert.match(ok.stdout, /up to date with src\/styles\/theme\.css \(32 tokens\)/)
-  assert.match(run('tokens', ctx, ['check']).stdout, /up to date \(32 tokens, 0 stale, 0 contrast failures, token mirror current, resolved\.json current\)/)
+  assert.match(run('tokens', ctx, ['check']).stdout, /up to date \(32 tokens, 0 stale, no contrast pairs checked, token mirror current, resolved\.json current\)/)
 
   const css = join(ctx.root, 'src', 'styles', 'theme.css')
   writeFileSync(css, readFileSync(css, 'utf8').replace('--radius-2: 0.5rem;', '--radius-2: 0.75rem;'))

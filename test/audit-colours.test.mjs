@@ -1,0 +1,112 @@
+// What the audit says about colours: the job an SVG attribute's colour does,
+// the nearest token through the style files' channels and var() chains, and
+// primitive reads only against a token set that has semantic tokens.
+
+import assert from 'node:assert/strict'
+import { appendFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { after, test } from 'node:test'
+import { read, readJson, run, scratch, withTokens } from './helpers.mjs'
+
+const contexts = []
+after(() => contexts.forEach((c) => c.cleanup()))
+const fresh = (ctx = scratch()) => {
+  contexts.push(ctx)
+  return ctx
+}
+const audit = (ctx) => {
+  const r = run('audit', ctx)
+  assert.equal(r.status, 0, r.stderr)
+  return readJson(ctx.project, 'audits', 'latest.json')
+}
+const cluster = (latest, hex) => latest.colorClusters.find((c) => c.representative === hex)
+
+test('SVG presentation attributes colour the drawing, so they are fills; a variable of that name holds data', () => {
+  const ctx = fresh()
+  writeFileSync(join(ctx.root, 'src', 'components', 'Glyph.astro'), [
+    '<svg width="24" color="#c0392b" fill="none">',
+    '  <path',
+    '    fill="#2980b9"',
+    "    stroke='#27ae60'",
+    '  />',
+    '</svg>',
+    '',
+  ].join('\n'))
+  writeFileSync(join(ctx.root, 'src', 'glyph.tsx'), [
+    'export const G = () => <svg><stop stopColor={"#8e44ad"} /></svg>',
+    'export const F = () => <filter><feFlood flood-color="#0891b2" /><feFlood floodColor="#16a085" /></filter>',
+    "const fill = '#d35400'",
+    '',
+  ].join('\n'))
+  // Outside a tag, the same names are a reassignment, a class field and a
+  // parameter's default: data, as before.
+  writeFileSync(join(ctx.root, 'src', 'chart.tsx'), [
+    'let color',
+    "if (x) color = '#16a34a'",
+    'class P {',
+    "  color = '#dc2626'",
+    '}',
+    "function f(a, color = '#2563eb') {}",
+    '',
+  ].join('\n'))
+  const latest = audit(ctx)
+  for (const hex of ['#c0392b', '#2980b9', '#27ae60', '#8e44ad', '#0891b2', '#16a085']) assert.deepEqual(cluster(latest, hex)?.roles, { fill: 1 }, hex)
+  for (const hex of ['#d35400', '#16a34a', '#dc2626', '#2563eb']) assert.deepEqual(cluster(latest, hex)?.roles, { other: 1 }, hex)
+})
+
+test('the nearest token follows channel triplets and var() chains in the style files', () => {
+  const ctx = fresh()
+  appendFileSync(join(ctx.root, 'src', 'styles', 'theme.css'), ':root {\n  --teal-9: 184 58% 28%;\n  --color-teal: hsl(var(--teal-9));\n}\n.dark {\n  --teal-9: 184 58% 60%;\n}\n')
+  writeFileSync(join(ctx.root, 'src', 'teal.tsx'), "export const T = () => <p style={{ color: '#1e6c71', background: '#5eccd4' }} />\n")
+  const latest = audit(ctx)
+  const near = cluster(latest, '#1e6c71')?.nearestToken
+  // The triplet holds the colour itself, so it is named before the var() that reads it.
+  assert.equal(near?.name, '--teal-9')
+  assert.equal(near?.value, '#1e6b71')
+  assert.ok(near.distance < 0.01, String(near.distance))
+  const md = read(ctx.project, 'audits', 'latest.md')
+  assert.match(md, /- #1e6c71 ×1 · nearest token `--teal-9` #1e6b71 \(/)
+  // A value only another theme holds says which.
+  const dark = cluster(latest, '#5eccd4')?.nearestToken
+  assert.deepEqual(Object.keys(dark ?? {}), ['name', 'value', 'distance'])
+  assert.equal(dark.name, '--teal-9')
+  assert.match(md, /- #5eccd4 ×1 · nearest token `--teal-9` #5eccd4 in the dark theme \(/)
+})
+
+test('with no colour left in the style files, the nearest token comes from the token set, and latest.md names its theme', () => {
+  const doc = {
+    color: {
+      $type: 'color',
+      ink: { $value: '#1f2937' },
+      mist: { $value: '#e5e7eb', $extensions: { massimo: { modes: { dark: '#3f4b5e' } } } },
+      fg: { $value: '{color.ink}' },
+    },
+  }
+  const ctx = fresh(withTokens(doc))
+  // The hand-written declarations are gone: the token set's css output declares them now.
+  writeFileSync(join(ctx.root, 'src', 'styles', 'theme.css'), ':root {\n  --page-max: 80rem;\n}\n')
+  writeFileSync(join(ctx.root, 'src', 'raw.tsx'), "export const R = () => <p style={{ color: '#1f2938', background: '#3f4b5e' }} />\n")
+  const latest = audit(ctx)
+  assert.equal(cluster(latest, '#1f2938')?.nearestToken?.name, '--color-ink')
+  // The theme is said in latest.md only; latest.json keeps its shape.
+  assert.deepEqual(cluster(latest, '#3f4b5e')?.nearestToken, { name: '--color-mist', value: '#3f4b5e', distance: 0 })
+  const md = read(ctx.project, 'audits', 'latest.md')
+  assert.match(md, /- #3f4b5e ×1 · nearest token `--color-mist` #3f4b5e in the dark theme \(0\)/)
+  assert.match(md, /- #1f2938 ×1 · nearest token `--color-ink` #1f2937 \(/)
+})
+
+test('primitive reads wait for a token set with aliases, and the audit says why', () => {
+  const flat = { color: { $type: 'color', bg: { $value: '#ffffff' }, text: { $value: '#111111' } } }
+  const ctx = fresh(withTokens(flat))
+  writeFileSync(join(ctx.root, 'src', 'reads.tsx'), "export const R = () => <p style={{ color: 'var(--color-text)', background: 'var(--color-bg)' }} />\n")
+  const unread = audit(ctx)
+  assert.deepEqual(unread.findings.filter((f) => f.kind === 'primitive-read'), [])
+  assert.match(unread.skipped['primitive-read'], /^the token set has no aliases yet/)
+  assert.match(read(ctx.project, 'audits', 'latest.md'), /- primitive-read: skipped \(the token set has no aliases yet, so it has no semantic tokens to read instead of its primitives\)/)
+  // One semantic token that aliases a primitive: the reads of primitives count again.
+  const aliased = { color: { ...flat.color, fg: { $value: '{color.text}' } } }
+  writeFileSync(join(ctx.root, 'design-system', 'tokens', 'tokens.json'), JSON.stringify(aliased))
+  const counted = audit(ctx)
+  assert.deepEqual(counted.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value), ['--color-bg', '--color-text'])
+  assert.equal(counted.skipped['primitive-read'], undefined)
+})
