@@ -512,6 +512,63 @@ test('plan converts the Ladle tool once the lane is csf, and keeps it before; co
   assert.match(adopt(ctx, ['retire', 'stories', '--dry-run']).stdout, /tool:ladle {2}convert/)
 })
 
+// The Ladle repo opted in, its stories class agreed and mapped, and the lane
+// scaffolded as the vite-csf recipe writes it: its entry, its Vite config,
+// the shell and canvas beside the entry's script, and its two scripts.
+function scaffoldedRepo() {
+  const ctx = ladleRepo()
+  for (const args of [['scan'], ['config', '--write', '--lane', 'csf'], ['plan'], ['mark', 'stories', 'mapped']]) {
+    const r = adopt(ctx, args)
+    assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`)
+  }
+  put(ctx, 'stories.html', '<!doctype html>\n<html lang="en">\n  <body data-massimo-stories>\n    <div id="ladle-root"></div>\n    <script type="module" src="/src/stories/main.tsx"></script>\n  </body>\n</html>\n')
+  put(ctx, 'vite.stories.config.ts', "import { defineConfig } from 'vite'\n\nexport default defineConfig({})\n")
+  put(ctx, 'src/stories/main.tsx', "import { createRoot } from 'react-dom/client'\nimport Shell from './Shell'\n\ncreateRoot(document.getElementById('ladle-root')!).render(<Shell />)\n")
+  put(ctx, 'src/stories/Shell.tsx', 'export default function Shell() {\n  return null\n}\n')
+  put(ctx, 'src/stories/Canvas.tsx', 'export default function Canvas() {\n  return null\n}\n')
+  put(ctx, 'src/stories/story.ts', 'export type Story = () => unknown\n')
+  put(ctx, 'src/stories/frame.tsx', 'export default function Frame({ children }: { children: unknown }) {\n  return children\n}\n')
+  const pkg = JSON.parse(text(ctx, 'package.json'))
+  pkg.scripts = { ...pkg.scripts, 'ds:stories': 'vite --config vite.stories.config.ts', 'ds:stories:build': 'vite build --config vite.stories.config.ts' }
+  put(ctx, 'package.json', JSON.stringify(pkg))
+  return ctx
+}
+
+test("the csf lane's scaffold is massimo's own: scan, plan and config leave the stories class and the stories keys as they were", () => {
+  const ctx = scaffoldedRepo()
+  const stories = () => JSON.parse(readFileSync(join(ctx.project, 'adopt', 'ledger.json'), 'utf8')).classes.stories
+  const keys = JSON.parse(text(ctx, 'massimo.config.json')).stories
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const inventory = JSON.parse(readFileSync(join(ctx.project, 'adopt', 'inventory.json'), 'utf8'))
+  assert.equal(inventory.stories.lane, null)
+  assert.deepEqual(inventory.assets.filter((a) => a.class === 'stories').map((a) => a.id), ['tool:ladle'])
+  const plan = adopt(ctx, ['plan'])
+  assert.equal(plan.status, 0, plan.stderr)
+  assert.deepEqual([stories().state, stories().assets.map((a) => a.id)], ['mapped', ['tool:ladle']])
+  // Nothing about the stories is proposed, so accepting the proposal leaves those keys alone.
+  const r = adopt(ctx, ['config', '--write'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.doesNotMatch(r.stdout, /stories\./)
+  assert.deepEqual(JSON.parse(text(ctx, 'massimo.config.json')).stories, keys)
+  // The lane's own files are not read as story files, so the check passes on that config.
+  const check = spawnSync(process.execPath, [join(SCRIPTS, 'stories.mjs'), '--check', '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
+  assert.equal(check.status, 0, check.stdout + check.stderr)
+})
+
+test('a ledger that holds the scaffold as a lane asset drops it on plan, and its class stays where it was', () => {
+  const ctx = scaffoldedRepo()
+  const path = join(ctx.project, 'adopt', 'ledger.json')
+  const ledger = JSON.parse(readFileSync(path, 'utf8'))
+  ledger.classes.stories.assets.unshift({ id: 'lane:src/stories', kind: 'lane', paths: ['src/stories/'], decision: 'keep', loss: 'clean', lines: [], consumers: [], state: 'mapped', date: '2026-11-09', batch: null })
+  writeFileSync(path, JSON.stringify(ledger, null, 2))
+  assert.equal(adopt(ctx, ['scan']).status, 0)
+  const r = adopt(ctx, ['plan'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /lane:src\/stories left the ledger: it is massimo's own csf lane/)
+  const stories = JSON.parse(readFileSync(path, 'utf8')).classes.stories
+  assert.deepEqual([stories.state, stories.assets.map((a) => a.id)], ['mapped', ['tool:ladle']])
+})
+
 test('config --write raises a minScripts older than the keys it writes, and says so', () => {
   const ctx = ladleRepo()
   const path = join(ctx.root, 'massimo.config.json')

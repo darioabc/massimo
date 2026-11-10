@@ -243,8 +243,10 @@ const standing = (a) => (STATES.indexOf(a.state) >= lastState(a) ? STATES.length
 // by hand) and takes the new consumers, and when the scan no longer finds it,
 // it is kept and marked missing. An asset at found, or new to the scan, is
 // planned afresh, and a class with a new asset goes back to found until it
-// is agreed too, so nothing counts as mapped or cut over that was not.
-export function planLedger(inv, previous = null, { date = today(), config = {} } = {}) {
+// is agreed too, so nothing counts as mapped or cut over that was not. The
+// ids in `own` are massimo's own output (the csf lane's scaffold), which an
+// older scan took for the repo's: the ledger drops them instead.
+export function planLedger(inv, previous = null, { date = today(), config = {}, own = [] } = {}) {
   const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv, config) }))
   if (hasOwnHeaders(inv)) assets.push(headersAsset(inv))
   const classes = {}
@@ -257,7 +259,7 @@ export function planLedger(inv, previous = null, { date = today(), config = {} }
       const fresh = { id: a.id, kind: a.kind, paths: a.paths, decision: a.decision, loss: a.loss, lines: a.lines, consumers: a.consumers, state: 'found', date: old?.date ?? date, batch: null }
       return old && old.state !== 'found' ? { ...fresh, decision: old.decision, loss: old.loss, lines: old.lines, state: old.state, date: old.date, batch: old.batch } : fresh
     })
-    for (const old of was?.assets ?? []) if (old.state !== 'found' && !mine.some((a) => a.id === old.id)) entries.push({ ...old, missing: true })
+    for (const old of was?.assets ?? []) if (old.state !== 'found' && !mine.some((a) => a.id === old.id) && !own.includes(old.id)) entries.push({ ...old, missing: true })
     // A class left with nothing in it has nothing to adopt.
     if (entries.length === 0) continue
     const wasAt = was ? STATES.indexOf(was.state) : 0

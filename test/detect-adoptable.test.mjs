@@ -125,3 +125,32 @@ test("the project folder's own style files are not the repo's", () => {
     assert.deepEqual(detect(root).styleFiles.map((s) => s.file), ['design-system/kit/kit.css', 'src/styles/app.css'])
   })
 })
+
+// A Ladle repo with the csf lane's scaffold as the recipe writes it. The
+// native recipe writes files of the same names, so the config's opt-in is
+// what makes them massimo's csf lane.
+const SCAFFOLD = {
+  'package.json': JSON.stringify({ devDependencies: { '@ladle/react': '5', react: '18', vite: '5' }, scripts: { ladle: 'ladle serve', 'ds:stories': 'vite --config vite.stories.config.ts', 'ds:stories:build': 'vite build --config vite.stories.config.ts' } }),
+  'src/components/Button.tsx': 'export const Button = () => null\n',
+  'src/components/Button.stories.tsx': "export default { title: 'Primitives / Button' }\nexport const Default = () => null\n",
+  'stories.html': '<div id="ladle-root"></div>\n<script type="module" src="/src/stories/main.tsx"></script>\n',
+  'vite.stories.config.ts': "import { defineConfig } from 'vite'\nexport default defineConfig({})\n",
+  'src/stories/main.tsx': "import Shell from './Shell'\nexport { Shell }\n",
+  'src/stories/Shell.tsx': 'export default function Shell() {\n  return null\n}\n',
+}
+
+test("the csf lane's scaffold is reported as massimo's own lane: kept, but nothing to adopt and not the suggestion's lane", () => {
+  repo({ ...SCAFFOLD, 'massimo.config.json': JSON.stringify({ stories: { lane: 'csf', include: ['src/**/*.stories.{tsx,ts}'] } }) }, (root) => {
+    const out = detect(root)
+    assert.deepEqual([out.storyTools.lane.dir, out.storyTools.lane.csf], ['src/stories', true])
+    assert.deepEqual(out.adoptable, [{ kind: 'stories', paths: [], note: 'ladle stories' }])
+    assert.deepEqual([out.suggestedConfig.stories.devCommand, out.suggestedConfig.stories.url], [null, null])
+  })
+  // Without the opt-in, the same files are a gated lane, reported as before.
+  repo(SCAFFOLD, (root) => {
+    const out = detect(root)
+    assert.deepEqual([out.storyTools.lane.dir, out.storyTools.lane.csf], ['src/stories', undefined])
+    assert.deepEqual(out.adoptable.map((a) => a.note), ['a gated story lane', 'ladle stories'])
+    assert.equal(out.suggestedConfig.stories.devCommand, 'npm run ds:stories')
+  })
+})

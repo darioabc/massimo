@@ -43,6 +43,8 @@ src/stories/stories.extra.css  rules the lane needs and the app must never ship
 
 The scaffold is the project's from then on: restyle the shell, extend the frame. Keep the shell on the canvas's URLs, and keep `Shell.tsx` and `Canvas.tsx` importing only React and `virtual:massimo-stories`.
 
+Once these files are written, massimo knows them as its own lane: `stories.lane` is `csf`, and the recipe's files sit beside the module script `stories.html` loads. detect reports the lane marked `csf: true`, so nothing is scaffolded over it, and adopt never takes it for a lane the repo had: scan lists no story lane for it, plan adds no asset for it, and config proposes no `stories` keys from it.
+
 ## Config
 
 The opt-in proposes most of this from the old tool's config; check it before scaffolding. A config that sets any of these keys needs `"minScripts": "0.4.0"`, and the vendored scripts must be 0.4.0 (`init.mjs --update-scripts`).

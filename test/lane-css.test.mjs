@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { walk } from '../scripts/lib/glob.mjs'
-import { cssClasses, cssLayoutProblems, ownClasses, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
+import { csfScaffold, cssClasses, cssLayoutProblems, ownClasses, sourceNotLines, sourceWords, storyOnly, storyOnlyModules } from '../scripts/lib/lane-css.mjs'
 import { DEFAULTS, deepMerge } from '../scripts/lib/project.mjs'
 import { scratch } from './helpers.mjs'
 
@@ -138,6 +138,19 @@ test('a folder that holds the app\'s own entry, or a file app code imports, is n
   assert.equal(imported.scaffold, null)
   assert.ok(!imported.modules.includes('src/stories/Shell.tsx'))
   assert.ok(imported.modules.includes('src/stories/main.tsx'))
+})
+
+test('the csf scaffold is the folder of the recipe\'s files, and only once the config sets the csf lane', () => {
+  const csf = lane(SCAFFOLD)
+  assert.equal(csfScaffold(csf.root, csf.config), 'src/stories')
+  // The native recipe writes files of the same names: without the opt-in no folder is taken.
+  const native = lane(SCAFFOLD, (c) => (c.stories.lane = 'native'))
+  assert.equal(csfScaffold(native.root, native.config), null)
+  // With no lane entry, or an entry whose script sits at the root, there is none.
+  const bare = lane({ ...SCAFFOLD, 'stories.html': '<html></html>\n' })
+  assert.equal(csfScaffold(bare.root, bare.config), null)
+  const flat = lane({ 'stories.html': '<script type="module" src="/main.tsx"></script>\n', 'main.tsx': 'export {}\n' })
+  assert.equal(csfScaffold(flat.root, flat.config), null)
 })
 
 test('the scaffold folder is one warning when the entry CSS does not exclude it, and none when it does', () => {

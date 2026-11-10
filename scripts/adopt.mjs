@@ -104,7 +104,7 @@ import {
 import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch, shellPath } from './lib/convert.mjs'
 import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
-import { recipeFiles } from './lib/lane-css.mjs'
+import { csfScaffold, recipeFiles } from './lib/lane-css.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
 import { stateUrl } from './lib/lane-route.mjs'
 import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, writeFileAtomic } from './lib/project.mjs'
@@ -896,12 +896,19 @@ switch (command) {
   case 'plan': {
     needInit('plan')
     const inv = readInventory()
-    const ledger = planLedger(inv, readLedger(), { config })
+    const previous = readLedger()
+    // The csf lane's scaffold is massimo's own lane, not an asset of the repo's.
+    const scaffold = csfScaffold(root, config)
+    const own = scaffold ? [`lane:${scaffold}`] : []
+    const ledger = planLedger(inv, previous, { config, own })
     refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
     writeJson(ledgerPath(projectDir), ledger)
     writeJson(proposedPath(projectDir), proposeConfig(inv, config))
     syncPhase(ledger)
     process.stdout.write(statusTable(ledger))
+    const listed = (l, id) => (l?.classes?.stories?.assets ?? []).some((a) => a.id === id && a.state !== 'found')
+    const dropped = own.filter((id) => listed(previous, id) && !listed(ledger, id))
+    if (dropped.length > 0) process.stdout.write(`\n${dropped.join(', ')} left the ledger: it is massimo's own csf lane, written from the recipe, not a lane the repo had.\n`)
     const empty = Object.keys(ledger.classes).length === 0
     process.stdout.write(`\nWrote ${shown('ledger.json')} and ${shown('config.proposed.json')}. ${empty ? 'There is nothing to adopt; the config can still take what scan proposed: ' : 'Agree each loss, then: '}${scriptCommand(root, projectDir, 'adopt', 'config')}\n`)
     break
