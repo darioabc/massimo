@@ -243,18 +243,21 @@ export function componentProps(source, file, name, sourceOf = null) {
     }
   }
   // A prop typed through a variant map takes the map's values, and its
-  // default from withDefaults(), else the map's defaultVariants.
+  // default from the map's defaultVariants.
   if (sourceOf) {
-    let given = null
     for (const p of props.values()) {
       if (p.values || typeof p.type !== 'string') continue
       const v = typedVariant(p.type, src, sourceOf)
       if (!v) continue
-      given ??= withDefaultsOf(src)
       p.values = v.values
-      const def = given[p.name] ?? v.default
-      if (p.default === undefined && (typeof def === 'string' || typeof def === 'boolean')) p.default = String(def)
+      if (p.default === undefined && (typeof v.default === 'string' || typeof v.default === 'boolean')) p.default = String(v.default)
     }
+  }
+  // Vue's withDefaults(defineProps<…>(), { … }) gives each prop it names the
+  // default Vue uses, ahead of a variant map's defaultVariants.
+  for (const [k, v] of Object.entries(withDefaultsOf(src))) {
+    const p = props.get(k)
+    if (p) p.default = v
   }
   // Defaults from the component's own destructured parameters, and from an
   // Astro component's `const { variant = 'primary' } = Astro.props`.
@@ -317,15 +320,36 @@ function vueAttribute(raw, value, quoted) {
 const ATTRIBUTE = /([A-Za-z_:@][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(['"`])([^'"`]*)\4\s*\}|\{([^}]*)\}))?/g
 const VUE_ATTRIBUTE = /([A-Za-z_:@#][\w:.-]*(?:\[[^\]]*\][\w.-]*)?)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(['"`])([^'"`]*)\4\s*\}|\{([^}]*)\}))?/g
 
+// The tags that name a component bound to `names`: each name as written, and
+// in a .vue file the other forms Vue resolves to it, so UiButton is also
+// `<uiButton>` and `<ui-button>`. A .vue tag in lowercase with no hyphen
+// is an HTML element, never a component, so Button is never `<button>`.
+function tagForms(names, vue) {
+  const forms = new Set()
+  for (const n of names) {
+    for (const form of vue ? [n, n[0].toLowerCase() + n.slice(1), n.replace(/\B([A-Z])/g, '-$1').toLowerCase()] : [n]) {
+      if (!vue || /[A-Z]/.test(form) || form.includes('-')) forms.add(form.replace(/\$/g, '\\$'))
+    }
+  }
+  return [...forms]
+}
+
+const TAG_REST = '((?:[^>"\'{]|"[^"]*"|\'[^\']*\'|\\{[^}]*\\})*)\\/?>'
+
 // How call sites set a component's props: for each prop, how many times each
 // value was passed (`true` for a bare attribute, `{…}` for an expression).
-// `files` are `{ file, text }`; a .vue call site is read as Vue reads it.
+// `files` are `{ file, text, names }`: `names` are the names the file binds
+// the component to (its local import names, the names Nuxt registers), and
+// without them a tag named `name` counts. A .vue call site is read as Vue
+// reads it.
 export function callSiteUsage(name, files) {
   const usage = {}
-  const tag = new RegExp(`<${name}\\b((?:[^>"'{]|"[^"]*"|'[^']*'|\\{[^}]*\\})*)\\/?>`, 'g')
-  for (const { file, text } of files) {
+  const tag = new RegExp(`<${name}\\b${TAG_REST}`, 'g')
+  for (const { file, text, names } of files) {
     const vue = /\.vue$/i.test(file ?? '')
-    for (const m of text.matchAll(tag)) {
+    const forms = names?.length > 0 ? tagForms(names, vue) : null
+    const re = !forms ? tag : forms.length > 0 ? new RegExp(`<(?:${forms.join('|')})\\b(?!-)${TAG_REST}`, 'g') : null
+    for (const m of re ? text.matchAll(re) : []) {
       for (const a of m[1].matchAll(vue ? VUE_ATTRIBUTE : ATTRIBUTE)) {
         let prop = a[1]
         if (!vue && /^(key|ref|class|className|style|on[A-Z]|@|v-on:|:class|:style)/.test(prop)) continue

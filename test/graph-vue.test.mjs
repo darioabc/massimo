@@ -358,3 +358,78 @@ test('a component reads the classes of the cva map it imports and calls: the opt
   assert.deepEqual(style('ActionTyped'), { tokens: [], cssVars: [] })
   assert.deepEqual(style('ActionOther'), { tokens: [], cssVars: [] })
 })
+
+const PLAIN_BUTTON = `<script setup lang="ts">
+import type { CornerStyle } from './types'
+
+const props = withDefaults(
+  defineProps<{
+    type?: string;
+    cornerStyle?: CornerStyle;
+    size?: string;
+    label?: string;
+    disabled?: boolean;
+  }>(),
+  {
+    type: 'primary',
+    cornerStyle: 'rounded',
+    disabled: false,
+    label: undefined,
+  },
+)
+</script>
+
+<template><span :class="props.type"><slot /></span></template>
+`
+
+test('withDefaults() gives ordinary typed props their defaults', () => {
+  const props = Object.fromEntries(componentProps(PLAIN_BUTTON, 'button.vue', 'button').map((p) => [p.name, p]))
+  assert.deepEqual(props.type, { name: 'type', default: 'primary', optional: true, from: 'type' })
+  assert.deepEqual(props.cornerStyle, { name: 'cornerStyle', default: 'rounded', optional: true, from: 'type' })
+  assert.deepEqual(props.disabled, { name: 'disabled', values: ['true', 'false'], default: 'false', optional: true, from: 'type' })
+  // A default that is no literal names none.
+  assert.deepEqual(props.label, { name: 'label', optional: true, from: 'type' })
+})
+
+test('a .vue call site is read from the tag its import binds, never from a native element named like the file', () => {
+  const g = graphOf(
+    {
+      'src/styles.css': '@import "tailwindcss";\n',
+      'src/components/ui/button/button.vue': PLAIN_BUTTON,
+      'src/components/ui/button/types.ts': "export type CornerStyle = 'rounded' | 'pill'\n",
+      'src/components/tab-bar.vue': `<script setup lang="ts">
+import UiButton from './ui/button/button.vue'
+</script>
+
+<template>
+  <button v-for="tab in tabs" :key="tab" type="button">{{ tab }}</button>
+  <ui-button type="transparent" corner-style="pill" />
+  <UiButton type="tertiary" :disabled="true" />
+  <ui-button-group size="small" />
+</template>
+`,
+    },
+    vueConfig(),
+  )
+  assert.deepEqual(g.node('button').props, [
+    { name: 'cornerStyle', default: 'rounded', optional: true, from: 'type', usage: { pill: 1 } },
+    { name: 'disabled', values: ['true', 'false'], default: 'false', optional: true, from: 'type', usage: { true: 1 } },
+    { name: 'label', optional: true, from: 'type' },
+    { name: 'size', optional: true, from: 'type' },
+    { name: 'type', default: 'primary', optional: true, from: 'type', usage: { transparent: 1, tertiary: 1 } },
+  ])
+})
+
+test('in a Nuxt app, a call site is read from the name Nuxt registers, in PascalCase or kebab case', () => {
+  const g = graphOf(
+    {
+      'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+      'app/components/base/Card.vue': '<script setup lang="ts">\ndefineProps<{ title: string }>()\n</script>\n<template><section><slot /></section></template>\n',
+      'app/pages/index.vue': '<template>\n  <base-card title="Hello" />\n  <BaseCard title="Again" />\n  <card title="Native" />\n</template>\n',
+      'app/pages/about.vue': '<script setup lang="ts">\nimport { BaseCard } from "#components"\n</script>\n<template>\n  <BaseCard title="Imported" />\n</template>\n',
+    },
+    { ...vueConfig(), framework: 'nuxt', components: { include: ['app/components/**/*.vue'], exclude: [] }, consumers: ['app/**/*.vue'] },
+  )
+  assert.equal(g.node('Card').usage, 2)
+  assert.deepEqual(g.node('Card').props, [{ name: 'title', from: 'type', usage: { Hello: 1, Again: 1, Imported: 1 } }])
+})
