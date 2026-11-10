@@ -9,8 +9,11 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { basename, join, posix } from 'node:path'
 import { readDesignMd } from './designmd.mjs'
-import { compare, compileGlobs, walk } from './glob.mjs'
-import { stripJsonComments } from './project.mjs'
+import { compare, compileGlobs, expandGlobs, walk } from './glob.mjs'
+import { findObject } from './jsobject.mjs'
+import { csfScaffold } from './lane-css.mjs'
+import { laneRegistry } from './lane.mjs'
+import { stripJsonComments, workspaceGlobs } from './project.mjs'
 import { DEFAULT_TIERS, keyRoles, knownKeys, tierOf } from './roles.mjs'
 import { RULE_KEYS, createResolver, extractImports, extractRules, isTestFile, stringLiterals, stripComments } from './source.mjs'
 import { readCsf, readHistoire, readManifest, readStoryStates } from './stories-read.mjs'
@@ -306,9 +309,32 @@ function storyFileRecords(root, files, tools, text) {
   return out
 }
 
+const LADLE_CONFIG = /^\.ladle\/config\.[cm]?[jt]s$/
+const LADLE_OBJECT = [/export\s+default\s*(?:\(\s*)?/, /module\.exports\s*=\s*/, /\b(?:const|let|var)\s+config\s*(?::[^=\n]+)?=\s*/]
+
+// Ladle's settings that the csf lane takes over, read from `.ladle/config`
+// without running it: the story glob, `storyOrder`, `defaultStory`, the
+// port, the width options (`[{ label, width }]`, 0 last) and `outDir`. A
+// setting that is missing or not a literal is null.
+function ladleSettings(files, text) {
+  const config = files.find((f) => LADLE_CONFIG.test(f))
+  const obj = config ? findObject(text(config) ?? '', LADLE_OBJECT) : null
+  const strings = (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : null)
+  const options = obj?.addons?.width?.options
+  const widths = options && typeof options === 'object' && !Array.isArray(options) && !('expr' in options) ? Object.entries(options).filter(([k, v]) => /^\d+$/.test(k) && typeof v === 'string').map(([k, v]) => ({ label: v, width: Number(k) })) : []
+  return {
+    stories: typeof obj?.stories === 'string' ? obj.stories : strings(obj?.stories),
+    storyOrder: strings(obj?.storyOrder),
+    defaultStory: typeof obj?.defaultStory === 'string' ? obj.defaultStory : null,
+    port: typeof obj?.port === 'number' ? obj.port : null,
+    widths: widths.length > 0 ? widths.sort((a, b) => (a.width === 0) - (b.width === 0) || a.width - b.width) : null,
+    outDir: typeof obj?.outDir === 'string' ? obj.outDir : null,
+  }
+}
+
 // The tools detect found, each with its config, the package scripts that run
-// it, its port and its story files.
-function storyTools(tools, files, pkg, records) {
+// it, its port and its story files; Ladle's also with its settings.
+function storyTools(tools, files, pkg, records, text = () => '') {
   return tools.map((tool) => {
     const scripts = Object.entries(pkg.scripts ?? {}).filter(([, cmd]) => TOOL_COMMAND[tool]?.test(String(cmd)))
     const own = records.filter((r) => (tool === 'histoire' ? r.format === 'histoire' : r.format !== 'histoire'))
@@ -321,6 +347,7 @@ function storyTools(tools, files, pkg, records) {
       stories: own.reduce((n, r) => n + r.stories.length, 0),
       withArgs: own.filter((r) => r.args || r.argTypes).length,
       notReadable: own.filter((r) => r.unreadable.length > 0).length,
+      ...(tool === 'ladle' ? { settings: ladleSettings(files, text) } : {}),
     }
   })
 }
@@ -328,8 +355,10 @@ function storyTools(tools, files, pkg, records) {
 // The lane detect found, read further: its gate's integration file, its page
 // and frame patterns, its manifest's entries, the state blocks on its pages,
 // the package scripts that run it and the folder its build writes to.
-// adopt.mjs verify stories reads the lane live with this too.
-export function laneRecord(root, files, pkg, lane, text = (f) => readText(root, f)) {
+// adopt.mjs verify stories reads the lane live with this too. For a csf lane
+// the `registry` has the states: there are no pages to count, so `states`
+// and `statesNotReadable` come from it, and `csf` holds its files and states.
+export function laneRecord(root, files, pkg, lane, text = (f) => readText(root, f), registry = null) {
   if (!lane?.dir) return null
   const dir = lane.dir
   const pageIndex = files.filter((f) => new RegExp(`^${escapeRe(dir)}/pages/[^/]+/index\\.[a-z]+$`).test(f))
@@ -377,6 +406,10 @@ export function laneRecord(root, files, pkg, lane, text = (f) => readText(root, 
   }
   const gated = Object.entries(pkg.scripts ?? {}).filter(([, cmd]) => /\bSTORIES=(?:1|true)\b/.test(String(cmd)) || /--config\s+\S*stories\S*\.config\./.test(String(cmd)))
   const outDir = gated.map(([, cmd]) => /--outDir[ =](\S+)/.exec(String(cmd))?.[1]).find(Boolean) ?? null
+  if (registry) {
+    states = Object.keys(registry.stories).length
+    statesNotReadable = Object.values(registry.files).reduce((n, f) => n + f.unreadable.filter((u) => u.story !== null).length, 0)
+  }
   return {
     dir,
     gate: lane.gate,
@@ -389,6 +422,7 @@ export function laneRecord(root, files, pkg, lane, text = (f) => readText(root, 
     frameCount: frameFiles.length,
     states,
     statesNotReadable,
+    ...(registry ? { csf: { files: Object.keys(registry.files).length, states } } : {}),
     scripts: gated.map(([name]) => name).sort(compare),
     devScript: lane.devScript,
     port: lane.port,
@@ -1119,9 +1153,45 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
 
 const STYLE_SOURCE = /--[\w-]+\s*:/g
 
+// What one tokens.styleFiles entry matches: a path, or a glob as graph and
+// tokens read it. A path matches itself even when it holds glob characters.
+function styleMatcher(entry) {
+  const path = entry.replace(/^\.\//, '')
+  const glob = compileGlobs([entry])
+  return (f) => f === path || glob(f)
+}
+
+// Why a tokens.styleFiles entry adds no style file: what it matches declares
+// no custom property, or scan does not read it (a folder the config ignores,
+// another package, a file git ignores), or nothing matches it.
+function styleFileReason(root, entry, matched, ignore) {
+  const glob = /[*?[{]/.test(entry)
+  if (matched.length) return glob ? 'no file it matches declares a custom property' : 'it declares no custom property'
+  const isFile = (f) => {
+    try {
+      return statSync(join(root, f)).isFile()
+    } catch {
+      return false
+    }
+  }
+  const path = entry.replace(/^\.\//, '')
+  const found = isFile(path) ? path : glob ? walk(root).find(styleMatcher(entry)) : null
+  if (!found) return glob ? 'no file matches it' : 'there is no such file'
+  const parts = found.split('/')
+  if (parts.some((seg) => ignore.includes(seg))) return 'it is in a folder the config ignores'
+  if (workspaceGlobs(root).length === 0 && parts.slice(0, -1).some((_, i) => isFile(`${parts.slice(0, i + 1).join('/')}/package.json`))) return 'it is in another package'
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', found], { cwd: root, stdio: 'ignore' })
+    return 'git ignores it'
+  } catch {
+    return 'it is in a folder scan does not read'
+  }
+}
+
 // The whole inventory of a repo, from detect's report (its framework, story
-// tools, lane and style files) and the repo's files. Read-only.
-export function buildInventory(root, { detected, config = {}, pkg = {}, files, auditKinds = [] }) {
+// tools, lane and style files) and the repo's files. Read-only. `configured`
+// is false before init, when the config is the one detect suggests.
+export function buildInventory(root, { detected, config = {}, pkg = {}, files, auditKinds = [], configured = true }) {
   const cache = new Map()
   const text = (f) => {
     if (!cache.has(f)) cache.set(f, readText(root, f))
@@ -1129,7 +1199,16 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   }
   const tools = detected?.storyTools?.tools?.filter((t) => TOOL_COMMAND[t]) ?? []
   const records = storyFileRecords(root, files, tools, text)
-  const lane = laneRecord(root, files, pkg, detected?.storyTools?.lane, text)
+  // The csf lane's scaffold is massimo's own output, written from the recipe,
+  // so it is no lane of the repo's: no asset, no consumers, nothing proposed.
+  const found = detected?.storyTools?.lane?.dir && detected.storyTools.lane.dir !== csfScaffold(root, config) ? detected.storyTools.lane : null
+  // A csf lane lists its states through the registry; no other lane has one.
+  const registry = config.stories?.lane === 'csf' && found ? laneRegistry({ root, config, files: expandGlobs(root, config.stories.include ?? [], [], [], files), read: text }) : null
+  const lane = laneRecord(root, files, pkg, found, text, registry)
+  // A csf lane runs on the port the config gives it, not the framework's default that detect falls back to,
+  // unless its dev script sets a port of its own: that one wins.
+  const ownPort = lane?.devScript ? portIn(String(pkg?.scripts?.[lane.devScript] ?? '')) : null
+  if (lane && registry && !ownPort && typeof config.stories?.port === 'number') lane.port = config.stories.port
   const own = ownFiles(root, files, pkg, text)
   // The repo's own index may list its tiers as headings: that is their order.
   const index = own.docs.find((d) => d.kind === 'index' && d.generated)
@@ -1139,10 +1218,18 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   for (const r of own.ratchets) Object.assign(r, proposedMap(r.rules, auditKinds))
   // The style files the config names and those detect finds, so a config
   // that later names fewer leaves the inventory, and the ledger, as they were.
-  const styleFiles = [...new Set([...(config.tokens?.styleFiles ?? []), ...(detected?.suggestedConfig?.tokens?.styleFiles ?? [])])]
-    .filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)
+  // Each entry is a path or a glob, matched against the files scan reads.
+  const declares = (f) => (text(f).match(STYLE_SOURCE) ?? []).length > 0
+  const named = (list) => [...new Set((list ?? []).filter((f) => typeof f === 'string'))]
+  const matched = new Map([...named(config.tokens?.styleFiles), ...named(detected?.suggestedConfig?.tokens?.styleFiles)].map((e) => [e, files.filter(styleMatcher(e))]))
+  const styleFiles = [...new Set([...matched.values()].flat())].filter(declares).sort(compare)
+  // A config entry that adds no style file is said, not dropped. Before init
+  // the config's entries are the ones detect suggests.
+  const notes = named(config.tokens?.styleFiles)
+    .filter((e) => !matched.get(e).some(declares))
     .sort(compare)
-  const toolRecords = storyTools(tools, files, pkg, records)
+    .map((e) => `${configured ? 'tokens.styleFiles names' : 'detect suggests'} ${e}, which scan leaves out: ${styleFileReason(root, e, matched.get(e), config.ignore ?? [])}.`)
+  const toolRecords = storyTools(tools, files, pkg, records, text)
   const assets = assetList({ lane, tools: toolRecords, own, styleFiles })
   const consumers = consumerIndex(root, files, assets, { pkg, config, text })
   return {
@@ -1153,6 +1240,7 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
     headers,
     own: { ...own, styleFiles },
     assets: assets.map((a) => ({ id: a.id, class: a.class, kind: a.kind, paths: [...a.paths, ...a.dirs.map((d) => `${d}/`)].sort(compare), ...(a.scripts.length ? { scripts: a.scripts } : {}), ...(a.port ? { port: a.port } : {}), ...(a.output ? { output: true } : {}), consumers: consumers[a.id] })),
+    ...(notes.length ? { notes } : {}),
   }
 }
 
@@ -1181,6 +1269,7 @@ export function inventoryMarkdown(inv, { command }) {
   out.push(`- The repo's own files: ${plural(inv.own.docs.filter((d) => d.generated).length, 'generated doc')}, ${plural(inv.own.ratchets.length, 'ratchet')}, ${plural(inv.own.tokenFiles.length, 'token file')}, ${plural(inv.own.docs.filter((d) => !d.generated).length, 'hand-written note')}${inv.own.generators.length ? `, written by ${inv.own.generators.map((g) => g.path).join(', ')}` : ''}.`)
   out.push(`- DESIGN.md: ${inv.own.designMd.length ? inv.own.designMd.map((d) => d.path).join(', ') : 'none'}.`)
   out.push(`- Consumers: ${consumers.length} (${byClass}).`, '')
+  if (inv.notes?.length) out.push(...inv.notes.map((n) => `Note: ${n}`), '')
 
   out.push('## Stories', '')
   if (lane) {

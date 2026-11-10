@@ -55,6 +55,9 @@ import { findObject, leaves } from './lib/jsobject.mjs'
 import { TAILWIND_CONFIG_STARTS, channelColor } from './lib/readers.mjs'
 import { headerRoles, keyRoles, knownKeys, placeFile } from './lib/roles.mjs'
 import { truthy } from './lib/text.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 // The kinds every project's audit reports, as 0.2.1 did.
 export const KINDS = [

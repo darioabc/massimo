@@ -12,7 +12,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { compare } from './glob.mjs'
-import { DEFAULTS, FORMATS_READ, refuseNewer, today } from './project.mjs'
+import { DEFAULTS, FORMATS_READ, needsScripts, olderThan, refuseNewer, today } from './project.mjs'
+import { openEdits } from './redirects.mjs'
 
 export const LEDGER_FORMAT = 1
 export const CLASSES = ['graph', 'stories', 'audit', 'tokens', 'docs']
@@ -79,8 +80,9 @@ const roleText = (r) => (typeof r === 'string' ? r : `${r.role}${r.under ? ` und
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 const list = (items) => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`)
 
-// The decision, loss and lines for one asset of the inventory.
-function assess(asset, inv) {
+// The decision, loss and lines for one asset of the inventory. `config` tells
+// a Ladle repo that opted in to the csf lane from one that did not.
+function assess(asset, inv, config = {}) {
   const lane = inv.stories.lane
   const lines = []
   let decision = 'keep'
@@ -121,6 +123,15 @@ function assess(asset, inv) {
     case 'tool': {
       const t = inv.stories.tools.find((x) => `tool:${x.tool}` === asset.id)
       worse('carried')
+      // A Ladle repo that set stories.lane to csf converts: its story files stay
+      // where they are, and only the specifier of their type import changes.
+      if (t.tool === 'ladle' && config?.stories?.lane === 'csf') {
+        decision = 'convert'
+        lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay where they are, read in place by the csf lane. Only the specifier of each file's type import changes, in a patch that convert stories writes for you to apply; the tool goes once nothing reads it.`)
+        if (t.notReadable > 0) lines.push(`${plural(t.notReadable, 'file has', 'files have')} something not statically readable, listed in the inventory.`)
+        if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which stay in the file and apply at run time; convert stories lists them for a hand pass.`)
+        break
+      }
       lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay in ${t.tool}; the graph credits them by file name. Moving them to the native lane is a later step.`)
       if (t.notReadable > 0) lines.push(`${plural(t.notReadable, 'file has', 'files have')} something not statically readable, listed in the inventory.`)
       if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which a move to the native lane turns into states by hand.`)
@@ -232,9 +243,11 @@ const standing = (a) => (STATES.indexOf(a.state) >= lastState(a) ? STATES.length
 // by hand) and takes the new consumers, and when the scan no longer finds it,
 // it is kept and marked missing. An asset at found, or new to the scan, is
 // planned afresh, and a class with a new asset goes back to found until it
-// is agreed too, so nothing counts as mapped or cut over that was not.
-export function planLedger(inv, previous = null, { date = today() } = {}) {
-  const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv) }))
+// is agreed too, so nothing counts as mapped or cut over that was not. The
+// ids in `own` are massimo's own output (the csf lane's scaffold), which an
+// older scan took for the repo's: the ledger drops them instead.
+export function planLedger(inv, previous = null, { date = today(), config = {}, own = [] } = {}) {
+  const assets = inv.assets.map((a) => ({ ...a, ...assess(a, inv, config) }))
   if (hasOwnHeaders(inv)) assets.push(headersAsset(inv))
   const classes = {}
   for (const cls of CLASSES) {
@@ -246,7 +259,7 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
       const fresh = { id: a.id, kind: a.kind, paths: a.paths, decision: a.decision, loss: a.loss, lines: a.lines, consumers: a.consumers, state: 'found', date: old?.date ?? date, batch: null }
       return old && old.state !== 'found' ? { ...fresh, decision: old.decision, loss: old.loss, lines: old.lines, state: old.state, date: old.date, batch: old.batch } : fresh
     })
-    for (const old of was?.assets ?? []) if (old.state !== 'found' && !mine.some((a) => a.id === old.id)) entries.push({ ...old, missing: true })
+    for (const old of was?.assets ?? []) if (old.state !== 'found' && !mine.some((a) => a.id === old.id) && !own.includes(old.id)) entries.push({ ...old, missing: true })
     // A class left with nothing in it has nothing to adopt.
     if (entries.length === 0) continue
     const wasAt = was ? STATES.indexOf(was.state) : 0
@@ -260,6 +273,7 @@ export function planLedger(inv, previous = null, { date = today() } = {}) {
       assets: entries.sort((a, b) => compare(a.id, b.id)),
       ...(verify ? { verify } : {}),
       ...(was?.accepted?.length ? { accepted: was.accepted } : {}),
+      ...(was?.converted ? { converted: was.converted } : {}),
     }
   }
   const historical = previous?.historical ?? []
@@ -315,8 +329,12 @@ export function markHistorical(ledger, path, { date = today() } = {}) {
 // lose their writer. A file that goes but that a generator which stays
 // still writes (its code names the file) is a blocker: its writer would
 // bring it back, and its check would fail without it. `jobAt(file, line)`
-// names a workflow's job at a line.
-export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
+// names a workflow's job at a line. With `edits` (what toolEdits lists for a
+// story tool that goes), the tool's own consumers are replaced by them, but
+// the workflow jobs that run its scripts are still collected: the
+// plan carries the open ones, which hold the retirement up, and counts the
+// rest.
+export function retirePlan(ledger, cls, inv, { jobAt = () => null, edits = null } = {}) {
   const c = ledger.classes[cls]
   const historical = new Set((ledger.historical ?? []).map((h) => h.path))
   const fresh = new Map(inv.assets.map((a) => [a.id, a]))
@@ -335,6 +353,7 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
         jobs.set(id, { file: k.file, line: k.line, job: job?.id ?? null, name: job?.name ?? null, via: [...new Set([...(jobs.get(id)?.via ?? []), k.via])].sort(compare) })
         continue
       }
+      if (edits && a.kind === 'tool') continue
       // A file that depends on several assets is listed once, as its
       // strongest tie: a deploy read before a CI run before a mention.
       const id = `${k.file}#${k.script ?? ''}`
@@ -372,6 +391,7 @@ export function retirePlan(ledger, cls, inv, { jobAt = () => null } = {}) {
     historical: all.filter(kept),
     elsewhere,
     writers: written.sort((x, y) => compare(x.path, y.path) || compare(x.writer, y.writer)),
+    ...(edits ? { edits: openEdits(edits), editsHistorical: edits.filter((e) => e.status === 'historical').length, editsValid: edits.filter((e) => e.status === 'valid').length } : {}),
   }
 }
 
@@ -458,13 +478,18 @@ export function statusTable(ledger) {
 
 // ── The proposed config ─────────────────────────────────────────────────────
 
+const LADLE_DEFAULT_PORT = 61000
+const LADLE_DEFAULT_STORIES = 'src/**/*.stories.{js,jsx,ts,tsx}'
 const RUN = { npm: 'npm run', pnpm: 'pnpm run', yarn: 'yarn', bun: 'bun run' }
 
 // The config keys scan can fill: the header keys and their roles, the
 // taxonomy, node kinds for pages and layouts with headers, the lane's
 // manifest, pages, frames, dev command and port, and the lane folder kept out
-// of the audit.
-export function proposeConfig(inv, config = {}) {
+// of the audit. With `lane: 'csf'` on a Ladle repo (the opt-in of
+// `config --lane csf`), also the csf lane: Ladle's own settings as ids, the
+// story glob, order, home, viewports and a port beside Ladle's, the frozen
+// design targets in `frozen`, and the minScripts those keys need.
+export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen = [] } = {}) {
   const proposed = { version: 1 }
   const graph = {}
   const extra = inv.headers.keys.filter((k) => !k.builtin && k.files > 0)
@@ -488,11 +513,33 @@ export function proposeConfig(inv, config = {}) {
     }
     proposed.audit = { exclude: [`${lane.dir}/**`] }
   }
+  const ladle = laneKind === 'csf' ? inv.stories.tools.find((t) => t.tool === 'ladle') : null
+  if (ladle) {
+    const s = ladle.settings ?? {}
+    // Ladle's own defaults when its config leaves them out: the port, and the glob
+    // minus mdx, which the CSF reader does not handle.
+    const ladlePort = s.port ?? ladle.port ?? LADLE_DEFAULT_PORT
+    const port = ladlePort + 1
+    proposed.minScripts = '0.4.0'
+    proposed.stories = {
+      ...proposed.stories,
+      lane: 'csf',
+      ids: 'ladle',
+      include: s.stories ? [].concat(s.stories) : [LADLE_DEFAULT_STORIES],
+      ...(s.storyOrder ? { order: s.storyOrder } : {}),
+      ...(s.defaultStory ? { home: s.defaultStory } : {}),
+      ...(s.widths ? { viewports: s.widths.map((w) => ({ label: w.label, width: w.width, height: 0 })) } : {}),
+      ...(port ? { port, url: `http://localhost:${port}/stories`, storyUrl: `http://localhost:${port}/stories/{slug}/{state}` } : {}),
+      ...(frozen.length > 0 ? { frozen } : {}),
+    }
+  }
   return proposed
 }
 
 // Lists merged item by item: the proposal adds what the user's list lacks.
 const UNION = ['graph.extraKeys', 'audit.exclude', 'stories.include']
+// Lists of entries with a `file`: the proposal adds the files the user's list lacks.
+const BY_FILE = ['stories.frozen']
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const at = (obj, path) => path.reduce((o, k) => (isPlainObject(o) ? o[k] : undefined), obj)
@@ -529,6 +576,11 @@ export function mergeAdding(current, proposed, path = []) {
       if (added.length === 0) continue
       merged[key] = [...have, ...added]
       changes.push({ path: name, kind: 'extend', from: have, to: merged[key] })
+    } else if (BY_FILE.includes(name) && Array.isArray(have) && Array.isArray(want)) {
+      const added = want.filter((x) => !have.some((y) => y?.file === x?.file))
+      if (added.length === 0) continue
+      merged[key] = [...have, ...added]
+      changes.push({ path: name, kind: 'extend', from: have, to: merged[key] })
     } else if (fallback !== undefined && same(have, fallback)) {
       merged[key] = want
       changes.push({ path: name, kind: 'default', from: have, to: want })
@@ -537,6 +589,18 @@ export function mergeAdding(current, proposed, path = []) {
     }
   }
   return { merged, changes }
+}
+
+// Raises `merged.minScripts` to what its stories section needs (needsScripts),
+// when it is missing or older, so scripts from before 0.4.0 refuse the config
+// instead of reading it and ignoring the keys. Replaces a kept minScripts
+// change in `changes`, and returns the changes.
+export function raiseMinScripts(merged, changes) {
+  const need = needsScripts(merged)
+  if (!need || (merged.minScripts && !olderThan(merged.minScripts, need))) return changes
+  const from = merged.minScripts ?? null
+  merged.minScripts = need
+  return [...changes.filter((c) => c.path !== 'minScripts'), { path: 'minScripts', kind: from === null ? 'add' : 'raise', from, to: need }]
 }
 
 // The changes as diff lines: + added, ~ a default replaced or a list

@@ -245,6 +245,19 @@ test('planning again keeps what a class past found agreed, and marks what scan n
   assert.equal(noDocs.classes.docs, undefined)
 })
 
+test("an agreed asset that is massimo's own output leaves the ledger, and its class stays where it was", () => {
+  const inv = readJson(project, 'adopt', 'inventory.json')
+  const first = ledger()
+  const smaller = { ...inv, assets: inv.assets.filter((a) => a.id !== 'lane:src/stories' && a.id !== 'gate:lab-integration.mjs') }
+  const next = planLedger(smaller, first, { date: '2026-11-08', own: ['lane:src/stories'] })
+  assert.equal(next.classes.stories.assets.find((a) => a.id === 'lane:src/stories'), undefined)
+  // Any other asset scan no longer finds is still kept, as missing.
+  assert.equal(next.classes.stories.assets.find((a) => a.id === 'gate:lab-integration.mjs').missing, true)
+  assert.equal(next.classes.stories.state, first.classes.stories.state)
+  // Without it, the same asset is kept as missing too.
+  assert.equal(planLedger(smaller, first, { date: '2026-11-08' }).classes.stories.assets.find((a) => a.id === 'lane:src/stories').missing, true)
+})
+
 test('a new asset in a class past found starts at found, and takes its class back until it is agreed too', () => {
   const inv = readJson(project, 'adopt', 'inventory.json')
   const first = planLedger(inv, null, { date: 'd0' })
@@ -330,4 +343,23 @@ test('merging adds what is missing, replaces a default, extends a list and keeps
   ])
   // A glob written with its braces in another order is the same glob.
   assert.deepEqual(mergeAdding({ stories: { include: ['s/**/*.{tsx,astro}'] } }, { stories: { include: ['s/**/*.{astro,tsx}'] } }).changes, [])
+})
+
+test('the Ladle tool converts under the csf lane, and Ladle without it and Storybook keep their story files', () => {
+  const inv = readJson(project, 'adopt', 'inventory.json')
+  const tool = (name) => ({ tool: name, config: [`.${name}/config.mjs`], scripts: [name], port: null, files: 2, stories: 3, withArgs: 1, notReadable: 0 })
+  const plan = (name, config) => {
+    const more = { ...inv, stories: { ...inv.stories, tools: [tool(name)] }, assets: [...inv.assets, { id: `tool:${name}`, class: 'stories', kind: 'tool', paths: [`.${name}/`], consumers: [] }] }
+    return planLedger(more, null, { date: 'd0', config }).classes.stories.assets.find((a) => a.id === `tool:${name}`)
+  }
+  const csf = { stories: { lane: 'csf' } }
+  const ladle = plan('ladle', csf)
+  assert.deepEqual([ladle.decision, ladle.loss], ['convert', 'carried'])
+  assert.match(ladle.lines.join('\n'), /Its 3 stories in 2 files stay where they are, read in place by the csf lane/)
+  assert.match(ladle.lines.join('\n'), /1 file uses args or argTypes, which stay in the file and apply at run time/)
+  for (const [name, config] of [['ladle', undefined], ['ladle', { stories: { lane: 'manifest' } }], ['storybook', csf]]) {
+    const kept = plan(name, config)
+    assert.deepEqual([kept.decision, kept.loss], ['keep', 'carried'], name)
+    assert.match(kept.lines.join('\n'), /Moving them to the native lane is a later step/)
+  }
 })

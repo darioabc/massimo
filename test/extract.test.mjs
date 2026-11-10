@@ -228,3 +228,134 @@ test('a Tailwind repo keeps Tailwind names, line heights and curves; text on a -
     r.cleanup()
   }
 })
+
+const draft = (root, ...parts) => join(root, 'design-system', 'tokens', 'draft', ...parts)
+
+test('a Tailwind 4 ramp in @theme: a cluster with a colour near a step is covered, and a primitive never takes a variable a token has', () => {
+  const r = repo(
+    {
+      'src/styles/theme.css': '@import "tailwindcss";\n@theme {\n  --color-orange-400: #fa5a15;\n}\n',
+      'src/app.css': ['.a { color: #ff512f; }', '.b { color: #ff512f; }', '.c { color: #ff512f; }', '.d { color: #fa5a15; }', '.e { background: #f97316; }', '.f { background: #f97316; }'].join('\n'),
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['tailwind4'], tokens: { styleFiles: ['src/styles/theme.css'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    const report = read(draft(r.root, 'report.md'))
+    // #ff512f is just past near for orange-400, but its cluster holds #fa5a15, which is orange-400.
+    assert.match(report, /\| `color\.orange-400` \| #fa5a15 \| src\/styles\/theme\.css \| covers #ff512f \(its cluster holds #fa5a15\), used 4× in code \|/)
+    // #f97316 is step 400 by its lightness, and --color-orange-400 is the ramp's: it takes the step beside it.
+    assert.deepEqual(Object.keys(base.color.orange).filter((k) => !k.startsWith('$')), ['405'])
+    assert.equal(base.color.orange['405'].$value.hex, '#f97316')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a Tailwind 3 ramp with a DEFAULT takes the code colours near it as new steps of its own', () => {
+  const r = repo(
+    {
+      'tailwind.config.js': `module.exports = { theme: { extend: { colors: { orange: { DEFAULT: '#f97316', 400: '#fb923c' } } } } }`,
+      'src/app.css': '.a { color: #c2410c; }\n.b { border-color: #c2410c; }\n',
+      'package.json': '{"name":"acme"}',
+    },
+    { tokens: { styleFiles: [], tailwindConfig: 'tailwind.config.js' } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    assert.equal(base.color.orange['600'].$value.hex, '#c2410c')
+    assert.equal(base.color['orange-scale'], undefined)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a stylesheet whose :root is dark and whose light theme sets other values keeps the :root values, and two files that disagree keep the first; both are said', () => {
+  const r = repo(
+    {
+      'src/styles/docs.css': ":root {\n  --backdrop: #272727cc;\n  --accent: #ff801f;\n}\n:root[data-theme='light'] {\n  --backdrop: #f6f6f699;\n  --accent: #b73d00;\n}\n",
+      'src/styles/main.css': ':root {\n  --accent: #f76b15;\n}\n',
+      'src/app.css': '.a { padding: 16px; } .b { padding: 16px; }',
+      'package.json': '{"name":"acme"}',
+    },
+    { tokens: { styleFiles: ['src/styles/docs.css', 'src/styles/main.css'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const report = read(draft(r.root, 'report.md'))
+    assert.match(report, /\| `color\.backdrop` \| #272727cc \| src\/styles\/docs\.css \|/)
+    assert.match(report, /\| `color\.accent` \| #ff801f \| src\/styles\/docs\.css \|/)
+    const notes = [
+      "--accent and --backdrop are set under :root in src/styles/docs.css and, differently, under :root[data-theme='light'] in src/styles/docs.css, which massimo reads as the same default theme; the tokens keep the values under :root in src/styles/docs.css",
+      '--accent is set under :root in src/styles/docs.css and, differently, under :root in src/styles/main.css, which massimo reads as the same default theme; its token keeps the value under :root in src/styles/docs.css',
+    ]
+    for (const n of notes) {
+      assert.ok(out.stderr.includes(`  note: ${n}\n`), out.stderr)
+      assert.ok(report.split('## Notes')[1]?.includes(`- ${n}\n`), report)
+    }
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a Tokens Studio file in the W3C form: every set is read, references resolve across sets, and a self-reference keeps the primitive', () => {
+  const studio = {
+    'primitive/color': { color: { gray: { 50: { $type: 'color', $value: '#fafafa' }, 900: { $type: 'color', $value: '#111111' } } } },
+    'primitive/spacing': { spacing: { 4: { $type: 'dimension', $value: '4px' }, 8: { $type: 'dimension', $value: '8px' }, 12: { $type: 'dimension', $value: '12px' } } },
+    'primitive/typography': { typography: { fontFamily: { base: { $type: 'fontFamilies', $value: 'Inter, sans-serif' } } } },
+    'semantic/dark/color': {
+      color: {
+        background: { default: { $type: 'color', $value: '{color.gray.900}', $description: 'Page background' } },
+        foreground: { default: { $type: 'color', $value: '{color.gray.50}' } },
+      },
+    },
+    'semantic/spacing': { spacing: { component: { xs: { $type: 'dimension', $value: '{spacing.4}' } } } },
+    'semantic/typography': { typography: { fontFamily: { base: { $type: 'fontFamilies', $value: '{typography.fontFamily.base}' } } } },
+    $themes: [],
+    $metadata: { tokenSetOrder: ['primitive/color', 'primitive/spacing', 'primitive/typography', 'semantic/dark/color', 'semantic/spacing', 'semantic/typography'] },
+  }
+  const r = repo(
+    { 'tokens/tokens.json': JSON.stringify(studio), 'src/app.css': '.a { padding: 16px; } .b { padding: 16px; }', 'package.json': '{"name":"acme"}' },
+    { tokens: { styleFiles: [], importFiles: ['tokens/tokens.json'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    assert.match(out.stdout, /\(9 from 1 file, /)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    assert.equal(base.color.gray['900'].$value.hex, '#111111')
+    assert.equal(base.color.background.default.$value, '{color.gray.900}')
+    assert.equal(base.color.background.default.$description, 'Page background')
+    assert.equal(base.color.foreground.default.$value, '{color.gray.50}')
+    assert.deepEqual(base.spacing['4'].$value, { value: 4, unit: 'px' })
+    assert.equal(base.spacing.component.xs.$value, '{spacing.4}')
+    assert.deepEqual(base.typography.fontFamily.base.$value, ['Inter', 'sans-serif'])
+    const note = 'tokens/tokens.json: typography.fontFamily.base in semantic/typography refers to itself, which Tokens Studio reads as the same path in an earlier set; kept the earlier token'
+    assert.ok(out.stderr.includes(`  note: ${note}\n`), out.stderr)
+    assert.ok(read(draft(r.root, 'report.md')).includes(`- ${note}\n`))
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('an import file that gives no tokens is said, printed and in the report', () => {
+  const r = repo(
+    { 'tokens/brand.json': JSON.stringify({ brand: { primary: '#ff0000' } }), 'src/app.css': '.a { padding: 16px; } .b { padding: 16px; }', 'package.json': '{"name":"acme"}' },
+    { tokens: { styleFiles: [], importFiles: ['tokens/brand.json'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const note = 'tokens/brand.json: read no tokens from it. A token is an object with a $value, or in a Tokens Studio file a value'
+    assert.ok(out.stderr.includes(`  note: ${note}\n`), out.stderr)
+    assert.ok(read(draft(r.root, 'report.md')).includes(`- ${note}\n`))
+  } finally {
+    r.cleanup()
+  }
+})

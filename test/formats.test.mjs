@@ -1,14 +1,21 @@
 // Files written by a newer massimo are refused by name, never guessed at;
 // a project that needs newer scripts says so; lowering a baseline never
 // drops what this version did not measure; and a plugin run says when the
-// project's vendored copy is older.
+// project's vendored copy is older. It also holds the 0.4.0 contract checks:
+// the new defaults, the stories keys a fresh config writes, which config
+// needs 0.4.0, and one test per stub module for the track that fills it.
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { SCRIPTS_VERSION, olderThan } from '../scripts/lib/project.mjs'
+import * as lane from '../scripts/lib/lane.mjs'
+import * as laneCss from '../scripts/lib/lane-css.mjs'
+import * as laneRoute from '../scripts/lib/lane-route.mjs'
+import { DEFAULTS, FORMATS_READ, SCRIPTS_VERSION, loadConfig, needsScripts, olderThan, parseArgs } from '../scripts/lib/project.mjs'
+import * as redirects from '../scripts/lib/redirects.mjs'
+import * as viteStories from '../scripts/lib/vite-stories.mjs'
 import { SCRIPTS, readJson, run, scratch } from './helpers.mjs'
 
 const contexts = []
@@ -146,4 +153,103 @@ test('a project on 0.2.0 scripts is told to update, and a config asking for this
   assert.ok(JSON.parse(init.stdout).warnings.some((w) => new RegExp(`vendored scripts are 0\\.2\\.0, the plugin has ${v}: re-run init with --update-scripts`).test(w)))
   config(ctx, { minScripts: SCRIPTS_VERSION })
   assert.equal(run('graph', ctx).status, 0)
+})
+
+// What 0.3.0 wrote under `stories`; a key added since stays out of a fresh config.
+const STORIES_0_3_0 = ['lane', 'include', 'devCommand', 'url', 'storyUrl', 'port', 'manifest', 'pages', 'frames', 'componentless']
+
+test('the 0.4.0 story keys all default to off', () => {
+  const { stories } = DEFAULTS
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(stories).filter(([k]) => !STORIES_0_3_0.includes(k))),
+    { ids: 'export', order: null, home: null, viewports: null, sideBySide: [], switchers: [], banners: null, frame: null, storyOnly: [], appCss: null, outDir: null, hostFiles: [], frozen: [], policy: null },
+  )
+  assert.equal(stories.lane, 'native')
+  assert.equal(stories.storyUrl, null)
+})
+
+test('the formats this version reads include the lane files, and --legacy takes no value', () => {
+  assert.deepEqual(parseArgs(['--legacy', 'sweep']), { _: ['sweep'], flags: { legacy: true } })
+  assert.deepEqual(
+    Object.fromEntries(['conversion', 'removal', 'redirects', 'registry'].map((k) => [k, FORMATS_READ[k]])),
+    { conversion: 1, removal: 1, redirects: 1, registry: 1 },
+  )
+  assert.equal(FORMATS_READ.config, 1)
+  assert.equal(FORMATS_READ.graph, 1)
+  assert.equal(FORMATS_READ.baseline, 2)
+})
+
+test('a config written by init holds exactly the stories keys 0.3.0 wrote', () => {
+  const ctx = fresh()
+  rmSync(join(ctx.root, 'massimo.config.json'))
+  const r = run('init', ctx, ['--no-npm-scripts'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(Object.keys(readJson(ctx.root, 'massimo.config.json').stories), STORIES_0_3_0)
+})
+
+test('detect suggests only the 0.3.0 stories keys, with or without a lane of its own', () => {
+  // `app` has no lane; `legacy` has one, which takes detect's other branch.
+  for (const fixture of ['app', 'legacy']) {
+    const ctx = scratch(fixture)
+    contexts.push(ctx)
+    const r = spawnSync(process.execPath, [join(SCRIPTS, 'detect.mjs'), '--root', ctx.root], { encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    const report = JSON.parse(r.stdout)
+    assert.equal(Boolean(report.storyTools.lane), fixture === 'legacy', fixture)
+    assert.deepEqual(Object.keys(report.suggestedConfig.stories), STORIES_0_3_0, fixture)
+  }
+})
+
+test('loadConfig accepts any lane value, so the scripts that cannot use it say so themselves', () => {
+  const ctx = fresh()
+  for (const value of ['native', 'manifest', 'csf', 'future-lane']) {
+    config(ctx, { stories: { lane: value } })
+    const loaded = loadConfig({ root: ctx.root })
+    assert.equal(loaded.refusal, null, value)
+    assert.equal(loaded.config.stories.lane, value)
+  }
+})
+
+test('the lane module returns an empty registry for no story files', () => {
+  const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
+  assert.deepEqual(registry, { format: 1, ids: 'export', stories: {}, order: [], home: null, slugs: {}, files: {}, problems: [] })
+  assert.deepEqual(lane.ladleMeta(registry), { about: { generator: 'massimo', format: 1 }, stories: {} })
+  assert.deepEqual(lane.redirectTable(registry, []), {})
+})
+
+test('a span hash of nothing is empty', () => {
+  assert.equal(lane.spanHash('', { start: 0, end: 0 }), '')
+})
+
+test('the route helpers give empty results for empty input', () => {
+  assert.deepEqual([laneRoute.stateUrl({}), laneRoute.orderIds([], []), laneRoute.argsFromSearch('')], ['', [], {}])
+})
+
+test('the css helpers return nothing for no input', () => {
+  assert.deepEqual([laneCss.storyOnlyModules(), laneCss.sourceNotLines('', 'a.css'), laneCss.cssLayoutProblems()], [[], [], []])
+})
+
+test('the redirect helpers give empty results for empty input', () => {
+  const registry = lane.laneRegistry({ root: '.', config: DEFAULTS, files: [], read: () => '' })
+  assert.deepEqual([redirects.idMentions('', registry), redirects.mentionCoverage([], registry, []), redirects.toolEdits()], [[], { files: 0, mentions: 0, resolved: 0, missing: [], dead: [] }, []])
+})
+
+test('the Vite plugin is named massimo-stories', () => {
+  assert.equal(viteStories.massimoStories().name, 'massimo-stories')
+})
+
+test('a config needs 0.4.0 only when it sets a 0.4.0 stories key to a non-default value', () => {
+  assert.equal(needsScripts({}), null)
+  assert.equal(needsScripts({ stories: { lane: 'manifest', port: 5000 } }), null)
+  assert.equal(needsScripts({ stories: { ids: 'export', order: null, frozen: [] } }), null)
+  assert.equal(needsScripts({ stories: { lane: 'csf' } }), '0.4.0')
+  assert.equal(needsScripts({ stories: { home: 'a--b' } }), '0.4.0')
+  assert.equal(needsScripts({ stories: { sideBySide: ['a.story.tsx'] } }), '0.4.0')
+  assert.equal(needsScripts({ stories: { policy: { nameMatches: true } } }), '0.4.0')
+})
+
+test('the route module imports nothing, since the plugin inlines its text', () => {
+  const text = readFileSync(join(SCRIPTS, 'lib', 'lane-route.mjs'), 'utf8')
+  assert.ok(!/^\s*(import|export\s.*\sfrom)\b/m.test(text))
+  assert.ok(!/\bimport\s*\(/.test(text))
 })

@@ -11,14 +11,16 @@ Front door for everything massimo does in a repo. It sets the project up once, t
 
 ## Which path
 
-Look for `massimo.config.json` at the repo root (git toplevel).
+Look for `massimo.config.json` in the folder Claude started in and each folder above it, up to the repo root (git toplevel). The nearest one is the project, and its folder is the project root: a monorepo can keep the project in one package.
+
+A session started at the repo top does not see a project kept in a package, and neither does the session hook. In a monorepo with no config at the top, look for `massimo.config.json` in its packages before taking Kickoff; when one has it, take Resume and run the scripts from inside that package.
 
 - **Absent** → Kickoff.
 - **Present** → Resume.
 
 ## Kickoff
 
-1. **Detect.** Run `node <plugin>/scripts/detect.mjs`. Summarise it in four or five plain lines: framework, styling, where components seem to live (with counts), the style files that hold tokens, existing story tools, Playwright yes/no, and, when it reports `adoptable`, what the repo already has for its design system. If the repo is a monorepo, ask which package to work on and re-run with `--root <package>`.
+1. **Detect.** Run `node <plugin>/scripts/detect.mjs`. Summarise it in four or five plain lines: framework, styling, where components seem to live (with counts), the style files that hold tokens, existing story tools, Playwright yes/no, and, when it reports `adoptable`, what the repo already has for its design system. If the repo is a monorepo, ask which package to work on and re-run with `--root <package>`. From then on, run every script from inside that package (`cd <package>` first), or pass the same `--root <package>` to every script, init included: a script finds the project from the folder it runs in, not from where the script lives, so one run from the repo top does not see a project kept in a package.
 2. **Ask.** One round of questions, two at most. Use the host's question tool when there is one; otherwise ask in plain text with a recommended answer for each. Ask only what detection could not settle:
    - Who is driving: a designer, a developer, or both? (It sets how much code you show versus visuals.)
    - Confirm or correct the component folders and token files detect found.

@@ -14,6 +14,9 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { fail, parseArgs } from './lib/project.mjs'
 import { escapeHtml } from './lib/text.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const { _: args, flags } = parseArgs()
 if (!args[0]) fail('usage: canvas.mjs <topic-dir> [--inline]')

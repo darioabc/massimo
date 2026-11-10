@@ -22,4 +22,8 @@ jobs:
       # The checks are zero-dependency Node scripts vendored in the project folder,
       # so no install step is needed, unless a guard.extraChecks command needs
       # the repo's packages: then add the repo's install step here.
+      # A csf story lane: check.mjs runs stories.mjs --check when stories.lane
+      # is "csf", so ds:check covers the check. The lane build and leak check
+      # run only in the shadow job's story step; copy that step here to keep
+      # them in CI.
       - run: npm run ds:check

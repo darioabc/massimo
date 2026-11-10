@@ -11,7 +11,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { compare } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
-import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson } from './lib/project.mjs'
+import { csfScaffold } from './lib/lane-css.mjs'
+import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const { flags } = parseArgs()
 const root = flags.root ? flags.root : findRoot()
@@ -63,9 +67,11 @@ function listFiles() {
 }
 
 // A folder with its own package.json is another app (a docs site, a demo) unless
-// the root declares workspaces; its files would only muddle this one's picture.
+// the root declares workspaces (package.json or pnpm-workspace.yaml); its files
+// would only muddle this one's picture.
+const workspaces = workspaceGlobs(root).length > 0
 const listed = listFiles()
-const nested = pkg.workspaces
+const nested = workspaces
   ? []
   : listed.filter((f) => f !== 'package.json' && f.endsWith('/package.json')).map((f) => f.slice(0, -'package.json'.length))
 const files = listed.filter((f) => !nested.some((dir) => f.startsWith(dir)))
@@ -259,9 +265,13 @@ function tokenSources(projectDir) {
   return { tailwindConfig, themeFiles, importFiles }
 }
 
+// The tsconfig paths as config aliases: `@/*` to a folder, and an exact key
+// such as `@scope/ui` to the file or folder it names. tsconfig.base.json is
+// where a monorepo keeps the paths its packages share; it is read first, so
+// a key the files that extend it also map takes their target.
 function aliases() {
   const out = {}
-  for (const name of ['tsconfig.json', 'jsconfig.json', 'tsconfig.app.json']) {
+  for (const name of ['tsconfig.base.json', 'tsconfig.json', 'jsconfig.json', 'tsconfig.app.json']) {
     let cfg
     try {
       cfg = readJson(join(root, name), null)
@@ -272,8 +282,14 @@ function aliases() {
     if (!paths) continue
     const base = cfg.compilerOptions.baseUrl ?? '.'
     for (const [k, v] of Object.entries(paths)) {
-      if (!k.endsWith('/*') || !v?.[0]?.endsWith('/*')) continue
-      const target = join(base, v[0].slice(0, -1)).split(sep).join('/').replace(/^\.\//, '')
+      const first = Array.isArray(v) ? v[0] : null
+      if (typeof first !== 'string') continue
+      if (!k.includes('*') && !first.includes('*')) {
+        out[k] = join(base, first).split(sep).join('/').replace(/^\.\//, '')
+        continue
+      }
+      if (!k.endsWith('/*') || !first.endsWith('/*')) continue
+      const target = join(base, first.slice(0, -1)).split(sep).join('/').replace(/^\.\//, '')
       out[k.slice(0, -1)] = target.endsWith('/') ? target : `${target}/`
     }
   }
@@ -320,7 +336,11 @@ try {
 const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
 const styles = styleFiles()
 const stories = detectStoryTools()
-const lane = stories.lane?.dir ? stories.lane : null
+// The csf lane's scaffold is massimo's own lane, written from the recipe. It
+// is reported with `csf: true`, so nothing is scaffolded over it, but the
+// suggested config takes nothing from it and it is nothing to adopt.
+if (stories.lane?.dir && stories.lane.dir === csfScaffold(root, existingConfig)) stories.lane.csf = true
+const lane = stories.lane?.dir && !stories.lane.csf ? stories.lane : null
 const extByFramework = {
   'vite-vue': 'vue',
   nuxt: 'vue',
@@ -331,6 +351,12 @@ const extByFramework = {
 const ext = extByFramework[framework] ?? '{tsx,jsx}'
 const topDirs = dirs.slice(0, 3).map((d) => d.dir)
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
+
+// The stories keys 0.3.0 wrote. A key added later is left out, so a config
+// written by init holds none until a project opts in.
+const storiesDefaults = Object.fromEntries(
+  ['lane', 'include', 'devCommand', 'url', 'storyUrl', 'port', 'manifest', 'pages', 'frames', 'componentless'].map((k) => [k, DEFAULTS.stories[k]]),
+)
 
 const suggestedConfig = {
   version: 1,
@@ -351,13 +377,13 @@ const suggestedConfig = {
   // own frames and wrappers.
   stories: lane
     ? {
-        ...DEFAULTS.stories,
+        ...storiesDefaults,
         include: lane.pages > 0 ? [`${lane.dir}/pages/**/*.{astro,tsx,jsx,vue,svelte,ts}`] : [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`],
         devCommand: lane.devScript ? `npm run ${lane.devScript}` : null,
         port: lane.port ?? DEFAULTS.stories.port,
         url: lane.port ? `http://localhost:${lane.port}/stories` : null,
       }
-    : { ...DEFAULTS.stories, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
+    : { ...storiesDefaults, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
   tokens: {
     ...DEFAULTS.tokens,
     source: `${projectDir}/tokens/tokens.resolver.json`,
@@ -389,7 +415,7 @@ const result = {
   styling,
   storyTools: stories,
   playwright: has('playwright') || has('@playwright/test'),
-  monorepo: Boolean(pkg.workspaces) || existsSync(join(root, 'pnpm-workspace.yaml')) || existsSync(join(root, 'turbo.json')),
+  monorepo: workspaces || existsSync(join(root, 'turbo.json')),
   scripts: { dev: pkg.scripts?.dev ?? null, build: pkg.scripts?.build ?? null },
   devPort: devPort(),
   componentDirs: dirs.slice(0, 10),

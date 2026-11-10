@@ -37,7 +37,8 @@ function tokenize(src) {
       }
       i++
       tokens.push({ kind: interpolated ? 'expr' : 'string', value, start, end: i })
-    } else if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(src[i + 1])) || (c === '-' && /[0-9.]/.test(src[i + 1]))) {
+    } else if (/^-?\.?[0-9]/.test(src.slice(i, i + 3))) {
+      // a number; a `-` or `.` before anything else (`/^a-.+/`) is an operator
       const m = /^-?(?:0x[0-9a-f]+|\d*\.?\d+(?:e[-+]?\d+)?)/i.exec(src.slice(i))
       tokens.push({ kind: 'number', value: Number(m[0]), start: i, end: i + m[0].length })
       i += m[0].length

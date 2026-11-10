@@ -9,10 +9,13 @@
 //                                 <project>/adopt/inventory.json and inventory.md
 //   adopt.mjs plan                the ledger (adopt/ledger.json) and the proposed
 //                                 config (adopt/config.proposed.json), from the inventory
-//   adopt.mjs config [--write]    the proposed config as a diff against
+//   adopt.mjs config [--write] [--lane csf]
+//                                 the proposed config as a diff against
 //                                 massimo.config.json; --write merges it in, adding
 //                                 keys and never overwriting a value you set (a config
-//                                 with comments is left for you to edit by hand)
+//                                 with comments is left for you to edit by hand).
+//                                 --lane csf is the opt-in for a Ladle repo: the csf
+//                                 lane and Ladle's own settings, from the saved inventory
 //   adopt.mjs status [--json]     the ledger as a table
 //   adopt.mjs mark <class> <state> [--batch <id>] [--force]
 //                                 move a class one state on; never past a blocker;
@@ -29,27 +32,52 @@
 //                                 write a shoot.mjs pairs file from the manifest;
 //                                 --shoot [--out <dir>] [--playwright <path>] runs it
 //                                 (--pairs and --out from --root when relative)
+//     stories on a csf lane: --against <meta.json> is the tool's own list, whose ids,
+//                                 files, exports and meta the lane must match; every id the
+//                                 repo's specs, scripts, skills and docs use must resolve.
+//                                 --sweep <base url> [--legacy] [--sweep-baseline <file>]
+//                                 [--ready <selector>] [--workers <n>] [--timeout <s>] opens
+//                                 every state on that server. --pairs also takes --a-route
+//                                 and --b-route (templates with {id}, {slug}, {state} and
+//                                 {scheme}) and --selector
 //   adopt.mjs accept <class> <key> --why <text>
 //                                 accept a difference verify reports now, with the
 //                                 reason and its detail; a key verify does not report
 //                                 is refused. It takes the flags verify takes, for a
 //                                 difference only they produce (--against, and
 //                                 --pairs, --a, --b and --shoot for a shot)
+//   adopt.mjs convert stories [--check] [--freeze <file>] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]
+//                                 for a Ladle repo on the csf lane: one record per story
+//                                 file under <project>/adopt/stories/work/, the frozen
+//                                 design target candidates listed, the redirect map
+//                                 (adopt/stories/redirects.json) and the removal patch
+//                                 that points each unfrozen file's type import at --types
+//                                 (default src/stories/story.ts). --check proves every file
+//                                 is unchanged outside that import and every frozen file
+//                                 matches its sha256; --freeze pins one story file as a
+//                                 design target (a candidate is never pinned for you);
+//                                 --refreeze pins a frozen file again;
+//                                 --ids-from reads the old ids from Ladle's meta.json
 //   adopt.mjs historical [<path>] mark a doc historical (retire leaves it), or list
 //                                 them; a file code depends on is refused
-//   adopt.mjs retire <class> --dry-run [--json]
+//   adopt.mjs retire <class> --dry-run [--json] [--against <meta.json>]
+//                                 (--against, for stories on a csf lane, is the tool's
+//                                 own list: it tells an id that was dead already from one
+//                                 the move loses)
 //                                 what retiring a class takes out and who still depends
 //                                 on it; exit 1 while a consumer remains outside the
 //                                 historical docs, or a generator that stays still
 //                                 writes what goes. It never deletes: the skill does,
 //                                 on your OK
 //
-// Read-only towards the repo: only massimo.config.json (config --write), the
-// files under <project>/adopt/, a pairs file (verify --pairs) and shots
-// (verify --shoot) are written. Shared flags: --root, --config, --project-dir.
+// Read-only towards the repo: only massimo.config.json (config --write and
+// convert stories --freeze and --refreeze), the files under <project>/adopt/, a pairs file
+// (verify --pairs) and shots (verify --shoot) are written. Shared flags:
+// --root, --config, --project-dir.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ALL_KINDS, compareLegacy, notMeasured, offendersOf, parseMap, runAudit } from './audit.mjs'
@@ -69,20 +97,34 @@ import {
   planLedger,
   proposeConfig,
   proposedPath,
+  raiseMinScripts,
   retirePlan,
   statusTable,
 } from './lib/adopt.mjs'
+import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch, shellPath } from './lib/convert.mjs'
+import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
-import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, writeFileAtomic } from './lib/project.mjs'
+import { csfScaffold, recipeFiles } from './lib/lane-css.mjs'
+import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
+import { stateUrl } from './lib/lane-route.mjs'
+import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, workspaceGlobs, writeFileAtomic } from './lib/project.mjs'
+import { editsSummary, idScope, isBinaryPath, mentionCoverage, toolEdits, toolPackages, writeEditsFile } from './lib/redirects.mjs'
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
 import { truthy } from './lib/text.mjs'
-import { VERIFY_CLASSES, compareGraph, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
+import { VERIFY_CLASSES, compareGraph, compareLane, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const here = dirname(fileURLToPath(import.meta.url))
 // --write, --force and --shoot take no value, so a positional after them stays one.
-const { _: args, flags } = parseArgs(process.argv.slice(2).map((a) => (['--write', '--force', '--shoot'].includes(a) ? `${a}=true` : a)))
+// --freeze is a boolean flag for shoot.mjs, but here it takes the file to pin.
+const argv = process.argv.slice(2).map((a) => (['--write', '--force', '--shoot'].includes(a) ? `${a}=true` : a))
+const freezeAt = argv.indexOf('--freeze')
+if (freezeAt >= 0 && argv[freezeAt + 1] !== undefined && !argv[freezeAt + 1].startsWith('--')) argv.splice(freezeAt, 2, `--freeze=${argv[freezeAt + 1]}`)
+const { _: args, flags } = parseArgs(argv)
 const [command = 'scan', ...rest] = args
 const { root, exists, config, configPath, projectDir } = loadConfig(flags)
 const projectRel = rel(root, projectDir) || '.'
@@ -100,8 +142,8 @@ function detect() {
 }
 
 // The repo's files as scan reads them.
-function scanFiles(effective, pkg) {
-  return repoFiles(root, { ignore: effective.ignore, projectRel: exists ? projectRel : effective.projectDir, workspaces: Boolean(pkg.workspaces) })
+function scanFiles(effective) {
+  return repoFiles(root, { ignore: effective.ignore, projectRel: exists ? projectRel : effective.projectDir, workspaces: workspaceGlobs(root).length > 0 })
 }
 
 // The inventory of the repo as it is now. Before init, the config detect
@@ -111,7 +153,7 @@ function scan() {
     const detected = detect()
     const pkg = readJson(join(root, 'package.json'), {}) ?? {}
     const effective = exists ? config : deepMerge(structuredClone(DEFAULTS), detected.suggestedConfig ?? {})
-    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective, pkg), auditKinds: ALL_KINDS })
+    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective), auditKinds: ALL_KINDS, configured: exists })
   } catch (e) {
     fail(e.message)
   }
@@ -128,6 +170,19 @@ function readInventory() {
   const inv = JSON.parse(readFileSync(path, 'utf8'))
   refuseNewer('inventory', inv.format, 'adopt/inventory.json')
   return inv
+}
+
+// The saved inventory without a lane an older scan recorded in the csf
+// lane's scaffold (`scaffold`, from csfScaffold): that lane is massimo's own
+// output, so it goes with its assets, as a scan now leaves it out. Any other
+// lane is kept as it is.
+function readRepoInventory(scaffold) {
+  const inv = readInventory()
+  const lane = inv.stories?.lane
+  if (!scaffold || lane?.dir !== scaffold) return inv
+  const id = `lane:${lane.dir}`
+  const gate = lane.integration ? `gate:${lane.integration}` : null
+  return { ...inv, stories: { ...inv.stories, lane: null }, assets: inv.assets.filter((a) => a.id !== id && a.id !== gate && a.family !== id) }
 }
 
 function readLedger() {
@@ -259,14 +314,117 @@ function liveLane() {
   const lane = detect()?.storyTools?.lane
   if (!lane?.dir) return null
   const pkg = readJson(join(root, 'package.json'), {}) ?? {}
-  return laneRecord(root, scanFiles(config, pkg), pkg, lane)
+  return laneRecord(root, scanFiles(config), pkg, lane)
+}
+
+// The csf lane's registry as the story files hold it now, with the repo's
+// files and package.json that it was read from.
+function currentRegistry() {
+  const pkg = readJson(join(root, 'package.json'), {}) ?? {}
+  const files = scanFiles(config)
+  const include = compileGlobs(config.stories.include)
+  const registry = laneRegistry({ root, config, files: files.filter(include), read: (f) => readFileSync(join(root, f), 'utf8') })
+  return { registry, files, pkg }
+}
+
+// The ids of the tool's own meta.json (--against), or null when none is
+// given. A file that is not there, or not a meta.json, is an error the
+// caller turns into a difference.
+function readOracle() {
+  if (typeof flags.against !== 'string') return null
+  const path = resolve(root, flags.against)
+  if (!existsSync(path)) throw new Error(`--against ${flags.against} is not there`)
+  let doc
+  try {
+    doc = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (e) {
+    throw new Error(`--against ${flags.against} is not JSON: ${e.message.split('\n')[0]}`)
+  }
+  if (doc?.about?.generator === 'massimo') newer('registry', doc.about.format, flags.against)
+  if (!doc || typeof doc.stories !== 'object' || doc.stories === null) throw new Error(`--against ${flags.against} holds no "stories" to compare with`)
+  return doc.stories
+}
+
+// The render sweep of the lane with shoot.mjs: every state of the registry
+// opened on --sweep's server, and the failures as differences. A server that
+// is not up, or no Playwright, is one difference, never a pass.
+function sweepLane(registry, differences, notes) {
+  const dir = mkdtempSync(join(tmpdir(), 'massimo-sweep-'))
+  try {
+    const routes = join(dir, 'routes.json')
+    const ids = join(dir, 'ids.json')
+    writeFileSync(routes, JSON.stringify(Object.fromEntries(registry.order.map((id) => [id, stateUrl(registry.stories[id], { preview: true })]))))
+    writeFileSync(ids, JSON.stringify({ stories: Object.fromEntries(registry.order.map((id) => [id, {}])) }))
+    const pass = ['ready', 'workers', 'timeout', 'sweep-baseline', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, ['sweep-baseline', 'playwright'].includes(f) ? resolve(root, flags[f]) : flags[f]] : []))
+    const from = typeof flags['ids-from'] === 'string' ? resolve(root, flags['ids-from']) : ids
+    const r = runScript('shoot', ['--sweep', flags.sweep, ...(truthy(flags.legacy) ? ['--legacy'] : ['--routes', routes]), '--ids-from', from, ...pass])
+    let result = null
+    try {
+      result = JSON.parse(lastLine(r.stdout))
+    } catch {
+      // not a result
+    }
+    if (!result || !Array.isArray(result.failed)) {
+      differences.push({ key: 'sweep', detail: r.status === 3 ? 'shoot.mjs found no Playwright: pass --playwright <path> to a checkout that has it' : `shoot.mjs could not run the sweep: ${lastLine(r.text)}` })
+      return [['states ready', '', '0', '1', 'the sweep did not run']]
+    }
+    for (const f of result.failed) differences.push({ key: `render:${f.id}`, detail: f.why })
+    if (result.excused?.length > 0) notes.push(`Excused, since the baseline failed ${result.excused.length === 1 ? 'it' : 'them'} too (decide each): ${result.excused.map((f) => `${f.id} (${f.why})`).join('; ')}.`)
+    if (result.baseline?.note) notes.push(`${result.baseline.note[0].toUpperCase()}${result.baseline.note.slice(1)}.`)
+    return [['states ready', '', `${result.ready}/${result.total}`, String(result.failed.length), result.excused?.length ? `${result.excused.length} excused by the baseline` : '']]
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// The csf lane against the tool it replaces: the same ids (and for each the
+// same file, export and merged meta) as the tool's meta.json (--against),
+// every id and prefix the repo's specs, scripts, skills and docs use, and
+// with --sweep the render of each state, with --pairs the shots.
+function verifyCsfLane(ledger) {
+  const { registry, files } = currentRegistry()
+  const differences = []
+  const notes = []
+  const rows = [['What', 'Tool', 'Lane', 'Differ', 'Note']]
+  const states = Object.keys(registry.stories).length
+  for (const p of registry.problems) differences.push({ key: `story-files:${p.file ?? ''}: ${p.detail}`, detail: 'a story-files problem in the lane' })
+  rows.push(['story files', '', String(Object.keys(registry.files).length), '', ''])
+  const oracle = readOracle()
+  if (oracle) {
+    const compared = compareLane(oracle, registry)
+    rows.push(...compared.rows.slice(1))
+    differences.push(...compared.differences)
+  } else {
+    rows.push(['states', '', String(states), '', ''])
+    notes.push("There is no --against <meta.json>, so the lane's ids are not compared with the tool's own.")
+  }
+  const historical = new Set((ledger.historical ?? []).map((h) => h.path))
+  const scope = files.filter((f) => !isBinaryPath(f) && idScope(f)).map((file) => ({ file, text: readText(root, file) })).filter((f) => f.text.includes('--'))
+  const cover = mentionCoverage(scope, registry, oracle ? Object.keys(oracle) : null)
+  const live = cover.missing.filter((m) => !historical.has(m.file))
+  rows.push(['id mentions', '', `${cover.resolved}/${cover.mentions}`, String(live.length), cover.dead.length ? `${cover.dead.length} dead in the tool too` : ''])
+  for (const m of live) {
+    const what = m.prefix ? 'ids that start with' : 'the id'
+    const detail = oracle ? `the tool has ${what} ${m.mention} and no story of the lane does` : `no story of the lane has ${what} ${m.mention}`
+    differences.push({ key: `mention:${m.file}:${m.mention}`, detail, shown: `line ${m.line}: ${detail}` })
+  }
+  if (cover.missing.length > live.length) notes.push(`${plural(cover.missing.length - live.length, 'mention')} in historical docs no longer resolve; they are left as they are.`)
+  if (cover.dead.length > 0) notes.push(`Dead before the move (the tool's own ids never had them): ${cover.dead.map((m) => `${m.file}:${m.line} ${m.mention}`).join('; ')}.`)
+  if (flags.sweep !== undefined) rows.push(...sweepLane(registry, differences, notes))
+  if (flags.pairs !== undefined) {
+    const to = storyRoutes(config).story
+    const pairsFor = () => storyPairs(registry.order.map((id) => registry.stories[id]), { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier: typeof flags['dom-tier'] === 'string' ? flags['dom-tier'] : 'Pages', aRoute: flags['a-route'] ?? `${to}?mode=preview`, bRoute: flags['b-route'] ?? `${to}?mode=preview`, selector: typeof flags.selector === 'string' ? flags.selector : undefined })
+    rows.push(...storyShots(differences, notes, pairsFor))
+  }
+  return { title: `the csf lane (${plural(states, 'state')} in ${plural(Object.keys(registry.files).length, 'story file')}) against ${oracle ? flags.against : 'the story files alone'}`, rows, differences, notes }
 }
 
 // The lane: its entries and states as the scan's reader reads them now
 // against graph.json (the graph built in memory when there is none yet),
 // the problems massimo's checks find and the checks it could not make; with
 // --pairs, a shoot pairs file from the manifest, and with --shoot, its verdict.
-function verifyStories() {
+function verifyStories(ledger) {
+  if (config.stories.lane === 'csf') return verifyCsfLane(ledger)
   if (config.stories.lane !== 'manifest' || !config.stories.manifest) return { skip: 'stories.lane is not "manifest" with a stories.manifest, so there is no list of stories to verify' }
   const lane = graphJson().storyLane
   if (!lane) return { skip: 'the graph did not read a story lane' }
@@ -325,10 +483,10 @@ function refuseNewerOutput(path, kind, where) {
 // Write the pairs file for the lane and, with --shoot, run shoot.mjs on it
 // and fold each pair's verdict into the differences. Returns the table rows.
 // --pairs and --out are read from the repo root, as --against is.
-function storyShots(differences, notes) {
+function storyShots(differences, notes, pairsFor = null) {
   const domTier = typeof flags['dom-tier'] === 'string' ? flags['dom-tier'] : 'Pages'
-  const manifest = readManifest(readText(root, config.stories.manifest), config.stories.manifest)
-  const { document, entries, skipped } = storyPairs(manifest.entries, { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier })
+  // The csf lane gives its own pairs, one per state; a manifest lane's come from its entries.
+  const { document, entries, skipped } = pairsFor ? pairsFor() : storyPairs(readManifest(readText(root, config.stories.manifest), config.stories.manifest).entries, { a: flags.a, b: flags.b, routes: storyRoutes(config), domTier })
   const { problems } = parsePairs(document.pairs)
   if (problems.length > 0) throw new Error(`the pairs cannot be written: ${problems.join('; ')}`)
   const path = resolve(root, flags.pairs)
@@ -336,11 +494,11 @@ function storyShots(differences, notes) {
   writeJson(path, document)
   const pairs = document.pairs
   const dom = pairs.filter((p) => p.mode === 'dom').length
-  notes.push(`Wrote ${plural(pairs.length, 'pair')} to ${shownPath(path)}: ${plural(entries, 'entry', 'entries')} at light and dark, 390 and 1440 wide, each on its frame route where it has one; ${dom} compared by page text (root ${domTier})${skipped ? `; ${plural(skipped, 'entry')} with no literal slug left out` : ''}.`)
+  notes.push(`Wrote ${plural(pairs.length, 'pair')} to ${shownPath(path)}: ${pairsFor ? plural(entries, 'state') : plural(entries, 'entry', 'entries')} at light and dark, 390 and 1440 wide${pairsFor ? '' : ', each on its frame route where it has one'}; ${dom} compared by page text (root ${domTier})${skipped ? `; ${plural(skipped, 'entry')} with no literal slug left out` : ''}.`)
   const out = typeof flags.out === 'string' ? resolve(root, flags.out) : join(projectDir, 'shots', 'adopt', 'stories')
   // Passed through to shoot.mjs, which runs from the repo root: a Playwright
   // path given from here is made absolute first.
-  const pass = ['max-diff', 'threshold', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, f === 'playwright' ? resolve(flags[f]) : flags[f]] : []))
+  const pass = ['max-diff', 'threshold', 'workers', 'playwright'].flatMap((f) => (typeof flags[f] === 'string' ? [`--${f}`, f === 'playwright' ? resolve(flags[f]) : flags[f]] : []))
   const argv = ['--pairs', path, '--out', out, ...pass]
   if (!truthy(flags.shoot)) {
     notes.push(`Shoot them, with both servers up: ${scriptCommand(root, projectDir, 'shoot', [`--pairs ${shownPath(path)}`, `--out ${shownPath(out)}`, ...pass].join(' '))}, or run verify stories again with --shoot.`)
@@ -481,9 +639,38 @@ function passLine(cls, c) {
   return `${cls} passes. It is ${c.state}, and reaches proven one state at a time, through shadowed once the shadow CI job runs it: ${scriptCommand(root, projectDir, 'adopt', `mark ${cls} ${STATES[at + 1]}`)}`
 }
 
+// ── The tool's edits ────────────────────────────────────────────────────────
+
+// Every edit the repo must make before the story tool can go, for the
+// ledger's tool assets that go (decision convert or retire), on a csf lane;
+// null when none does. Specs and docs that name ids are held against the
+// tool's own list: the ids given, or else the ones --against reads.
+const goingTools = (ledger) => (ledger?.classes?.stories?.assets ?? []).filter((a) => a.kind === 'tool' && a.decision !== 'keep' && !a.missing)
+function toolEditsFor(ledger, inv, ids = undefined) {
+  const going = goingTools(ledger)
+  if (config.stories.lane !== 'csf' || going.length === 0) return null
+  const { registry, files, pkg } = currentRegistry()
+  let oracleIds = ids ?? null
+  if (ids === undefined) {
+    try {
+      const oracle = readOracle()
+      oracleIds = oracle ? Object.keys(oracle) : null
+    } catch {
+      // the tool's list is only for telling a dead id from a lost one
+    }
+  }
+  const edits = going.flatMap((a) => {
+    const tool = inv.stories.tools.find((t) => `tool:${t.tool}` === a.id)
+    if (!tool) return []
+    const consumers = inv.assets.find((x) => x.id === a.id)?.consumers ?? []
+    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`], lane: recipeFiles(root) })
+  })
+  return edits.sort((x, y) => compare(x.file, y.file) || x.line - y.line)
+}
+
 // ── retire --dry-run ────────────────────────────────────────────────────────
 
-function retireReport(cls, plan) {
+function retireReport(cls, plan, { toldDead = true } = {}) {
   const lines = [`massimo adopt retire ${cls} --dry-run: ${cls} is ${plan.state}${STATES.indexOf(plan.state) < STATES.indexOf('cut-over') ? ', and retires only after cut-over' : ''}.`, '']
   if (plan.going.length === 0) return [...lines, `Nothing in ${cls} is marked retire or convert: it is all kept as the repo's own.`]
   lines.push(`Goes (${plan.going.length}: marked retire, or convert, whose place massimo's own output takes):`)
@@ -493,6 +680,13 @@ function retireReport(cls, plan) {
   for (const j of plan.jobs) lines.push(`  ${j.file}${j.line ? `:${j.line}` : ''}  ${j.job ? `job ${j.job}${j.name ? ` (${j.name})` : ''}` : 'outside a job'}, runs ${j.via.join(', ')}`)
   if (plan.elsewhere.length) lines.push(`Files a generator that goes also writes, for other classes, which lose their writer: ${plan.elsewhere.map((e) => `${e.path} (${e.class ?? 'no class'}${e.state ? `, ${e.state}` : ''})`).join(', ')}.`)
   const where = (k) => `${k.file}${k.script ? ` (${k.script})` : ''}${k.line ? `:${k.line}` : ''}`
+  if (plan.edits) {
+    lines.push('', `Edits to make first (${plan.edits.length}; ${plan.editsValid} more mentions still work on the lane${plan.editsHistorical ? `, ${plan.editsHistorical} are in historical docs` : ''}):`)
+    for (const e of plan.edits) lines.push(`  ${e.file}:${e.line}  ${e.class}  uses ${e.uses}. Change: ${e.replacement}`)
+    if (plan.edits.length === 0) lines.push('  none')
+    const unknown = plan.edits.filter((e) => /^id(?: prefix)? /.test(e.uses)).length
+    if (!toldDead && unknown > 0) lines.push('', `${plural(unknown, 'id mention')} above resolve${unknown === 1 ? 's' : ''} nowhere in the lane: pass --against <meta.json>, the tool's own list, to tell the ones that were dead already from the ones the move loses.`)
+  }
   const line = (k) => `  ${k.class.padEnd(8)}  ${where(k)}  ${k.how}${k.via ? ` through ${k.via}` : ''}${k.writtenBy ? `, written by ${k.writtenBy}` : ''}  (${k.assets.join(', ')})`
   if (plan.writers.length) {
     lines.push('', `Written by a generator that stays (${plan.writers.length}), whose code names ${plan.writers.length === 1 ? 'it' : 'them'}, so it would write ${plan.writers.length === 1 ? 'it' : 'them'} again and its check fails without ${plan.writers.length === 1 ? 'it' : 'them'}:`)
@@ -503,6 +697,7 @@ function retireReport(cls, plan) {
   const holds = [
     plan.writers.length ? `${plural(plan.writers.length, 'file has', 'files have')} a writer that stays` : '',
     plan.consumers.length ? `${plural(plan.consumers.length, 'consumer remains', 'consumers remain')} outside the docs the ledger marks historical` : '',
+    plan.edits?.length ? `${plural(plan.edits.length, 'edit')} of the repo's own ${plan.edits.length === 1 ? 'is' : 'are'} still open` : '',
   ].filter(Boolean)
   lines.push(
     '',
@@ -512,7 +707,7 @@ function retireReport(cls, plan) {
   )
   return lines
 }
-const notClean = (plan) => plan.consumers.length > 0 || plan.writers.length > 0
+const notClean = (plan) => plan.consumers.length > 0 || plan.writers.length > 0 || (plan.edits?.length ?? 0) > 0
 
 // The flags verify takes, checked alike for verify and for accept, which
 // passes them on to verify so it sees what verify saw.
@@ -520,7 +715,177 @@ function checkVerifyFlags(name, cls) {
   if (cls === undefined && flags.against !== undefined) fail('--against names the file one class is compared with: pass the class too')
   if (flags.pairs !== undefined && cls !== undefined && cls !== 'stories') fail(`--pairs goes with ${name} stories`)
   if (flags.pairs !== undefined && (typeof flags.pairs !== 'string' || typeof flags.a !== 'string' || typeof flags.b !== 'string')) fail('--pairs <file> needs --a <base url> and --b <base url>, the two servers whose stories are compared')
+  if (flags.sweep !== undefined && cls !== 'stories') fail(`--sweep goes with ${name} stories: it opens every state of the csf lane on the server it names`)
+  if (flags.sweep !== undefined && cls === 'stories' && config.stories.lane !== 'csf') fail('--sweep opens the states of a csf lane: stories.lane is not "csf" here')
+  if (flags.sweep !== undefined && typeof flags.sweep !== 'string') fail('--sweep takes the base URL of the lane server, such as http://localhost:4650')
   if (flags.pairs === undefined && truthy(flags.shoot)) fail('--shoot runs the pairs file --pairs writes: pass --pairs <file> --a <base url> --b <base url>')
+}
+
+// ── convert stories ─────────────────────────────────────────────────────────
+
+const workPath = (...parts) => join(projectDir, 'adopt', 'stories', 'work', ...parts)
+const readSource = (f) => readFileSync(join(root, f), 'utf8')
+// The csf registry of the repo as `effective` configures it, with the ids
+// rule of the config unless `ids` says another.
+function csfRegistry(effective = config, ids = effective.stories.ids) {
+  const stories = ids === effective.stories.ids ? effective : deepMerge(structuredClone(effective), { stories: { ids } })
+  const files = expandGlobs(root, stories.stories.include ?? [], [], [], scanFiles(stories))
+  return laneRegistry({ root, config: stories, files, read: readSource })
+}
+
+// Every record under work/records, read and refused when a newer massimo wrote it.
+function readRecords() {
+  const dir = workPath('records')
+  const out = []
+  const visit = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => compare(a.name, b.name))) {
+      const path = join(d, e.name)
+      if (e.isDirectory()) visit(path)
+      else if (e.name.endsWith('.json')) {
+        let record
+        try {
+          record = JSON.parse(readFileSync(path, 'utf8'))
+        } catch (err) {
+          fail(`${rel(root, path)} is not valid JSON: ${err.message}: run convert stories again`)
+        }
+        refuseNewer('conversion', record?.format, rel(root, path))
+        out.push(record)
+      }
+    }
+  }
+  if (existsSync(dir)) visit(dir)
+  return out.sort((a, b) => compare(a.file, b.file))
+}
+
+const listed = (lines, max = 12) => (lines.length > max ? [...lines.slice(0, max), `  and ${lines.length - max} more`] : lines)
+
+function convertCheck() {
+  const records = readRecords()
+  if (records.length === 0) fail(`no records under ${shown('stories/work/records')}: run ${scriptCommand(root, projectDir, 'adopt', 'convert stories')} first`)
+  const frozen = config.stories.frozen
+  const pins = frozenProblems(root, config)
+  const result = checkRecords(records, { root, frozen })
+  const lines = [`massimo adopt convert stories --check: ${plural(records.length, 'record')} against the files now; ${plural(result.frozen, 'frozen file')} against ${plural(frozen.length, 'pinned sha256')}.`]
+  for (const p of pins) lines.push(`  ${p.file ?? '(an entry)'}: ${p.detail}`)
+  for (const p of result.problems) lines.push(`  ${p.file}: ${p.detail}`)
+  if (result.wholeFiles.length > 0) lines.push('', `Compared as a whole, for a hand pass (${result.wholeFiles.length}):`, ...listed(result.wholeFiles.map((f) => `  ${f}`)))
+  const open = pins.length + result.problems.length
+  lines.push('', open > 0 ? `Fails: ${plural(open, 'file')} changed beyond the type import.` : 'Passes: every file is unchanged outside its type import, and every frozen file matches.')
+  process.stdout.write(`${lines.join('\n')}\n`)
+  if (open > 0) process.exit(1)
+}
+
+// Write `list` to stories.frozen in the config file, keeping its indent. A
+// config with comments is left for you: `by hand` says what to set.
+function writeFrozen(list, byHand) {
+  const text = readFileSync(configPath, 'utf8')
+  if (text !== stripJsonComments(text)) fail(`${rel(root, configPath)} has comments (or trailing commas), which a rewrite would drop: ${byHand}`)
+  const raw = readJson(configPath, {}) ?? {}
+  raw.stories = { ...raw.stories, frozen: list }
+  raiseMinScripts(raw, [])
+  writeFileAtomic(configPath, `${JSON.stringify(raw, null, text.match(/^[ \t]+(?=")/m)?.[0] ?? '  ')}\n`)
+}
+
+function convertRefreeze(file) {
+  const path = repoFile(file)
+  if (!path) fail(`${file} is not in the repo`)
+  let result
+  try {
+    result = refreeze(root, config, path, { since: today() })
+  } catch (e) {
+    fail(e.message)
+  }
+  writeFrozen(result.frozen, `set sha256 to ${result.new} and since to ${result.since} in stories.frozen by hand`)
+  process.stdout.write(`${path}: pinned ${result.old ?? 'nothing'} -> ${result.new}, since ${result.since}\n`)
+}
+
+// Pin one story file as a design target: the only way a candidate is stored.
+function convertFreeze(file) {
+  const path = repoFile(file)
+  if (!path) fail(`${file} is not in the repo`)
+  let result
+  try {
+    result = freeze(root, config, csfRegistry(), path, { since: today() })
+  } catch (e) {
+    fail(e.message)
+  }
+  writeFrozen(result.frozen, `add { "file": "${path}", "sha256": "${result.sha256}", "since": "${result.since}" } to stories.frozen by hand`)
+  process.stdout.write(`${path}: pinned ${result.sha256}, since ${result.since}\n`)
+}
+
+function convertStories() {
+  if (config.stories.lane !== 'csf') fail(`convert stories is for the csf lane: stories.lane is "${config.stories.lane}". ${scriptCommand(root, projectDir, 'adopt', 'config --write --lane csf')} opts a Ladle repo in`)
+  if (flags.freeze === true || flags.refreeze === true || flags.types === true) fail('usage: adopt.mjs convert stories [--check] [--freeze <file>] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]: --freeze, --refreeze and --types take a file')
+  if (typeof flags.freeze === 'string' && typeof flags.refreeze === 'string') fail('usage: adopt.mjs convert stories: --freeze and --refreeze are one file at a time')
+  if (typeof flags.freeze === 'string') return convertFreeze(flags.freeze)
+  if (typeof flags.refreeze === 'string') return convertRefreeze(flags.refreeze)
+  if (truthy(flags.check)) return convertCheck()
+  readRecords()
+  refuseNewerFile(join(projectDir, 'adopt', 'stories', 'redirects.json'), 'redirects', 'format', 'adopt/stories/redirects.json')
+  refuseNewerFile(workPath('removal.json'), 'removal', 'format', 'adopt/stories/work/removal.json')
+  const ledger = readLedger()
+  const inv = goingTools(ledger).length > 0 && existsSync(inventoryPath(projectDir)) ? readInventory() : null
+  const registry = csfRegistry()
+  if (Object.keys(registry.files).length === 0) fail(`stories.include matches no story file (${(config.stories.include ?? []).join(', ') || 'it is empty'}): set it to the glob your story files match`)
+  if (registry.problems.length > 0) {
+    fail(`the registry has ${plural(registry.problems.length, 'problem')}, so its ids and routes would be a guess: ${registry.problems.slice(0, 3).map((p) => `${p.file ?? 'config'}: ${p.detail}`).join('; ')}`)
+  }
+  // The types the story files import once the tool goes.
+  const typesFlag = typeof flags.types === 'string' ? flags.types : null
+  const typesFile = typesFlag === null ? DEFAULT_TYPES_FILE : repoFile(typesFlag)
+  if (!typesFile) fail(`--types ${typesFlag} is not in the repo`)
+  const typesThere = existsSync(join(root, typesFile))
+  if (typesFlag !== null && !typesThere) fail(`--types ${typesFlag} is not there`)
+  const typesText = typesThere ? readSource(typesFile) : DEFAULT_STORY_TYPES
+  const typesCheck = checkTypesFile(typesText, typesFile)
+  if (typesCheck.problems.length > 0) fail(`${typesFile} cannot stand in for the tool's types, since it holds more than non-relative import type lines and export type declarations: ${typesCheck.problems.join('; ')}`)
+  const frozen = config.stories.frozen
+  const records = conversionRecords(registry, { root, frozen, typesFile, read: readSource })
+  const summary = recordsSummary(records)
+  const edits = removalEdits(registry, { root, typesFile, typesText, frozen, read: readSource })
+  const pinned = new Set(frozen.map((f) => f.file))
+  const candidates = frozenCandidates(registry, config.stories.policy, { root, read: readSource }).filter((c) => !pinned.has(c.file))
+  // Old id to new route: Ladle's own ids when the lane takes them, else the ids
+  // Ladle would give, or those in the meta.json of a Ladle build.
+  let old = registry.order
+  if (typeof flags['ids-from'] === 'string') {
+    const doc = readJson(resolve(root, flags['ids-from']), null)
+    if (!doc?.stories) fail(`--ids-from ${flags['ids-from']} is not Ladle's meta.json: it has no stories`)
+    old = doc.stories
+  } else if (registry.ids !== 'ladle') old = ladleMeta(csfRegistry(config, 'ladle')).stories
+  const redirects = redirectTable(registry, old)
+  // The edits the repo makes before the tool can go, once the ledger converts
+  // or retires it; --ids-from tells an id that was dead already from a lost one.
+  const toolList = inv ? toolEditsFor(ledger, inv, typeof flags['ids-from'] === 'string' ? Object.keys(old) : null) : null
+
+  // Records, the removal edits and the patch, under work/, which git never sees.
+  writeFileAtomic(workPath('.gitignore'), '*\n')
+  rmSync(workPath('records'), { recursive: true, force: true })
+  for (const r of records) writeJson(workPath('records', `${r.file}.json`), r)
+  const edited = edits.filter((e) => !e.create).length
+  writeJson(workPath('removal.json'), { format: REMOVAL_FORMAT, generatedBy: 'massimo adopt', tool: LADLE_MODULE, types: typesFile, edits })
+  writeFileAtomic(workPath('removal.patch'), removalPatch(edits, readSource))
+  writeJson(join(projectDir, 'adopt', 'stories', 'redirects.json'), { format: 1, generatedBy: 'massimo adopt', ids: registry.ids, redirects })
+  if (toolList) {
+    const names = goingTools(ledger).map((a) => a.id.replace(/^tool:/, '')).map((n) => n.charAt(0).toUpperCase() + n.slice(1))
+    writeEditsFile(projectDir, toolList, { tool: names.join(' and '), command: scriptCommand(root, projectDir, 'adopt', 'retire stories --dry-run') })
+  }
+
+  if (ledger?.classes?.stories) {
+    ledger.classes.stories.converted = { at: today(), files: summary.files, states: summary.states, frozen: summary.frozen }
+    writeJson(ledgerPath(projectDir), ledger)
+  }
+
+  const out = [`massimo adopt convert stories: ${plural(summary.files, 'record')} (${plural(summary.states, 'state')}), ${plural(candidates.length + summary.frozen, 'frozen file')} (${summary.frozen} pinned, ${candidates.length} to confirm), ${plural(summary.argsFiles.length, 'file')} with args, ${plural(summary.parametersStories.length, 'story', 'stories')} with parameters.`]
+  if (candidates.length > 0) out.push('', 'Frozen candidates, each a default export that sets a banner meta key:', ...candidates.map((c) => `  ${c.file}  (${c.key})`), 'Pin the ones that are design targets, then run convert stories again so the patch leaves them alone:', ...candidates.map((c) => `  ${scriptCommand(root, projectDir, 'adopt', `convert stories --freeze ${shellPath(c.file)}`)}`))
+  if (summary.argsFiles.length > 0) out.push('', 'Files that keep args or argTypes at run time, for a hand pass:', ...listed(summary.argsFiles.map((f) => `  ${f}`)))
+  if (summary.parametersStories.length > 0) out.push('', 'Stories that set parameters, which the canvas does not read, for a hand pass:', ...listed(summary.parametersStories.map((h) => `  ${h.file}  ${h.story}`)))
+  if (summary.wholeFiles.length > 0) out.push('', 'Files without a single type import from the tool, compared as a whole, for a hand pass:', ...listed(summary.wholeFiles.map((h) => `  ${h.file}  ${h.detail}`)))
+  const expected = records.filter((r) => r.typeImport?.spec === LADLE_MODULE && !r.frozen).length
+  if (edited < expected) out.push('', `${plural(expected - edited, 'file')} keep${expected - edited === 1 ? 's' : ''} the tool's import, since ${typesFile} lacks a name ${expected - edited === 1 ? 'it' : 'they'} import.`)
+  if (!typesThere) out.push('', `${typesFile} is not there yet: the patch points at it, and the declaration uses the default story types the lane scaffold writes there.`)
+  out.push('', `Wrote ${shown('stories/work/records')} (${plural(records.length, 'file')}), ${shown('stories/work/removal.patch')} (${plural(edited, 'edit')}, applied with git apply from the repo root), removal.json and ${shown('stories/redirects.json')} (${plural(Object.keys(redirects).length, 'id')})${toolList ? `, and ${shown('stories/edits.md')} (${editsSummary(toolList)})` : ''}.`)
+  process.stdout.write(`${out.join('\n')}\n`)
 }
 
 switch (command) {
@@ -537,28 +902,47 @@ switch (command) {
     const consumers = inv.assets.reduce((n, a) => n + a.consumers.length, 0)
     const keys = inv.headers.keys.filter((k) => k.files > 0).length
     process.stdout.write(`massimo adopt: ${plural(inv.assets.length, 'asset')}, ${plural(consumers, 'consumer')}, ${plural(keys, 'header key')} in use; wrote ${shown('inventory.json')} and inventory.md\n`)
+    for (const note of inv.notes ?? []) process.stdout.write(`note: ${note}\n`)
     break
   }
   case 'plan': {
     needInit('plan')
-    const inv = readInventory()
-    const ledger = planLedger(inv, readLedger())
+    // The csf lane's scaffold is massimo's own lane, not an asset of the repo's,
+    // even in an inventory an older scan wrote.
+    const scaffold = csfScaffold(root, config)
+    const inv = readRepoInventory(scaffold)
+    const previous = readLedger()
+    const own = scaffold ? [`lane:${scaffold}`] : []
+    const ledger = planLedger(inv, previous, { config, own })
     refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
     writeJson(ledgerPath(projectDir), ledger)
     writeJson(proposedPath(projectDir), proposeConfig(inv, config))
     syncPhase(ledger)
     process.stdout.write(statusTable(ledger))
+    const listed = (l, id) => (l?.classes?.stories?.assets ?? []).some((a) => a.id === id && a.state !== 'found')
+    const dropped = own.filter((id) => listed(previous, id) && !listed(ledger, id))
+    if (dropped.length > 0) process.stdout.write(`\n${dropped.join(', ')} left the ledger: it is massimo's own csf lane, written from the recipe, not a lane the repo had.\n`)
     const empty = Object.keys(ledger.classes).length === 0
     process.stdout.write(`\nWrote ${shown('ledger.json')} and ${shown('config.proposed.json')}. ${empty ? 'There is nothing to adopt; the config can still take what scan proposed: ' : 'Agree each loss, then: '}${scriptCommand(root, projectDir, 'adopt', 'config')}\n`)
     break
   }
   case 'config': {
     needInit('config')
-    if (!existsSync(proposedPath(projectDir))) fail(`no ${shown('config.proposed.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
-    const proposed = readJson(proposedPath(projectDir), {})
-    refuseNewer('config', proposed.version, 'adopt/config.proposed.json')
     const current = readJson(configPath, {}) ?? {}
-    const { merged, changes } = mergeAdding(current, proposed)
+    let proposed
+    if (flags.lane !== undefined) {
+      // The opt-in: the csf lane, from the saved inventory and Ladle's own settings.
+      if (flags.lane !== 'csf') fail('usage: adopt.mjs config [--write] [--lane csf]; csf is the only lane --lane takes')
+      const inv = readRepoInventory(csfScaffold(root, config))
+      if (!inv.stories.tools.some((t) => t.tool === 'ladle')) fail('--lane csf converts a Ladle repo, and scan finds no Ladle here')
+      proposed = proposeConfig(inv, config, { lane: 'csf' })
+    } else {
+      if (!existsSync(proposedPath(projectDir))) fail(`no ${shown('config.proposed.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
+      proposed = readJson(proposedPath(projectDir), {})
+      refuseNewer('config', proposed.version, 'adopt/config.proposed.json')
+    }
+    const { merged, changes: found } = mergeAdding(current, proposed)
+    const changes = raiseMinScripts(merged, found)
     const lines = changeLines(changes)
     process.stdout.write(lines.length ? `${lines.join('\n')}\n` : 'massimo.config.json already holds everything proposed\n')
     if (truthy(flags.write)) {
@@ -648,6 +1032,12 @@ switch (command) {
     process.stdout.write(`${line}\n`)
     break
   }
+  case 'convert': {
+    needInit('convert')
+    if (rest[0] !== 'stories' || rest.length > 1) fail('usage: adopt.mjs convert stories [--check] [--freeze <file>] [--refreeze <file>] [--types <file>] [--ids-from <meta.json>]')
+    convertStories()
+    break
+  }
   case 'historical': {
     needInit('historical')
     const ledger = readLedger()
@@ -672,16 +1062,17 @@ switch (command) {
   case 'retire': {
     needInit('retire')
     const [cls] = rest
-    if (!CLASSES.includes(cls)) fail(`usage: adopt.mjs retire <${CLASSES.join('|')}> --dry-run`)
+    if (!CLASSES.includes(cls)) fail(`usage: adopt.mjs retire <${CLASSES.join('|')}> --dry-run [--json] [--against <meta.json>]`)
     if (!truthy(flags['dry-run'])) fail(`retire only lists what retiring ${cls} takes out: run it with --dry-run. Deleting is the adopt skill's job, one commit per batch, on your OK.`)
     const ledger = readLedger()
     if (!ledger) fail(`no ${shown('ledger.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
     if (!ledger.classes[cls]) fail(`the ledger has no ${cls} class; it has ${Object.keys(ledger.classes).join(', ') || 'none'}`)
-    const plan = retirePlan(ledger, cls, scan(), { jobAt: (file, line) => workflowJob(readText(root, file), line) })
-    process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan).join('\n')}\n`)
+    const inv = scan()
+    const plan = retirePlan(ledger, cls, inv, { jobAt: (file, line) => workflowJob(readText(root, file), line), edits: cls === 'stories' ? toolEditsFor(ledger, inv) : null })
+    process.stdout.write(truthy(flags.json) ? `${JSON.stringify(plan, null, 2)}\n` : `${retireReport(cls, plan, { toldDead: typeof flags.against === 'string' }).join('\n')}\n`)
     if (notClean(plan)) process.exit(1)
     break
   }
   default:
-    fail(`unknown command "${command}". Commands: scan, plan, config, status, mark, verify, accept, historical, retire.`)
+    fail(`unknown command "${command}". Commands: scan, plan, config, status, mark, verify, accept, convert, historical, retire.`)
 }

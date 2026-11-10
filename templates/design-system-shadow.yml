@@ -30,3 +30,16 @@ jobs:
       - name: massimo against the repo's own outputs (shadow)
         continue-on-error: true
         run: node <project>/scripts/adopt.mjs verify
+      # A csf story lane only (stories.lane is "csf" in massimo.config.json);
+      # any other lane skips it. It needs the repo's packages, so it installs
+      # them. Use the app's real build command and output folders if they
+      # differ from these.
+      - name: massimo story lane (shadow)
+        continue-on-error: true
+        run: |
+          if node --input-type=module -e "import { readJson } from './<project>/scripts/lib/project.mjs'; process.exit(readJson('massimo.config.json')?.stories?.lane === 'csf' ? 0 : 1)"; then
+            npm ci
+            npm run build
+            npm run ds:stories:build
+            node <project>/scripts/stories.mjs leak --app dist --lane dist-stories
+          fi

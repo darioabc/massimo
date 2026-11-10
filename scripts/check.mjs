@@ -4,6 +4,7 @@
 // runs, so a check added here reaches every project on its next update.
 //
 //   graph    graph.mjs --check, always
+//   stories  stories.mjs --check, when stories.lane is "csf"
 //   audit    audit.mjs --check, when audits/baseline.json exists
 //   tokens   tokens.mjs check, when the token set exists
 //   docs     docs.mjs --check, when <project>/README.md has the massimo:docs markers
@@ -20,6 +21,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DOCS_START } from './docs.mjs'
 import { fail, loadConfig, parseArgs, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { helpAndExit } from './lib/help.mjs'
+
+helpAndExit(import.meta.url)
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -31,6 +35,7 @@ export function checksFor({ root, config, projectDir }) {
   const readme = join(projectDir, 'README.md')
   const checks = [
     script('graph', 'graph', ['--check']),
+    ...(config.stories?.lane === 'csf' ? [script('stories', 'stories', ['--check'])] : []),
     existsSync(join(projectDir, 'audits', 'baseline.json')) ? script('audit', 'audit', ['--check']) : { name: 'audit', skip: 'no audit baseline yet' },
     existsSync(join(root, config.tokens.source)) ? script('tokens', 'tokens', ['check']) : { name: 'tokens', skip: 'no token set yet' },
     existsSync(readme) && readFileSync(readme, 'utf8').includes(DOCS_START) ? script('docs', 'docs', ['--check']) : { name: 'docs', skip: 'no generated README yet' },

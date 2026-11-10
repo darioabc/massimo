@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const CONFIG_FILE = 'massimo.config.json'
-export const SCRIPTS_VERSION = '0.3.0'
+export const SCRIPTS_VERSION = '0.4.0'
 
 export const DEFAULTS = {
   version: 1,
@@ -42,6 +42,37 @@ export const DEFAULTS = {
     // The places (`Root / Group`) where a manifest story may name no
     // component: token pages, decision records.
     componentless: [],
+    // The csf lane (0.4.0): story files read in place, shown by a Vite plugin.
+    // Every key below keeps its default until a project opts in, and a config
+    // that sets one needs minScripts 0.4.0.
+    // `ids` is `export` (slug and state from the file and the export) or
+    // `ladle` (Ladle's rule, storyName first); `order` is id-prefix globs for
+    // the index; `home` is the id that `/` and `/stories` open.
+    ids: 'export',
+    order: null,
+    home: null,
+    // [{ label, width, height }] in px, 0 fills the pane. Null means Phone
+    // 390x844, Desktop 1440x900 and Full.
+    viewports: null,
+    // Story files whose states the shell may show together.
+    sideBySide: [],
+    // [{ name, label, attribute, values, unset, default }]; a null default asks the frame.
+    switchers: [],
+    // { <meta key>: { tone, lead } }, a banner per story-level or file-level meta key.
+    banners: null,
+    // A project module whose default export wraps every state.
+    frame: null,
+    // Globs of modules only stories use, beyond the ones the import graph finds.
+    storyOnly: [],
+    // { base, entry }: the CSS the lane imports, and the app's entry that holds `@source not`.
+    appCss: null,
+    // The lane build's output folder, and the host files it may write (`_redirects`).
+    outDir: null,
+    hostFiles: [],
+    // [{ file, sha256, since }]: design targets kept byte for byte.
+    frozen: [],
+    // Title, coverage and banner rules, each off until a key is set.
+    policy: null,
   },
   tokens: {
     // Defaults to <projectDir>/tokens/tokens.json (see loadConfig).
@@ -122,9 +153,24 @@ export const DEFAULTS = {
   figma: { fileKey: null },
 }
 
+// The stories keys 0.4.0 added. A config that sets one to a non-default value,
+// or sets `lane` to "csf", needs these scripts at 0.4.0 or later, so its
+// `minScripts` must say so: 0.3.0 would otherwise read it and ignore the keys.
+export const STORIES_0_4_0_KEYS = ['ids', 'order', 'home', 'viewports', 'sideBySide', 'switchers', 'banners', 'frame', 'storyOnly', 'appCss', 'outDir', 'hostFiles', 'frozen', 'policy']
+
+// The `minScripts` a raw config's stories section requires, or null when it
+// uses nothing from 0.4.0.
+export function needsScripts(raw) {
+  const stories = raw?.stories
+  if (!stories || typeof stories !== 'object') return null
+  if (stories.lane === 'csf') return '0.4.0'
+  const set = STORIES_0_4_0_KEYS.some((key) => key in stories && JSON.stringify(stories[key]) !== JSON.stringify(DEFAULTS.stories[key]))
+  return set ? '0.4.0' : null
+}
+
 // Flags that never take a value, so `--strict build` keeps `build` as a
 // positional instead of reading it as the flag's value.
-export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle'])
+export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle', 'legacy'])
 
 // Parse argv into positionals and flags. `--a b`, `--a=b`, and a bare `--a`
 // (true) all work; a repeated flag collects into an array.
@@ -154,27 +200,99 @@ export function parseArgs(argv = process.argv.slice(2)) {
   return out
 }
 
-// The repo root: git's toplevel when there is one, else the nearest
-// directory holding a package.json, else where we started.
+// The project root: the nearest folder from `start` up to git's toplevel that
+// holds massimo.config.json, so a project made in a package of a monorepo is
+// found from inside that package; with none, git's toplevel. Outside git, the
+// nearest folder up that holds massimo.config.json, else the nearest one
+// holding a package.json, else where we started.
 export function findRoot(start = process.cwd()) {
   try {
-    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+    const [top, prefix = ''] = execFileSync('git', ['rev-parse', '--show-toplevel', '--show-prefix'], {
       cwd: start,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
       .toString()
-      .trim()
-    if (top) return top
+      .split('\n')
+      .map((line) => line.trim())
+    if (top) {
+      const parts = prefix.split('/').filter(Boolean)
+      for (let i = parts.length; i > 0; i--) {
+        const dir = join(top, ...parts.slice(0, i))
+        if (existsSync(join(dir, CONFIG_FILE))) return dir
+      }
+      return top
+    }
   } catch {
     // not a git checkout
   }
-  let dir = resolve(start)
-  while (true) {
-    if (existsSync(join(dir, 'package.json'))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) return resolve(start)
-    dir = parent
+  for (const file of [CONFIG_FILE, 'package.json']) {
+    let dir = resolve(start)
+    while (true) {
+      if (existsSync(join(dir, file))) return dir
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
   }
+  return resolve(start)
+}
+
+// The package globs a workspace root declares: package.json `workspaces` (a
+// list, or an object with a `packages` list), then the `packages:` list of
+// pnpm-workspace.yaml, read as text. A `!` glob takes folders out rather than
+// naming any, and `.` names the root itself, so neither is listed. An empty
+// list means the root declares no workspaces.
+export function workspaceGlobs(root) {
+  const out = []
+  let pkg = null
+  try {
+    pkg = readJson(join(root, 'package.json'), null)
+  } catch {
+    // an unreadable package.json declares nothing
+  }
+  const declared = Array.isArray(pkg?.workspaces) ? pkg.workspaces : Array.isArray(pkg?.workspaces?.packages) ? pkg.workspaces.packages : []
+  out.push(...declared)
+  let yaml = ''
+  try {
+    yaml = readFileSync(join(root, 'pnpm-workspace.yaml'), 'utf8')
+  } catch {
+    // no pnpm workspace file
+  }
+  out.push(...yamlPackages(yaml))
+  const named = out.filter((g) => typeof g === 'string').map((g) => g.trim().replace(/\/+$/, ''))
+  return [...new Set(named.filter((g) => g && g !== '.' && !g.startsWith('!')))]
+}
+
+// The items of the top-level `packages:` list in pnpm-workspace.yaml, block
+// (`- packages/*`) or flow (`[packages/*, www]`, on one line or over
+// several), quoted or not, under a plain or quoted key.
+function yamlPackages(text) {
+  const key = /^(['"]?)packages\1[ \t]*:/
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/)
+  const at = lines.findIndex((line) => key.test(line))
+  if (at === -1) return []
+  const unquote = (item) => {
+    const s = item.trim()
+    const quoted = /^(['"])(.*?)\1[ \t]*(?:#.*)?$/.exec(s)
+    return quoted ? quoted[2] : s.replace(/[ \t]+#.*$/, '').trim()
+  }
+  const bare = (line) => line.replace(/(?:^|[ \t]+)#.*$/, '').trim()
+  let rest = bare(lines[at].replace(key, ''))
+  if (rest.startsWith('[')) {
+    for (let i = at + 1; !rest.endsWith(']') && i < lines.length; i++) rest = `${rest} ${bare(lines[i])}`.trim()
+    return rest.replace(/^\[|\]$/g, '').split(',').map(unquote).filter(Boolean)
+  }
+  const items = []
+  for (const line of lines.slice(at + 1)) {
+    if (/^[ \t]*(?:#.*)?$/.test(line)) continue
+    const item = /^[ \t]*-[ \t]+(.*)$/.exec(line)
+    if (!item) {
+      if (/^\S/.test(line)) break
+      continue
+    }
+    items.push(unquote(item[1]))
+  }
+  return items.filter(Boolean)
 }
 
 function isPlainObject(v) {
@@ -272,7 +390,8 @@ const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts f
 // The newest format of each file this version reads. A file in a newer one
 // was written by a newer massimo, and reading it as an older one would guess.
 // baseline 2: it tracks a kind added in 0.3.0 (audit.mjs NEWER_KINDS).
-export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1 }
+// conversion, removal, redirects and registry are the 0.4.0 story-lane files.
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1, conversion: 1, removal: 1, redirects: 1, registry: 1 }
 // Why a file of `kind` at `version` is too new to read, or null.
 export const newerMessage = (kind, version, where) =>
   typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null

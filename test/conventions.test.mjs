@@ -34,15 +34,23 @@ test('no em dashes in the docs, the skills or anything a script writes', () => {
 })
 
 test('no private leftovers', () => {
-  for (const f of [...docs, ...scripts, ...files('test/fixtures', /./)]) {
+  for (const f of [...docs, ...scripts, ...files('test', /\.mjs$/), ...files('test/fixtures', /./), 'CHANGELOG.md']) {
+    if (f.endsWith('conventions.test.mjs')) continue
     assert.ok(!/fiuto|FIU-/i.test(text(f)), f)
   }
+  // The README names its author under Made by, and nowhere else.
+  assert.ok(!/fiuto|FIU-/i.test(text('README.md').replace(/^## Made by\n[\s\S]*?(?=^## )/m, '')), 'README.md')
+})
+
+// Init copies every script into a project, so a planning note must not ride along.
+test('no plan track names or stub notes in the scripts', () => {
+  for (const f of scripts) assert.ok(!/\bT[0-9]\b|\bstubs?\b/i.test(text(f)), f)
 })
 
 // massimo learnt adoption on a real repo; its names and its own vocabulary
 // stay there, so fixtures and tests use generic ones.
 test('no names or vocabulary from the repos massimo was proven on', () => {
-  const banned = /folio|dariocodipietro|@parked:|ds:island|ds:sheet|tone-ink|--paper-\d/i
+  const banned = /folio|dariocodipietro|@parked:|ds:island|ds:sheet|tone-ink|--paper-\d|keycap|runnersurface|61100|data-skin/i
   for (const f of [...docs, ...scripts, ...files('test', /\.mjs$/), ...files('test/fixtures', /./), 'CHANGELOG.md']) {
     if (f.endsWith('conventions.test.mjs')) continue
     assert.ok(!banned.test(text(f)), f)

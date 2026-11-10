@@ -348,6 +348,100 @@ function repoEntries(root) {
   return out
 }
 
+// ── The render sweep ────────────────────────────────────────────────────────
+
+// What a sweep waits for when --ready is not given.
+export const SWEEP_READY = 'html[data-story-ready]'
+// Runs in the page: whether the ready element holds something drawn. For a
+// root marker such as `<html data-story-ready>`, which always holds the head
+// and the body, the story's mount is the page's own content: some child of
+// the body, other than a script or a style, that holds an element. For any
+// other element, it is a child of that element. It must not use anything
+// from this file, since the browser gets its text alone.
+export const SWEEP_FILLED = (selector) => {
+  const el = document.querySelector(selector)
+  if (!el) return false
+  if (el !== document.documentElement) return el.childElementCount > 0
+  const skip = ['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT', 'LINK']
+  return Array.from(document.body?.children ?? []).some((c) => !skip.includes(c.tagName) && c.childElementCount > 0)
+}
+// What a sweep waits after the ready selector matches, in milliseconds, before it
+// reads html[data-story-error]: a state can fail in an effect after it was marked
+// ready, and shows its error box without any page error. --wait sets it.
+export const SWEEP_WAIT_MS = 500
+// Runs in the page: true once the ready selector matches or the document is
+// marked as failed, whichever comes first. A state that fails while it first
+// mounts is never ready, and its mark is the only sign. Must not use anything
+// from this file.
+export const SWEEP_MARKED = (selector) =>
+  document.documentElement.hasAttribute('data-story-error') || document.querySelector(selector) !== null
+// Runs in the page: whether the document is marked as failed. It uses no timer,
+// so a page that replaces timers or animation frames cannot stall it.
+export const sweepErrored = () => document.documentElement.hasAttribute('data-story-error')
+// Runs in the page: two animation frames. The sweep gives up on it quickly, since
+// a page that replaces requestAnimationFrame never finishes it.
+export const sweepFrames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+// A promise against a timer kept on the Node side: { value } when it settles
+// first, null when `ms` pass. A promise left behind cannot reject unhandled.
+export function within(promise, ms) {
+  let timer
+  promise.catch(() => {})
+  return Promise.race([promise.then((value) => ({ value })), new Promise((done) => (timer = setTimeout(() => done(null), ms)))]).finally(() => clearTimeout(timer))
+}
+// The share of the baseline's states that must be ready before it can excuse
+// anything.
+export const SWEEP_FLOOR = 0.98
+
+// The sweep's flags, read whole: `workers` and `timeout` (seconds) must be
+// positive numbers, `wait` (milliseconds) a whole number from 0 to 10000, and `--sweep` takes a base URL. Returns the options and
+// the problems, so a typo is caught before a browser starts.
+export function sweepOptions(flags) {
+  const problems = []
+  const base = typeof flags.sweep === 'string' ? flags.sweep.replace(/\/+$/, '') : ''
+  if (!isUrl(base)) problems.push('--sweep takes the base URL of a server, such as http://localhost:4650')
+  const workers = flagNumber(flags.workers, 4)
+  if (!Number.isInteger(workers) || workers < 1 || workers > 32) problems.push('--workers is a whole number from 1 to 32')
+  const timeout = flagNumber(flags.timeout, 15)
+  if (!(timeout > 0)) problems.push('--timeout is a number of seconds above 0')
+  const ready = flags.ready === undefined ? SWEEP_READY : flags.ready
+  if (typeof ready !== 'string' || !ready) problems.push('--ready takes a CSS selector')
+  const wait = flagNumber(flags.wait, SWEEP_WAIT_MS)
+  if (!Number.isInteger(wait) || wait < 0 || wait > 10000) problems.push('--wait is a whole number of milliseconds from 0 to 10000')
+  for (const key of ['ids-from', 'routes', 'sweep-baseline']) if (flags[key] !== undefined && (typeof flags[key] !== 'string' || !flags[key])) problems.push(`--${key} takes one file`)
+  return { options: { base, workers, timeout, ready, wait, legacy: isOn(flags.legacy) }, problems }
+}
+
+// The ids of a Ladle-shaped meta.json: its `stories` keys, in file order.
+export const idsOfMeta = (doc) => (doc && typeof doc.stories === 'object' && doc.stories !== null ? Object.keys(doc.stories) : [])
+
+// Where a state is loaded: Ladle's `/?story=<id>&mode=preview` under
+// --legacy, else the path `routes` gives the id (null when it gives none).
+export function sweepUrl(base, id, { legacy = false, routes = {} } = {}) {
+  if (legacy) return `${base}/?story=${encodeURIComponent(id)}&mode=preview`
+  const path = routes[id]
+  return typeof path === 'string' && path.startsWith('/') ? `${base}${path}` : null
+}
+
+// The sweep's verdicts (`[{ id, ok, why }]`) as its output document. With a
+// baseline (a result of an earlier sweep), a failure the baseline also had is
+// excused, but only when the baseline itself reached `floor` of its states:
+// below that, nothing is excused, and the document says why. The excused
+// set is always in the document.
+export function sweepResult(base, verdicts, baseline = null, floor = SWEEP_FLOOR) {
+  const failures = verdicts.filter((v) => !v.ok).map((v) => ({ id: v.id, why: v.why }))
+  const out = { base, total: verdicts.length, ready: verdicts.length - failures.length, failed: failures, excused: [] }
+  if (!baseline) return out
+  const total = Number(baseline.total) || 0
+  const rate = total > 0 ? Number(baseline.ready) / total : 0
+  const had = new Set([...(baseline.failed ?? []), ...(baseline.excused ?? [])].map((f) => f.id))
+  const trusted = rate >= floor
+  out.failed = trusted ? failures.filter((f) => !had.has(f.id)) : failures
+  out.excused = trusted ? failures.filter((f) => had.has(f.id)) : []
+  const pct = Number((rate * 100).toFixed(2))
+  out.baseline = { total, ready: Number(baseline.ready) || 0, rate: pct, floor: floor * 100, excusing: trusted, ...(trusted ? {} : { note: `the baseline reached ${pct}% ready, below ${floor * 100}%, so nothing is excused` }) }
+  return out
+}
+
 // Playwright's chromium, loaded by absolute path so another checkout's install
 // is used in place (never linked into this repo). `playwright` is the
 // `--playwright` path; without it the repo's own install is used. Null when
