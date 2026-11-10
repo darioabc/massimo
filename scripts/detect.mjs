@@ -11,6 +11,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { compare } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
+import { csfScaffold } from './lib/lane-css.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -335,7 +336,11 @@ try {
 const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
 const styles = styleFiles()
 const stories = detectStoryTools()
-const lane = stories.lane?.dir ? stories.lane : null
+// The csf lane's scaffold is massimo's own lane, written from the recipe. It
+// is reported with `csf: true`, so nothing is scaffolded over it, but the
+// suggested config takes nothing from it and it is nothing to adopt.
+if (stories.lane?.dir && stories.lane.dir === csfScaffold(root, existingConfig)) stories.lane.csf = true
+const lane = stories.lane?.dir && !stories.lane.csf ? stories.lane : null
 const extByFramework = {
   'vite-vue': 'vue',
   nuxt: 'vue',

@@ -11,6 +11,7 @@ import { basename, join, posix } from 'node:path'
 import { readDesignMd } from './designmd.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './glob.mjs'
 import { findObject } from './jsobject.mjs'
+import { csfScaffold } from './lane-css.mjs'
 import { laneRegistry } from './lane.mjs'
 import { stripJsonComments, workspaceGlobs } from './project.mjs'
 import { DEFAULT_TIERS, keyRoles, knownKeys, tierOf } from './roles.mjs'
@@ -1198,9 +1199,12 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   }
   const tools = detected?.storyTools?.tools?.filter((t) => TOOL_COMMAND[t]) ?? []
   const records = storyFileRecords(root, files, tools, text)
+  // The csf lane's scaffold is massimo's own output, written from the recipe,
+  // so it is no lane of the repo's: no asset, no consumers, nothing proposed.
+  const found = detected?.storyTools?.lane?.dir && detected.storyTools.lane.dir !== csfScaffold(root, config) ? detected.storyTools.lane : null
   // A csf lane lists its states through the registry; no other lane has one.
-  const registry = config.stories?.lane === 'csf' && detected?.storyTools?.lane?.dir ? laneRegistry({ root, config, files: expandGlobs(root, config.stories.include ?? [], [], [], files), read: text }) : null
-  const lane = laneRecord(root, files, pkg, detected?.storyTools?.lane, text, registry)
+  const registry = config.stories?.lane === 'csf' && found ? laneRegistry({ root, config, files: expandGlobs(root, config.stories.include ?? [], [], [], files), read: text }) : null
+  const lane = laneRecord(root, files, pkg, found, text, registry)
   // A csf lane runs on the port the config gives it, not the framework's default that detect falls back to,
   // unless its dev script sets a port of its own: that one wins.
   const ownPort = lane?.devScript ? portIn(String(pkg?.scripts?.[lane.devScript] ?? '')) : null

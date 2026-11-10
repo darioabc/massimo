@@ -98,6 +98,24 @@ export function recipeFiles(root) {
   return [LANE_HTML, 'vite.stories.config.ts', ...inFolder].filter((f) => existsSync(join(root, f))).sort(compare)
 }
 
+// The files only the csf recipe writes beside the entry's module script. A
+// lane of the repo's own, or one the native recipe wrote, has a main.tsx and
+// may have a story.ts, but none of these.
+const CSF_ONLY = new Set(['Shell.tsx', 'Canvas.tsx', 'massimo.d.ts'])
+
+// The folder of the csf lane's scaffold, as a repo-relative path, or null:
+// the folder beside the entry's module script, once the config sets
+// stories.lane to "csf" and that folder holds a file only the csf recipe
+// writes (its shell, canvas or declarations). The native recipe writes the
+// entry and main.tsx too, so neither counts, and without the opt-in no folder
+// is taken. A lane found in this folder is massimo's own output, written from
+// the recipe, not a lane the repo had.
+export function csfScaffold(root, config) {
+  if (config?.stories?.lane !== 'csf') return null
+  const file = recipeFiles(root).find((f) => posix.dirname(f) !== '.' && CSF_ONLY.has(posix.basename(f)))
+  return file ? posix.dirname(file) : null
+}
+
 // The import graph of the source files: who is a story or a test, what each
 // imports at run time, the story-only set, and the lane's scaffold folder. A
 // type-only import is not an edge, since the app takes nothing from it at

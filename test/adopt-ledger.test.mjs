@@ -245,6 +245,19 @@ test('planning again keeps what a class past found agreed, and marks what scan n
   assert.equal(noDocs.classes.docs, undefined)
 })
 
+test("an agreed asset that is massimo's own output leaves the ledger, and its class stays where it was", () => {
+  const inv = readJson(project, 'adopt', 'inventory.json')
+  const first = ledger()
+  const smaller = { ...inv, assets: inv.assets.filter((a) => a.id !== 'lane:src/stories' && a.id !== 'gate:lab-integration.mjs') }
+  const next = planLedger(smaller, first, { date: '2026-11-08', own: ['lane:src/stories'] })
+  assert.equal(next.classes.stories.assets.find((a) => a.id === 'lane:src/stories'), undefined)
+  // Any other asset scan no longer finds is still kept, as missing.
+  assert.equal(next.classes.stories.assets.find((a) => a.id === 'gate:lab-integration.mjs').missing, true)
+  assert.equal(next.classes.stories.state, first.classes.stories.state)
+  // Without it, the same asset is kept as missing too.
+  assert.equal(planLedger(smaller, first, { date: '2026-11-08' }).classes.stories.assets.find((a) => a.id === 'lane:src/stories').missing, true)
+})
+
 test('a new asset in a class past found starts at found, and takes its class back until it is agreed too', () => {
   const inv = readJson(project, 'adopt', 'inventory.json')
   const first = planLedger(inv, null, { date: 'd0' })

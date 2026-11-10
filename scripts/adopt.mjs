@@ -104,7 +104,7 @@ import {
 import { DEFAULT_STORY_TYPES, DEFAULT_TYPES_FILE, LADLE_MODULE, REMOVAL_FORMAT, checkRecords, checkTypesFile, conversionRecords, freeze, frozenCandidates, frozenProblems, recordsSummary, refreeze, removalEdits, removalPatch, shellPath } from './lib/convert.mjs'
 import { compare, compileGlobs, expandGlobs } from './lib/glob.mjs'
 import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, workflowJob } from './lib/inventory.mjs'
-import { recipeFiles } from './lib/lane-css.mjs'
+import { csfScaffold, recipeFiles } from './lib/lane-css.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
 import { stateUrl } from './lib/lane-route.mjs'
 import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, workspaceGlobs, writeFileAtomic } from './lib/project.mjs'
@@ -170,6 +170,19 @@ function readInventory() {
   const inv = JSON.parse(readFileSync(path, 'utf8'))
   refuseNewer('inventory', inv.format, 'adopt/inventory.json')
   return inv
+}
+
+// The saved inventory without a lane an older scan recorded in the csf
+// lane's scaffold (`scaffold`, from csfScaffold): that lane is massimo's own
+// output, so it goes with its assets, as a scan now leaves it out. Any other
+// lane is kept as it is.
+function readRepoInventory(scaffold) {
+  const inv = readInventory()
+  const lane = inv.stories?.lane
+  if (!scaffold || lane?.dir !== scaffold) return inv
+  const id = `lane:${lane.dir}`
+  const gate = lane.integration ? `gate:${lane.integration}` : null
+  return { ...inv, stories: { ...inv.stories, lane: null }, assets: inv.assets.filter((a) => a.id !== id && a.id !== gate && a.family !== id) }
 }
 
 function readLedger() {
@@ -894,13 +907,21 @@ switch (command) {
   }
   case 'plan': {
     needInit('plan')
-    const inv = readInventory()
-    const ledger = planLedger(inv, readLedger(), { config })
+    // The csf lane's scaffold is massimo's own lane, not an asset of the repo's,
+    // even in an inventory an older scan wrote.
+    const scaffold = csfScaffold(root, config)
+    const inv = readRepoInventory(scaffold)
+    const previous = readLedger()
+    const own = scaffold ? [`lane:${scaffold}`] : []
+    const ledger = planLedger(inv, previous, { config, own })
     refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
     writeJson(ledgerPath(projectDir), ledger)
     writeJson(proposedPath(projectDir), proposeConfig(inv, config))
     syncPhase(ledger)
     process.stdout.write(statusTable(ledger))
+    const listed = (l, id) => (l?.classes?.stories?.assets ?? []).some((a) => a.id === id && a.state !== 'found')
+    const dropped = own.filter((id) => listed(previous, id) && !listed(ledger, id))
+    if (dropped.length > 0) process.stdout.write(`\n${dropped.join(', ')} left the ledger: it is massimo's own csf lane, written from the recipe, not a lane the repo had.\n`)
     const empty = Object.keys(ledger.classes).length === 0
     process.stdout.write(`\nWrote ${shown('ledger.json')} and ${shown('config.proposed.json')}. ${empty ? 'There is nothing to adopt; the config can still take what scan proposed: ' : 'Agree each loss, then: '}${scriptCommand(root, projectDir, 'adopt', 'config')}\n`)
     break
@@ -912,7 +933,7 @@ switch (command) {
     if (flags.lane !== undefined) {
       // The opt-in: the csf lane, from the saved inventory and Ladle's own settings.
       if (flags.lane !== 'csf') fail('usage: adopt.mjs config [--write] [--lane csf]; csf is the only lane --lane takes')
-      const inv = readInventory()
+      const inv = readRepoInventory(csfScaffold(root, config))
       if (!inv.stories.tools.some((t) => t.tool === 'ladle')) fail('--lane csf converts a Ladle repo, and scan finds no Ladle here')
       proposed = proposeConfig(inv, config, { lane: 'csf' })
     } else {
