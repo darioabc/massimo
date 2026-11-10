@@ -168,6 +168,16 @@ test('two selectors in one theme with different values: the first is the theme, 
   assert.deepEqual(base.color.paper.$extensions.massimo.scopes, { '@media (prefers-color-scheme: dark) :root': '#101112' })
 })
 
+test('one theme selector in two style files: the later value is the theme, as the cascade has it, with no note', () => {
+  const ctx = fresh()
+  writeFileSync(join(ctx.root, 'src', 'styles', 'tweaks.css'), ':root {\n  --radius-2: 0.75rem;\n}\n')
+  setConfig(ctx, { styleFiles: ['src/styles/theme.css', 'src/styles/tweaks.css'] })
+  const r = run('tokens', ctx, ['mirror'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.doesNotMatch(r.stderr, /--radius-2/)
+  assert.deepEqual(readJson(tokensDir(ctx), 'base.tokens.json').radius['2'], { $value: { value: 0.75, unit: 'rem' } })
+})
+
 test('a theme is matched whatever its quotes, and light-dark() stays one declaration', () => {
   const ctx = fresh('sheets-modes')
   const r = run('tokens', ctx, ['mirror'])

@@ -182,3 +182,139 @@ test('Figma variables from the REST API: paths, themes, aliases, types from scop
     rmSync(base, { recursive: true, force: true })
   }
 })
+
+// A scratch folder of style files, for a reader test that needs its own.
+function sheets(files) {
+  const base = mkdtempSync(join(tmpdir(), 'massimo-readers-'))
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(base, name), text)
+  return { base, cleanup: () => rmSync(base, { recursive: true, force: true }) }
+}
+
+test('CSS: a dark :root keeps its values as the default when a light-theme block sets others, and the light values are noted', () => {
+  const s = sheets({
+    'docs.css': [
+      ':root { --backdrop: #272727cc; --accent: #ff801f; --same: #111111; }',
+      ":root[data-theme='light'] { --backdrop: #f6f6f699; --accent: #b73d00; --same: #111111; --only-light: #ffffff; }",
+      '[data-theme="light"] { --accent: #c04000; }',
+    ].join('\n'),
+  })
+  try {
+    const { tokens, notes } = readCss(s.base, ['docs.css'])
+    const t = byPath(tokens)
+    assert.deepEqual([t['color.backdrop'].value, t['color.accent'].value, t['color.same'].value, t['color.only-light'].value], ['#272727cc', '#ff801f', '#111111', '#ffffff'])
+    assert.deepEqual(notes, [
+      "--accent and --backdrop are set under :root in docs.css and, differently, under :root[data-theme='light'] in docs.css, which massimo reads as the same default theme; the tokens keep the values under :root in docs.css",
+      '--accent is set under :root in docs.css and, differently, under [data-theme="light"] in docs.css, which massimo reads as the same default theme; its token keeps the value under :root in docs.css',
+    ])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('CSS: two files that set one property differently: the first keeps its value and its source, the other is noted; one selector again in one file is the cascade', () => {
+  const s = sheets({
+    'a.css': ':root { --accent: #ff801f; --gap: 1rem; }\n.dark { --accent: #ffa057; --ink: #000000; }\n:root { --gap: 2rem; }',
+    'b.css': ':root { --accent: #f76b15; --gap: 2rem; --ink: #ffffff; }\n.dark { --accent: #ffffff; }',
+  })
+  try {
+    const { tokens, notes } = readCss(s.base, ['a.css', 'b.css'])
+    const t = byPath(tokens)
+    assert.deepEqual([t['color.accent'].value, t['color.accent'].modes.dark, t['color.accent'].source], ['#ff801f', '#ffa057', 'a.css'])
+    assert.equal(t['spacing.base'].value, '2rem') // the later :root in a.css, which b.css repeats
+    // A token's source is the file its default value comes from.
+    assert.deepEqual([t['color.ink'].value, t['color.ink'].modes.dark, t['color.ink'].source], ['#ffffff', '#000000', 'b.css'])
+    assert.deepEqual(notes, [
+      '--accent is set under :root in a.css and, differently, under :root in b.css, which massimo reads as the same default theme; its token keeps the value under :root in a.css',
+      '--accent is set under .dark in a.css and, differently, under .dark in b.css, which massimo reads as the same dark theme; its token keeps the value under .dark in a.css',
+    ])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('CSS: a light-theme block before :root gives way to it, since :root is the default theme, and its values are noted', () => {
+  const s = sheets({
+    'docs.css': [
+      "[data-theme='light'] { --backdrop: #f6f6f699; --accent: #b73d00; --only-light: #ffffff; }",
+      ':root { --backdrop: #272727cc; --accent: #ff801f; }',
+      '.light { --accent: #c04000; }',
+      ':root { --accent: #ff9933; }',
+    ].join('\n'),
+  })
+  try {
+    const { tokens, notes } = readCss(s.base, ['docs.css'])
+    const t = byPath(tokens)
+    // The later :root replaces the earlier one in the same file, as the cascade does.
+    assert.deepEqual([t['color.backdrop'].value, t['color.accent'].value, t['color.only-light'].value], ['#272727cc', '#ff9933', '#ffffff'])
+    assert.deepEqual(notes, [
+      "--accent and --backdrop are set under :root in docs.css and, differently, under [data-theme='light'] in docs.css, which massimo reads as the same default theme; the tokens keep the values under :root in docs.css",
+      '--accent is set under :root in docs.css and, differently, under .light in docs.css, which massimo reads as the same default theme; its token keeps the value under :root in docs.css',
+    ])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('CSS: two files whose light-dark() values differ in their dark side keep the first, with a note', () => {
+  const s = sheets({
+    'a.css': ':root { --bg: light-dark(#ffffff, #111111); }',
+    'b.css': ':root { --bg: light-dark(#ffffff, #222222); }',
+  })
+  try {
+    const { tokens, notes } = readCss(s.base, ['a.css', 'b.css'])
+    const t = byPath(tokens)
+    assert.deepEqual([t['color.bg'].value, t['color.bg'].modes.dark], ['#ffffff', '#111111'])
+    assert.deepEqual(notes, ['--bg is set under :root in a.css and, differently, under :root in b.css, which massimo reads as the same dark theme; its token keeps the value under :root in a.css'])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('CSS: the dark side of light-dark() gives way to a dark theme value, before or after it, with no note', () => {
+  const s = sheets({ 'a.css': ':root { --bg: light-dark(#ffffff, #111111); }\n.dark { --bg: #000000; }\n.dark { --fg: #eeeeee; }\n:root { --fg: light-dark(#111111, #fafafa); }' })
+  try {
+    const { tokens, notes } = readCss(s.base, ['a.css'])
+    const t = byPath(tokens)
+    assert.deepEqual([t['color.bg'].value, t['color.bg'].modes.dark, t['color.fg'].value, t['color.fg'].modes.dark], ['#ffffff', '#000000', '#111111', '#eeeeee'])
+    assert.deepEqual(notes, [])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('Tokens Studio in the W3C form: $value, $type and $description make a token, a composite included', () => {
+  const doc = {
+    'primitive/color': { color: { black: { $type: 'color', $value: '#000000', $description: 'Ink' } } },
+    'primitive/typography': {
+      typography: { body: { $type: 'typography', $value: { fontFamily: 'Inter', fontSize: '16px', fontWeight: '400', lineHeight: '1.5' } } },
+    },
+    $themes: [],
+    $metadata: { tokenSetOrder: ['primitive/color', 'primitive/typography'] },
+  }
+  assert.equal(isTokensStudio(doc), true)
+  const out = fromTokensStudio(doc, [], 'tokens.json')
+  assert.deepEqual(out.color.black, { $value: '#000000', $type: 'color', $description: 'Ink' })
+  assert.deepEqual(out.typography.body, { $value: { fontFamily: 'Inter', fontSize: '16px', fontWeight: '400', lineHeight: '1.5' }, $type: 'typography' })
+  const shadow = fromTokensStudio({ $metadata: {}, s: { $value: { x: 0, y: 2, blur: 4, spread: 0, color: '#0003' }, $type: 'boxShadow' } })
+  assert.deepEqual(shadow.s.$value, { color: '#0003', offsetX: '0px', offsetY: '2px', blur: '4px', spread: '0px' })
+})
+
+test('Tokens Studio: sets merge deeply in order, a later token replaces the earlier whole, and one that refers to its own path keeps the earlier token', () => {
+  const doc = {
+    'primitive/color': { color: { gray: { 900: { $type: 'color', $value: '#111111' } }, brand: { $type: 'color', $value: '#ff6600', $description: 'Old' } } },
+    'primitive/typography': { typography: { fontFamily: { base: { $type: 'fontFamilies', $value: 'Inter, sans-serif' } } } },
+    'semantic/color': { color: { background: { default: { $type: 'color', $value: '{color.gray.900}' } }, brand: { $type: 'color', $value: '#ee5500' } } },
+    'semantic/typography': { typography: { fontFamily: { base: { $type: 'fontFamilies', $value: '{typography.fontFamily.base}', $description: 'Every UI text' } } } },
+    $themes: [],
+    $metadata: { tokenSetOrder: ['primitive/color', 'primitive/typography', 'semantic/color', 'semantic/typography'] },
+  }
+  const notes = []
+  const out = fromTokensStudio(doc, notes, 'tokens/tokens.json')
+  assert.deepEqual(out.color.gray[900], { $value: '#111111', $type: 'color' })
+  assert.deepEqual(out.color.background.default, { $value: '{color.gray.900}', $type: 'color' })
+  assert.deepEqual(out.color.brand, { $value: '#ee5500', $type: 'color' })
+  assert.deepEqual(out.typography.fontFamily.base, { $value: 'Inter, sans-serif', $type: 'fontFamily', $description: 'Every UI text' })
+  assert.deepEqual(notes, [
+    "tokens/tokens.json: typography.fontFamily.base in semantic/typography refers to itself, which Tokens Studio reads as the same path in an earlier set; kept the earlier token, with this one's description",
+  ])
+})
