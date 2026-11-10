@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Fixes from running massimo on public repos it had never seen. After updating, run `init.mjs --update-scripts`, then `adopt.mjs scan` before the next `plan`. No file format changes.
+
+### Fixed
+
+- Monorepos: detect and `adopt.mjs scan` read the `packages` list of `pnpm-workspace.yaml` as they read `workspaces` in package.json, so a pnpm monorepo's packages are no longer dropped as other apps. A `pnpm-workspace.yaml` that holds only settings no longer makes detect report a monorepo. The file is read with a byte order mark, a quoted key or a flow list over several lines.
+- A project kept in a package: the scripts find the project from the folder they run in, the nearest folder up to the git toplevel that holds `massimo.config.json`. A project made with `init.mjs --root <package>` now works from inside that package: its npm scripts, the session hook and the commands the scripts print. The start skill says to run every script from inside the chosen package, or with `--root`.
+- The graph reads `tsconfig.base.json` paths, exact keys included, and detect suggests them as aliases. A path in `tsconfig.json` wins over the same key in its base.
+- The graph resolves an import of one of the repo's own workspace packages to that package's source file (its `exports`, `source`, `module` or `main`, then `src/index`), so the edge shows instead of a package name. Only a file the repo has counts, so a local build that git ignores does not change the graph.
+- `adopt.mjs scan` reads each `tokens.styleFiles` entry as a path or a glob, and lists an entry that adds no style file as a note with the reason, in its summary and in the inventory, instead of dropping it silently.
+- `tokens.mjs extract` no longer stops when a Tailwind 4 `@theme` ramp meets a raw colour of the same hue. A proposed colour never takes a CSS variable an existing token has, a colour cluster counts as covered when any colour in it is near a token, and a Tailwind 3 ramp with a `DEFAULT` still takes the code's colours near it as steps of its own.
+- Extract keeps the first value when two places set one custom property for the same theme with different values, such as two files, and a plain `:root` stays the default theme when a light theme's selector sets the same property. A note names both places and says which value the token keeps. Extract prints its notes and lists them under Notes in `report.md`.
+- Tokens Studio files in the W3C form (`$value`, `$type`, `$description`) are read; before, they gave no tokens. Token sets merge deeply in their order, and a token that refers to its own path keeps the earlier set's token, with a note. Extract says when an import file gave no tokens.
+- The csf lane's scaffold, once written from the vite-csf recipe, is massimo's own lane and no longer read back as the repo's: scan lists no lane for it, plan leaves the stories class where it was and adds no asset, and `config` proposes no stories keys from it. Only a file the recipe alone writes (`Shell.tsx`, `Canvas.tsx` or `massimo.d.ts` beside the lane's module script) marks the scaffold, so a lane of the repo's own in that folder stays the repo's. detect still reports the scaffold under `storyTools.lane`, marked `csf: true`, so nothing is scaffolded over it, and leaves it out of `adoptable` and the suggested config. A ledger or an older inventory that already lists the scaffold drops it on the next `plan`, which says so.
+
 ## 0.4.0
 
 A csf story lane for repos whose stories are CSF files, with a converter and proof against the tool it replaces. After updating, run `init.mjs --update-scripts`. A project that sets no 0.4.0 key behaves as on 0.3.0, and plan output for a Ladle repo stays as in 0.3.0 until it opts in with `adopt.mjs config --write --lane csf`.
