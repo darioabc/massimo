@@ -558,7 +558,7 @@ function readSources(root, config) {
 
 const looksLegacyDoc = (doc) => JSON.stringify(doc).includes('"massimo":{"modes"') || /"\$value":\s*"#/.test(JSON.stringify(doc))
 
-const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', other: 'Other' }
+const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', size: 'Size', other: 'Other' }
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
 // The draft's report: what each token is and where it came from, family by
@@ -575,7 +575,12 @@ function draftReport({ sources, audit, report, outliers, notes, losses, count })
     lines.push('')
   }
   if (outliers.length) {
-    lines.push('## Not proposed', '', 'Values the code uses that did not become tokens: used once, off the grid, off a scale the sources already define, or only ever data. Replace each with a token in the tidy phase, or keep it with a reason.', '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
+    // Widths and heights and sub-1ms durations have no token to replace them, so the intro says so when they are listed.
+    const sizes = outliers.some((o) => o.family === 'size')
+    const resets = outliers.some((o) => o.family === 'motion' && /^0?\.\d+ms$/.test(o.value))
+    const kinds = [sizes && 'a width or height (massimo proposes no size tokens yet)', resets && 'a duration under 1ms (it switches motion off)'].filter(Boolean)
+    const extra = kinds.length > 0 ? ` No token replaces ${kinds.join(' or ')}, so keep those as they are.` : ''
+    lines.push('## Not proposed', '', `Values the code uses that did not become tokens: used once, off the grid, off a scale the sources already define, or only ever data. Replace each with a token in the tidy phase, or keep it with a reason.${extra}`, '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
     for (const o of outliers) lines.push(`| ${FAMILY_TITLES[o.family] ?? o.family} | ${cell(o.value)} | ${o.count} | ${cell(o.note)} |`)
     lines.push('')
   }

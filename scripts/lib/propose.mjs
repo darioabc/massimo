@@ -41,7 +41,16 @@ export function mergeSources(sources) {
   const varOf = (t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))
   for (const kind of order) {
     for (const src of sources.filter((s) => s.kind === kind)) {
-      for (const t of src.tokens) {
+      // A token name cannot hold a dot, so a key such as a spacing step's 0.5
+      // is named 0_5; a CSS variable the source gave keeps its name, and a
+      // reference to the dotted name follows the token.
+      const dotted = new Map()
+      for (const read of src.tokens) {
+        const t = read.path.some((p) => String(p).includes('.')) ? { ...read, path: read.path.map((p) => String(p).replace(/\./g, '_')) } : read
+        if (t !== read) {
+          dotted.set(read.source, [...(dotted.get(read.source) ?? []), `${key(read.path)} as ${key(t.path)}`])
+          renamed.set(key(read.path), key(t.path))
+        }
         const k = key(t.path)
         const same = seen.get(k) ?? byCssVar.get(varOf(t))
         if (same) {
@@ -60,6 +69,10 @@ export function mergeSources(sources) {
         tokens.push(copy)
       }
       notes.push(...(src.notes ?? []))
+      for (const [file, names] of dotted) {
+        const shown = `${names.slice(0, 6).join(', ')}${names.length > 6 ? `, +${names.length - 6} more` : ''}`
+        notes.push(`${file}: a token name cannot hold a dot, so ${names.length === 1 ? 'one name was' : `${names.length} names were`} written with _ instead: ${shown}`)
+      }
     }
   }
   // A token whose name another source uses as a group (--c-accent read as
@@ -451,8 +464,19 @@ const pxOf = (text) => {
   return m ? Number(m[1]) * (m[2] === 'rem' ? 16 : 1) : null
 }
 const existingPx = (tokens, groups) => new Set(tokens.filter((t) => groups.includes(t.path[0])).map((t) => pxOf(t.value)).filter((n) => n !== null))
+// A number as a token name: a dot is not allowed in one, so 0.5 is 0_5.
+const numberName = (n) => String(n).replace('.', '_')
 
-function proposeSpacing(existing, audit, report, outliers, minCount) {
+// Tailwind's own classes of a family the audit counted (`rounded-lg`, a
+// spacing step), as one report row: Tailwind's scale needs no new tokens.
+function tailwindClassRow(audit, family, from, note) {
+  const list = audit?.forExtract?.classes?.[family] ?? []
+  if (list.length === 0) return null
+  const shown = list.slice(0, 12).map((c) => `${c.value} ×${c.count}`).join(', ')
+  return { family, token: '(none)', value: list.length > 12 ? `${shown}, +${list.length - 12} more` : shown, from, note }
+}
+
+function proposeSpacing(existing, audit, report, outliers, minCount, tailwind) {
   const histogram = audit?.spacing?.histogram ?? []
   const have = existingPx(existing, ['spacing', 'space'])
   const weighted = histogram.reduce((n, s) => n + s.count, 0)
@@ -475,15 +499,33 @@ function proposeSpacing(existing, audit, report, outliers, minCount) {
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
     report.push({ family: 'spacing', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note: `on the ${base}px grid` })
   }
+  const classes = tailwind && tailwindClassRow(audit, 'spacing', 'Tailwind spacing classes (p-, m-, gap- and the like), by step', "Tailwind's own spacing scale; give it tokens if the design should own it")
+  if (classes) report.push(classes)
   return out
 }
 
-function proposeRadius(existing, audit, report, outliers, minCount) {
+// Tailwind's radius scale by size in px, as each version names it. Tailwind
+// 3's 4px is `rounded` itself, which has no name to give a token.
+const TAILWIND_RADIUS = {
+  tailwind4: { 2: 'xs', 4: 'sm', 6: 'md', 8: 'lg', 12: 'xl', 16: '2xl', 24: '3xl', 32: '4xl' },
+  tailwind3: { 2: 'sm', 6: 'md', 8: 'lg', 12: 'xl', 16: '2xl', 24: '3xl' },
+}
+
+// `tailwind` is the Tailwind version the repo styles with, or null. There a
+// radius takes Tailwind's name only when its size is Tailwind's for that
+// name, so a token wired into Tailwind never changes what a class renders;
+// any other radius is named by its size, a name Tailwind's scale never uses.
+function proposeRadius(existing, audit, report, outliers, minCount, tailwind) {
   const have = existingPx(existing, ['radius', 'radii', 'rounded'])
   const counts = new Map()
   for (const f of audit?.findings ?? []) if (f.category === 'radius' && f.px !== undefined) counts.set(f.px, (counts.get(f.px) ?? 0) + 1)
   const values = [...counts.entries()].filter(([px]) => px > 0 && !have.has(px)).sort((a, b) => a[0] - b[0])
   const names = ['sm', 'md', 'lg', 'xl', '2xl', '3xl']
+  const scale = tailwind ? TAILWIND_RADIUS[tailwind] : null
+  // A name a source already gives a radius (by its path or its CSS variable)
+  // is never proposed again; that radius is named by its size instead.
+  const owned = new Set(existing.flatMap((t) => [key(t.path), t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))]))
+  const free = (name) => !owned.has(`radius.${name}`) && !owned.has(cssVarFor(['radius', name]))
   const out = []
   let i = 0
   for (const [px, count] of values) {
@@ -491,11 +533,47 @@ function proposeRadius(existing, audit, report, outliers, minCount) {
       outliers.push({ family: 'radius', value: `${px}px`, count, note: have.size >= 3 ? 'not on the existing radius scale' : 'used once' })
       continue
     }
-    const name = px >= 999 ? 'full' : names[i++] ?? String(px)
-    out.push({ path: ['radius', name], type: 'dimension', value: px >= 999 ? '9999px' : rem(px), modes: {}, description: '', source: 'audit' })
-    report.push({ family: 'radius', token: `radius.${name}`, value: px >= 999 ? '9999px' : rem(px), from: `${px}px used ${count}× in code`, note: '' })
+    const full = px >= 999
+    const wanted = full ? 'full' : scale ? scale[px] ?? numberName(px) : names[i++] ?? numberName(px)
+    const name = [wanted, numberName(px)].find(free)
+    if (name === undefined) {
+      outliers.push({ family: 'radius', value: `${px}px`, count, note: `the sources already use the names radius.${wanted} and radius.${numberName(px)}` })
+      continue
+    }
+    const note = name !== wanted
+      ? `the sources already define radius.${wanted}, so named by its size`
+      : !scale ? '' : full || scale[px] ? `Tailwind's rounded-${name}` : tailwind === 'tailwind3' && px === 4 ? "Tailwind's rounded, named by its size" : "off Tailwind's scale, named by its size"
+    out.push({ path: ['radius', name], type: 'dimension', value: full ? '9999px' : rem(px), modes: {}, description: '', source: 'audit' })
+    report.push({ family: 'radius', token: `radius.${name}`, value: full ? '9999px' : rem(px), from: `${px}px used ${count}× in code`, note })
   }
+  const classes = scale && tailwindClassRow(audit, 'radius', 'Tailwind classes', "Tailwind's own radii; give them tokens if the design should own them")
+  if (classes) report.push(classes)
   return out
+}
+
+// Widths and heights (a max width, a container): massimo proposes no size
+// family, so each value the code repeats is listed with that reason, and the
+// ones used once are listed together, never dropped.
+function sizeOutliers(audit, outliers, minCount) {
+  const byPx = new Map()
+  for (const f of audit?.findings ?? []) {
+    if (f.category !== 'size' || f.px === undefined || f.px === 0) continue
+    const written = f.kind === 'arbitrary' ? /\[(.*)\]/.exec(f.value)?.[1] ?? f.value : f.value
+    const e = byPx.get(f.px) ?? { px: f.px, count: 0, forms: new Map() }
+    e.count++
+    e.forms.set(written, (e.forms.get(written) ?? 0) + 1)
+    byPx.set(f.px, e)
+  }
+  const form = (e) => [...e.forms.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))[0][0]
+  const all = [...byPx.values()].sort((a, b) => b.count - a.count || a.px - b.px)
+  for (const e of all.filter((x) => x.count >= minCount)) {
+    outliers.push({ family: 'size', value: form(e), count: e.count, note: 'a width or height; massimo proposes no size tokens yet' })
+  }
+  const once = all.filter((x) => x.count < minCount).sort((a, b) => a.px - b.px)
+  if (once.length > 0) {
+    const shown = once.slice(0, 6).map(form).join(', ')
+    outliers.push({ family: 'size', value: once.length > 6 ? `${shown}, +${once.length - 6} more` : shown, count: once.reduce((n, x) => n + x.count, 0), note: 'widths and heights used once each' })
+  }
 }
 
 const WEIGHT_NAMES = { 100: 'thin', 200: 'extralight', 300: 'light', 400: 'regular', 500: 'medium', 600: 'semibold', 700: 'bold', 800: 'extrabold', 900: 'black' }
@@ -555,11 +633,15 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
   const haveSizes = existingPx(existing, ['text', 'font-size'])
   // Three or more sizes in the sources are a scale; fewer leave gaps to fill.
   const onScale = haveSizes.size < 3
-  const sizes = (audit?.typeSizes ?? []).filter((s) => s.count >= minCount && !haveSizes.has(s.px) && onScale).sort((a, b) => a.px - b.px)
-  for (const s of (audit?.typeSizes ?? []).filter((s) => !haveSizes.has(s.px) && (s.count < minCount || !onScale))) {
+  // The body size: the one a body, html or :root rule sets, else the most used.
+  const ruled = audit?.forExtract?.bodySize ?? null
+  const body = ruled?.px ?? [...(audit?.typeSizes ?? [])].sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16) || a.px - b.px)[0]?.px ?? 16
+  // A size the body rule sets is kept even when the code repeats it nowhere else.
+  const kept = (s) => s.count >= minCount || s.px === ruled?.px
+  const sizes = (audit?.typeSizes ?? []).filter((s) => kept(s) && !haveSizes.has(s.px) && onScale).sort((a, b) => a.px - b.px)
+  for (const s of (audit?.typeSizes ?? []).filter((s) => !haveSizes.has(s.px) && (!kept(s) || !onScale))) {
     outliers.push({ family: 'typography', value: `${s.px}px`, count: s.count, note: onScale ? 'a font size used once' : 'not on the existing type scale' })
   }
-  const body = [...(audit?.typeSizes ?? [])].filter((s) => s.px >= 14 && s.px <= 18).sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16))[0]?.px ?? 16
   const below = sizes.filter((s) => s.px < body).reverse()
   const above = sizes.filter((s) => s.px > body)
   // A Tailwind repo already names its sizes: keep Tailwind's names, and name
@@ -574,7 +656,8 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
   for (const [name, s] of named) {
     const path = ['font', 'size', name]
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
-    const note = tailwind ? (TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size") : name === 'base' ? 'the body size' : ''
+    const bodyNote = ruled ? `the body size, set on ${ruled.selector} in ${ruled.file}` : 'the most used size, taken as the body size'
+    const note = tailwind ? (TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size") : name === 'base' ? bodyNote : ''
     report.push({ family: 'typography', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note })
   }
   // Composites: exact from a Tailwind config's type steps, otherwise one per
@@ -639,7 +722,7 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
 
 // ── Shadows, borders, motion, layers, opacity ──────────────────────────────
 
-function proposeRest(existing, audit, colorTokens, report, outliers, minCount, fromCss) {
+function proposeRest(existing, audit, colorTokens, report, outliers, minCount, fromCss, tailwind) {
   const out = []
   const has = (type) => existing.some((t) => t.type === type)
   // Shadows, by blur.
@@ -658,7 +741,8 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
       out.push({ path, type: 'shadow', value: s.value, modes: {}, description: '', source: 'audit' })
       report.push({ family: 'shadow', token: key(path), value: s.value, from: `used ${s.count}× in code`, note: '' })
     })
-    const tw = (audit?.inventory?.shadow ?? []).filter((s) => s.value.startsWith('class '))
+    // Class strings are Tailwind's shadows only in a repo styled with Tailwind.
+    const tw = tailwind ? (audit?.inventory?.shadow ?? []).filter((s) => s.value.startsWith('class ')) : []
     if (tw.length) report.push({ family: 'shadow', token: '(none)', value: tw.map((s) => s.value.slice(6)).join(', '), from: 'Tailwind classes', note: "Tailwind's own shadows; give them tokens if the design should own them" })
   }
   // Borders: the most used shorthands, their colour as a reference where a token matches.
@@ -693,14 +777,15 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
       const m = /^(\d*\.?\d+)(ms|s)$/.exec(v)
       return m ? Number(m[1]) * (m[2] === 's' ? 1000 : 1) : null
     }).sort((a, b) => a[0] - b[0])
+    // Under 1ms (0.01ms in a reduced-motion reset) switches motion off; it is no step of the scale.
     const kept = ms.filter(([v, count]) => {
-      if (count >= minCount && v > 0) return true
-      if (v > 0) outliers.push({ family: 'motion', value: `${v}ms`, count, note: 'used once' })
+      if (count >= minCount && v >= 1) return true
+      if (v > 0) outliers.push({ family: 'motion', value: `${v}ms`, count, note: v < 1 ? 'under 1ms, which turns motion off rather than timing it' : 'used once' })
       return false
     })
     const names = kept.length <= 3 ? ['fast', 'normal', 'slow'].slice(kept.length === 1 ? 1 : 0) : []
     kept.forEach(([v, count], i) => {
-      const path = ['duration', names[i] ?? String(v)]
+      const path = ['duration', names[i] ?? numberName(v)]
       out.push({ path, type: 'duration', value: `${v}ms`, modes: {}, description: '', source: 'audit' })
       report.push({ family: 'motion', token: key(path), value: `${v}ms`, from: `used ${count}× in code`, note: '' })
     })
@@ -769,13 +854,16 @@ export function propose({ sources, audit, fromCss, minCount = 2, styling = [], d
   notes.push(...colorGaps(existing, colors, audit, minCount, defaultMode))
   const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
   const tailwind = (styling ?? []).some((s) => /^tailwind/.test(s))
+  // The Tailwind version, for the scales whose names changed in Tailwind 4.
+  const tailwindVersion = !tailwind ? null : (styling ?? []).includes('tailwind3') && !(styling ?? []).includes('tailwind4') ? 'tailwind3' : 'tailwind4'
   const out = [
     ...existing,
     ...colors,
     ...proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind),
-    ...proposeSpacing(existing, audit, report, outliers, minCount),
-    ...proposeRadius(existing, audit, report, outliers, minCount),
+    ...proposeSpacing(existing, audit, report, outliers, minCount, tailwind),
+    ...proposeRadius(existing, audit, report, outliers, minCount, tailwindVersion),
   ]
-  out.push(...proposeRest(existing, audit, out.filter((t) => t.type === 'color'), report, outliers, minCount, fromCss))
+  out.push(...proposeRest(existing, audit, out.filter((t) => t.type === 'color'), report, outliers, minCount, fromCss, tailwind))
+  sizeOutliers(audit, outliers, minCount)
   return { tokens: out, report, outliers, notes }
 }

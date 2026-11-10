@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
+import { propose } from '../scripts/lib/propose.mjs'
 import { SCRIPTS, read, readJson } from './helpers.mjs'
 
 function repo(files, config) {
@@ -355,6 +356,181 @@ test('an import file that gives no tokens is said, printed and in the report', (
     const note = 'tokens/brand.json: read no tokens from it. A token is an object with a $value, or in a Tokens Studio file a value'
     assert.ok(out.stderr.includes(`  note: ${note}\n`), out.stderr)
     assert.ok(read(draft(r.root, 'report.md')).includes(`- ${note}\n`))
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a Tailwind repo: a radius takes Tailwind\'s name only at Tailwind\'s size, its own classes are listed, and a repeated width is not dropped', () => {
+  const r = repo(
+    {
+      'src/index.css': '@import "tailwindcss";\n',
+      'src/Nav.tsx': [
+        'export const A = () => <nav className="rounded-[40px] max-w-[80rem] p-4 px-4 rounded-lg" />',
+        'export const B = () => <nav className="rounded-[40px] max-w-[80rem] md:p-4 gap-2 p-0 rounded-t-lg rounded-full" />',
+        'export const C = () => <i className="rounded-[4px] rounded-[4px] w-[37px]" />',
+      ].join('\n'),
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['tailwind4'], tokens: { styleFiles: ['src/index.css'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    const report = read(draft(r.root, 'report.md'))
+    // 40px is off Tailwind's scale, so it never takes rounded-sm's name; 4px is Tailwind 4's sm.
+    assert.deepEqual(base.radius['40'].$value, { value: 2.5, unit: 'rem' })
+    assert.deepEqual(base.radius.sm.$value, { value: 0.25, unit: 'rem' })
+    assert.match(report, /\| `radius\.40` \| 2\.5rem \| 40px used 2× in code \| off Tailwind's scale, named by its size \|/)
+    assert.match(report, /\| `radius\.sm` \| 0\.25rem \| 4px used 2× in code \| Tailwind's rounded-sm \|/)
+    // Tailwind's own classes, which need no tokens, are listed for both families.
+    assert.match(report, /\| `\(none\)` \| rounded-lg ×2, rounded-full ×1 \| Tailwind classes \| Tailwind's own radii/)
+    assert.match(report, /\| `\(none\)` \| 4 ×3, 2 ×1 \| Tailwind spacing classes \(p-, m-, gap- and the like\), by step \| Tailwind's own spacing scale/)
+    // Widths: the repeated one with its reason, the one used once with the rest.
+    assert.match(report, /\| Size \| 80rem \| 2 \| a width or height; massimo proposes no size tokens yet \|/)
+    assert.match(report, /\| Size \| 37px \| 1 \| widths and heights used once each \|/)
+    assert.match(report, /No token replaces a width or height \(massimo proposes no size tokens yet\), so keep those as they are\./)
+  } finally {
+    r.cleanup()
+  }
+  // Tailwind 3 names its radii one step apart from Tailwind 4, and its 4px is `rounded` itself.
+  const audit = { findings: [2, 2, 4, 4].map((px) => ({ category: 'radius', px })) }
+  const { report } = propose({ sources: [], audit, fromCss: () => ({}), styling: ['tailwind3'] })
+  assert.deepEqual(report.filter((x) => x.family === 'radius').map((x) => [x.token, x.note]), [['radius.sm', "Tailwind's rounded-sm"], ['radius.4', "Tailwind's rounded, named by its size"]])
+  // A name the sources already give a radius is not proposed again: the radius is named by its size.
+  const own = repo(
+    {
+      'src/index.css': '@import "tailwindcss";\n@theme { --radius-sm: 0.5rem; }\n',
+      'src/Tag.tsx': 'export const Tag = () => <i className="rounded-[4px] rounded-[4px]" />\n',
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['tailwind4'], tokens: { styleFiles: ['src/index.css'] } },
+  )
+  try {
+    const out = extract(own.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(own.root, 'base.tokens.json'))
+    assert.deepEqual(base.radius.sm.$value, { value: 0.5, unit: 'rem' })
+    assert.deepEqual(base.radius['4'].$value, { value: 0.25, unit: 'rem' })
+    assert.match(read(draft(own.root, 'report.md')), /\| `radius\.4` \| 0\.25rem \| 4px used 2× in code \| the sources already define radius\.sm, so named by its size \|/)
+  } finally {
+    own.cleanup()
+  }
+})
+
+test('the body size is the one the body rule sets, else the most used', () => {
+  const css = [
+    'body { color: #111111; font-size: 13px; }',
+    '.a { font-size: 12px; } .b { font-size: 12px; } .c { font-size: 12px; }',
+    '.d { font-size: 15px; } .e { font-size: 15px; } .f { font-size: 11px; } .g { font-size: 11px; }',
+  ].join('\n')
+  const r = repo({ 'src/base.css': css, 'package.json': '{"name":"acme"}' }, { tokens: { styleFiles: [] } })
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    // Set once, in the body rule, 13px is still the base; the names step from it.
+    assert.deepEqual(base.font.size.base.$value, { value: 0.8125, unit: 'rem' })
+    assert.deepEqual([base.font.size.sm, base.font.size.xs, base.font.size.lg].map((t) => t.$value.value), [0.75, 0.6875, 0.9375])
+    assert.match(read(draft(r.root, 'report.md')), /\| `font\.size\.base` \| 0\.8125rem \| 13px used 1× in code \| the body size, set on body in src\/base\.css \|/)
+  } finally {
+    r.cleanup()
+  }
+  // A body rule inside @media sets the size on some screens only, so the plain body rule after it wins.
+  const media = repo(
+    { 'src/a.css': '@media (max-width: 600px) { body { font-size: 14px } }\nbody { font-size: 16px }\n.a { font-size: 12px } .b { font-size: 12px }\n', 'package.json': '{"name":"acme"}' },
+    { tokens: { styleFiles: [] } },
+  )
+  try {
+    const out = extract(media.root)
+    assert.equal(out.status, 0, out.stderr)
+    assert.deepEqual(readJson(draft(media.root, 'base.tokens.json')).font.size.base.$value, { value: 1, unit: 'rem' })
+    assert.match(read(draft(media.root, 'report.md')), /\| `font\.size\.base` \| 1rem \| 16px used 1× in code \| the body size, set on body in src\/a\.css \|/)
+  } finally {
+    media.cleanup()
+  }
+  const audit = { typeSizes: [{ px: 12, count: 5 }, { px: 15, count: 2 }] }
+  const { report } = propose({ sources: [], audit, fromCss: () => ({}) })
+  assert.deepEqual(report.filter((x) => x.token.startsWith('font.size.')).map((x) => [x.token, x.value, x.note]), [
+    ['font.size.base', '0.75rem', 'the most used size, taken as the body size'],
+    ['font.size.lg', '0.9375rem', ''],
+  ])
+})
+
+test('every draft name passes the check: a 0.01ms reset is no duration step', () => {
+  const css = [
+    '.a { transition: opacity 150ms ease; } .b { transition: opacity 150ms ease; }',
+    '.c { transition: opacity 200ms ease; } .d { transition: opacity 200ms ease; }',
+    '.e { transition: opacity 300ms ease; } .f { transition: opacity 300ms ease; }',
+    '@media (prefers-reduced-motion: reduce) { * { animation-duration: 0.01ms; transition-duration: 0.01ms; } }',
+  ].join('\n')
+  const r = repo({ 'src/app.css': css, 'package.json': '{"name":"acme"}' }, { tokens: { styleFiles: [] } })
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    assert.deepEqual(Object.keys(base.duration).filter((k) => !k.startsWith('$')), ['fast', 'normal', 'slow'])
+    assert.match(read(draft(r.root, 'report.md')), /\| Motion \| 0\.01ms \| 2 \| under 1ms, which turns motion off rather than timing it \|/)
+    assert.match(read(draft(r.root, 'report.md')), /No token replaces a duration under 1ms \(it switches motion off\), so keep those as they are\./)
+    const check = spawnSync(process.execPath, [join(SCRIPTS, 'tokens.mjs'), 'check', '--root', r.root, '--source', draft(r.root, 'tokens.resolver.json')], { encoding: 'utf8' })
+    assert.equal(check.status, 0, check.stderr)
+  } finally {
+    r.cleanup()
+  }
+  // A theme's spacing step 0.5 is written 0_5, and a note names it.
+  const steps = repo(
+    { 'src/theme.ts': "export const theme = { space: { 0.5: '2px', 1: '4px', '1.5': '6px', 2: '8px' } }\n", 'package.json': '{"name":"acme"}' },
+    { tokens: { styleFiles: [], themeFiles: ['src/theme.ts'] } },
+  )
+  try {
+    const out = extract(steps.root)
+    assert.equal(out.status, 0, out.stderr)
+    assert.match(out.stderr, /note: src\/theme\.ts: a token name cannot hold a dot, so 2 names were written with _ instead: spacing\.0\.5 as spacing\.0_5, spacing\.1\.5 as spacing\.1_5/)
+    const base = readJson(draft(steps.root, 'base.tokens.json'))
+    assert.deepEqual(Object.keys(base.spacing).filter((k) => !k.startsWith('$')).sort(), ['0_5', '1', '1_5', '2'])
+    const check = spawnSync(process.execPath, [join(SCRIPTS, 'tokens.mjs'), 'check', '--root', steps.root, '--source', draft(steps.root, 'tokens.resolver.json')], { encoding: 'utf8' })
+    assert.equal(check.status, 0, check.stderr)
+  } finally {
+    steps.cleanup()
+  }
+})
+
+test('a repo without Tailwind: class-like strings are not Tailwind classes, and a theme contract\'s strings are not values', () => {
+  const r = repo(
+    {
+      'src/theme/contract.css.ts': [
+        "import { createGlobalThemeContract } from '@vanilla-extract/css'",
+        'export const vars = createGlobalThemeContract(',
+        "  { typography: { fontFamily: 'font-family' }, shadows: { sm: 'shadow-sm', lg: 'shadow-lg' } },",
+        '  (value) => `acme-${value}`,',
+        ')',
+        '',
+      ].join('\n'),
+      'src/card.css.ts': [
+        "export const card = style({ fontFamily: 'Inter, sans-serif', transition: 'opacity 150ms ease-in-out' })",
+        "export const panel = style({ fontFamily: 'Inter, sans-serif', transition: 'opacity 150ms ease-in-out' })",
+        '',
+      ].join('\n'),
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['vanilla-extract'], tokens: { styleFiles: [] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    const report = read(draft(r.root, 'report.md'))
+    assert.deepEqual(Object.keys(base.font.family).filter((k) => !k.startsWith('$')), ['sans'])
+    assert.equal(base.font.family.sans.$value, 'Inter')
+    assert.ok(!report.includes('Tailwind'), report)
+    // ease-in-out in a string is the CSS keyword, not Tailwind's curve.
+    assert.deepEqual(base.ease.standard.$value, [0.42, 0, 0.58, 1])
+    const audit = spawnSync(process.execPath, [join(SCRIPTS, 'audit.mjs'), '--root', r.root], { encoding: 'utf8' })
+    assert.equal(audit.status, 0, audit.stderr)
+    const latest = readJson(r.root, 'design-system', 'audits', 'latest.json')
+    assert.deepEqual(latest.fontFamilies, [{ family: 'Inter', count: 2 }])
+    assert.equal(latest.inventory.shadow, undefined)
   } finally {
     r.cleanup()
   }

@@ -137,10 +137,13 @@ export function componentProps(source, file, name) {
       props.set(variant, { ...(known ?? {}), name: variant, values, ...(typeof def === 'string' || typeof def === 'boolean' ? { default: String(def) } : {}), from: known?.from ?? 'variants' })
     }
   }
-  // Defaults from the component's own destructured parameters.
+  // Defaults from the component's own destructured parameters, and from an
+  // Astro component's `const { variant = 'primary' } = Astro.props`.
   const params = /\(\s*\{([^}]*)\}\s*(?::\s*[\w<>[\],\s|.]*)?\)\s*(?:=>|\{)/.exec(src)
-  if (params) {
-    for (const [k, v] of Object.entries(defaultsIn(params[1]))) {
+  const astro = /const\s*\{([^}]*)\}\s*(?::[^=]*)?=\s*Astro\.props\b/.exec(src)
+  for (const destructured of [astro, params]) {
+    if (!destructured) continue
+    for (const [k, v] of Object.entries(defaultsIn(destructured[1]))) {
       const known = props.get(k)
       if (known) known.default ??= v
     }
