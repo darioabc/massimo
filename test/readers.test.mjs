@@ -203,8 +203,8 @@ test('CSS: a dark :root keeps its values as the default when a light-theme block
     const t = byPath(tokens)
     assert.deepEqual([t['color.backdrop'].value, t['color.accent'].value, t['color.same'].value, t['color.only-light'].value], ['#272727cc', '#ff801f', '#111111', '#ffffff'])
     assert.deepEqual(notes, [
-      "--accent and --backdrop are set under :root in docs.css and again, differently, under :root[data-theme='light'] in docs.css, which massimo reads as the same default theme; the tokens keep the first values",
-      '--accent is set under :root in docs.css and again, differently, under [data-theme="light"] in docs.css, which massimo reads as the same default theme; its token keeps the first value',
+      "--accent and --backdrop are set under :root in docs.css and, differently, under :root[data-theme='light'] in docs.css, which massimo reads as the same default theme; the tokens keep the values under :root in docs.css",
+      '--accent is set under :root in docs.css and, differently, under [data-theme="light"] in docs.css, which massimo reads as the same default theme; its token keeps the value under :root in docs.css',
     ])
   } finally {
     s.cleanup()
@@ -224,9 +224,47 @@ test('CSS: two files that set one property differently: the first keeps its valu
     // A token's source is the file its default value comes from.
     assert.deepEqual([t['color.ink'].value, t['color.ink'].modes.dark, t['color.ink'].source], ['#ffffff', '#000000', 'b.css'])
     assert.deepEqual(notes, [
-      '--accent is set under :root in a.css and again, differently, under :root in b.css, which massimo reads as the same default theme; its token keeps the first value',
-      '--accent is set under .dark in a.css and again, differently, under .dark in b.css, which massimo reads as the same dark theme; its token keeps the first value',
+      '--accent is set under :root in a.css and, differently, under :root in b.css, which massimo reads as the same default theme; its token keeps the value under :root in a.css',
+      '--accent is set under .dark in a.css and, differently, under .dark in b.css, which massimo reads as the same dark theme; its token keeps the value under .dark in a.css',
     ])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('CSS: a light-theme block before :root gives way to it, since :root is the default theme, and its values are noted', () => {
+  const s = sheets({
+    'docs.css': [
+      "[data-theme='light'] { --backdrop: #f6f6f699; --accent: #b73d00; --only-light: #ffffff; }",
+      ':root { --backdrop: #272727cc; --accent: #ff801f; }',
+      '.light { --accent: #c04000; }',
+      ':root { --accent: #ff9933; }',
+    ].join('\n'),
+  })
+  try {
+    const { tokens, notes } = readCss(s.base, ['docs.css'])
+    const t = byPath(tokens)
+    // The later :root replaces the earlier one in the same file, as the cascade does.
+    assert.deepEqual([t['color.backdrop'].value, t['color.accent'].value, t['color.only-light'].value], ['#272727cc', '#ff9933', '#ffffff'])
+    assert.deepEqual(notes, [
+      "--accent and --backdrop are set under :root in docs.css and, differently, under [data-theme='light'] in docs.css, which massimo reads as the same default theme; the tokens keep the values under :root in docs.css",
+      '--accent is set under :root in docs.css and, differently, under .light in docs.css, which massimo reads as the same default theme; its token keeps the value under :root in docs.css',
+    ])
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('CSS: two files whose light-dark() values differ in their dark side keep the first, with a note', () => {
+  const s = sheets({
+    'a.css': ':root { --bg: light-dark(#ffffff, #111111); }',
+    'b.css': ':root { --bg: light-dark(#ffffff, #222222); }',
+  })
+  try {
+    const { tokens, notes } = readCss(s.base, ['a.css', 'b.css'])
+    const t = byPath(tokens)
+    assert.deepEqual([t['color.bg'].value, t['color.bg'].modes.dark], ['#ffffff', '#111111'])
+    assert.deepEqual(notes, ['--bg is set under :root in a.css and, differently, under :root in b.css, which massimo reads as the same dark theme; its token keeps the value under :root in a.css'])
   } finally {
     s.cleanup()
   }

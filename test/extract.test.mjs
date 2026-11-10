@@ -246,10 +246,30 @@ test('a Tailwind 4 ramp in @theme: a cluster with a colour near a step is covere
     const base = readJson(draft(r.root, 'base.tokens.json'))
     const report = read(draft(r.root, 'report.md'))
     // #ff512f is just past near for orange-400, but its cluster holds #fa5a15, which is orange-400.
-    assert.match(report, /\| `color\.orange-400` \| #fa5a15 \| src\/styles\/theme\.css \| covers #ff512f, #fa5a15, used 4× in code \|/)
+    assert.match(report, /\| `color\.orange-400` \| #fa5a15 \| src\/styles\/theme\.css \| covers #ff512f \(its cluster holds #fa5a15\), used 4× in code \|/)
     // #f97316 is step 400 by its lightness, and --color-orange-400 is the ramp's: it takes the step beside it.
     assert.deepEqual(Object.keys(base.color.orange).filter((k) => !k.startsWith('$')), ['405'])
     assert.equal(base.color.orange['405'].$value.hex, '#f97316')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a Tailwind 3 ramp with a DEFAULT takes the code colours near it as new steps of its own', () => {
+  const r = repo(
+    {
+      'tailwind.config.js': `module.exports = { theme: { extend: { colors: { orange: { DEFAULT: '#f97316', 400: '#fb923c' } } } } }`,
+      'src/app.css': '.a { color: #c2410c; }\n.b { border-color: #c2410c; }\n',
+      'package.json': '{"name":"acme"}',
+    },
+    { tokens: { styleFiles: [], tailwindConfig: 'tailwind.config.js' } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    assert.equal(base.color.orange['600'].$value.hex, '#c2410c')
+    assert.equal(base.color['orange-scale'], undefined)
   } finally {
     r.cleanup()
   }
@@ -272,8 +292,8 @@ test('a stylesheet whose :root is dark and whose light theme sets other values k
     assert.match(report, /\| `color\.backdrop` \| #272727cc \| src\/styles\/docs\.css \|/)
     assert.match(report, /\| `color\.accent` \| #ff801f \| src\/styles\/docs\.css \|/)
     const notes = [
-      "--accent and --backdrop are set under :root in src/styles/docs.css and again, differently, under :root[data-theme='light'] in src/styles/docs.css, which massimo reads as the same default theme; the tokens keep the first values",
-      '--accent is set under :root in src/styles/docs.css and again, differently, under :root in src/styles/main.css, which massimo reads as the same default theme; its token keeps the first value',
+      "--accent and --backdrop are set under :root in src/styles/docs.css and, differently, under :root[data-theme='light'] in src/styles/docs.css, which massimo reads as the same default theme; the tokens keep the values under :root in src/styles/docs.css",
+      '--accent is set under :root in src/styles/docs.css and, differently, under :root in src/styles/main.css, which massimo reads as the same default theme; its token keeps the value under :root in src/styles/docs.css',
     ]
     for (const n of notes) {
       assert.ok(out.stderr.includes(`  note: ${n}\n`), out.stderr)

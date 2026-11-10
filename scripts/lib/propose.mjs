@@ -230,10 +230,12 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   // no token already holds (DaisyUI's color.neutral is a token: its greys
   // go in gray), never at a CSS variable a token already has (a Tailwind 4
   // --color-orange-400 is the token color.orange-400, so color.orange.400
-  // would take its variable).
+  // would take its variable). Only a step's variable can clash: a group
+  // writes none of its own, so a Tailwind 3 ramp's DEFAULT (--color-orange)
+  // leaves the ramp open to new steps.
   const names = new Set(existing.map((t) => key(t.path)))
   const owned = new Set(existing.map((t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))))
-  const groupFor = (family) => [family, ...(family === 'neutral' ? ['gray'] : []), `${family}-scale`].find((g) => !names.has(`color.${g}`) && !owned.has(cssVarFor(['color', g])))
+  const groupFor = (family) => [family, ...(family === 'neutral' ? ['gray'] : []), `${family}-scale`].find((g) => !names.has(`color.${g}`))
   const used = new Map()
   const proposed = []
   for (const cl of audit?.colorClusters ?? []) {
@@ -250,10 +252,18 @@ function proposeColors(existing, audit, report, outliers, minCount) {
     // A cluster is covered when any colour in it is near a token, not only
     // the one that names it.
     const byRepresentative = near(c)
-    const match = byRepresentative ?? cl.members.map((m) => parseColor(m.value)).filter(Boolean).map(near).find(Boolean)
+    let byMember = null
+    for (const m of byRepresentative ? [] : cl.members) {
+      const mc = parseColor(m.value)
+      const x = mc && near(mc)
+      if (x) {
+        byMember = { value: m.value, match: x }
+        break
+      }
+    }
+    const match = byRepresentative ?? byMember?.match
     if (match) {
-      const covered = byRepresentative ? cl.representative : cl.members.map((m) => m.value).join(', ')
-      noteOn(report, key(match.t.path), `covers ${covered}, used ${cl.count}× in code`)
+      noteOn(report, key(match.t.path), `covers ${cl.representative}${byMember ? ` (its cluster holds ${byMember.value})` : ''}, used ${cl.count}× in code`)
       cl.token = key(match.t.path)
       continue
     }

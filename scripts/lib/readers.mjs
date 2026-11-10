@@ -84,16 +84,27 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // Two places that set one property for the same mode with different values
 // (a dark :root and its :root[data-theme='light'] override, which both read
 // as the default theme, or two files): the token keeps the first value, from
-// its own file, and a note names both selectors and files. The same selector
-// again in the same file is the cascade's own override, so the later value
-// replaces the earlier one. `cascade` makes every later value replace the
-// earlier one, for the mirror, which has already chosen one selector per theme.
+// its own file, and a note names both selectors and files. A plain root
+// block is the exception: it is the default theme, so its value replaces one
+// a light theme's selector set before it, with the same note. The same
+// selector again in the same file is the cascade's own override, so the
+// later value replaces the earlier one. The dark side of light-dark() gives
+// way to a value the dark theme sets itself; two light-dark() values from
+// two places keep the first dark side, with the note. `cascade` makes every
+// later value replace the earlier one, for the mirror, which has already
+// chosen one selector per theme.
 export function readCss(root, files, parse = parseCustomProperties, { cascade = false } = {}) {
   const entries = new Map()
-  // Where each mode's value of a property was set, and the later values that
-  // differed from it, by the two places.
+  // Where each mode's value of a property was set, and the values left out
+  // because another place's value was kept, by the two places.
   const setBy = new Map()
   const clashes = new Map()
+  const clash = (mode, kept, left, name) => {
+    const pair = `${mode}\n${kept.selector}\n${kept.file}\n${left.selector}\n${left.file}`
+    const c = clashes.get(pair) ?? { mode, kept, left, names: new Set() }
+    c.names.add(name)
+    clashes.set(pair, c)
+  }
   // Values set only inside a component's scope or under a condition: said in
   // a note when the same property is a token, never taken as its value. A
   // property set only under a condition takes that value, with a note.
@@ -119,38 +130,43 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
       }
       const e = entries.get(p.name) ?? { default: undefined, modes: {}, source: file }
       const split = colorModes(p.value)
-      // light-dark()'s dark side gives way to a value the dark theme sets itself.
       const values = split && p.mode === 'default' ? [['default', split.light], ['dark', split.dark, true]] : [[p.mode, p.value]]
       for (const [mode, value, half] of values) {
         const at = `${p.name}\n${mode}`
         const first = setBy.get(at)
         const kept = mode === 'default' ? e.default : e.modes[mode]
+        const here = { selector: p.selector, file, scope: p.scope }
+        const samePlace = first && first.selector === p.selector && first.file === file
+        // light-dark()'s dark side gives way to a value the dark theme sets itself.
         if (half) {
           if (kept === undefined) {
             e.modes.dark = value
-            setBy.set(at, { half: true })
+            setBy.set(at, { ...here, half: true })
+          } else if (!cascade && first?.half && !samePlace && value !== kept) {
+            clash(mode, first, here, p.name)
           }
           continue
         }
-        if (!first || first.half || cascade || (first.selector === p.selector && first.file === file)) {
+        // A plain root block is the default theme: its value replaces one a
+        // light theme's selector set before it.
+        const rootOverLight = first && !first.half && first.scope === 'selector' && p.scope === 'root'
+        if (!first || first.half || cascade || samePlace || rootOverLight) {
           if (mode === 'default') Object.assign(e, { default: value, source: file })
           else e.modes[mode] = value
-          setBy.set(at, { selector: p.selector, file })
+          setBy.set(at, here)
+          if (rootOverLight && !cascade && value !== kept) clash(mode, here, first, p.name)
         } else if (value !== kept) {
-          const pair = `${mode}\n${first.selector}\n${first.file}\n${p.selector}\n${file}`
-          const c = clashes.get(pair) ?? { mode, first, later: { selector: p.selector, file }, names: new Set() }
-          c.names.add(p.name)
-          clashes.set(pair, c)
+          clash(mode, first, here, p.name)
         }
       }
       entries.set(p.name, e)
     }
   }
   const notes = []
-  for (const { mode, first, later, names } of clashes.values()) {
+  for (const { mode, kept, left, names } of clashes.values()) {
     const list = [...names].sort(natural)
     const named = list.length === 1 ? `${list[0]} is` : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]} are`
-    notes.push(`${named} set under ${first.selector} in ${first.file} and again, differently, under ${later.selector} in ${later.file}, which massimo reads as the same ${mode} theme; ${list.length === 1 ? 'its token keeps the first value' : 'the tokens keep the first values'}`)
+    notes.push(`${named} set under ${kept.selector} in ${kept.file} and, differently, under ${left.selector} in ${left.file}, which massimo reads as the same ${mode} theme; ${list.length === 1 ? 'its token keeps the value' : 'the tokens keep the values'} under ${kept.selector} in ${kept.file}`)
   }
   for (const [name, e] of [...onlyUnder].sort((a, b) => natural(a[0], b[0]))) {
     if (entries.has(name)) continue
