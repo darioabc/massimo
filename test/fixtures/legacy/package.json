@@ -1,0 +1,16 @@
+{
+  "name": "fixture-legacy",
+  "private": true,
+  "dependencies": { "astro": "5", "tailwindcss": "^3.4.0", "typescript": "5" },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "stories:dev": "STORIES=1 astro dev --port 4400",
+    "stories:build": "STORIES=1 astro build --outDir dist-lab",
+    "stories:publish": "npm run stories:build && node scripts/publish-lab.mjs",
+    "system": "node scripts/build-system.mjs",
+    "system:check": "node scripts/build-system.mjs --check",
+    "cards": "node scripts/make-cards.mjs",
+    "lab:shots": "node scripts/shoot-lab.mjs"
+  }
+}

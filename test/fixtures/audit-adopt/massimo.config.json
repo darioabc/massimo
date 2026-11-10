@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "framework": "astro",
+  "styling": ["tailwind3"],
+  "components": { "include": ["src/components/**/*.astro"] },
+  "tokens": {
+    "styleFiles": ["src/styles/tokens.css"],
+    "tailwindConfig": "tailwind.config.mjs",
+    "breakpoints": { "scale": ["40rem", "48rem"], "twins": ["40.0625rem", "48.0625rem"] }
+  },
+  "audit": {
+    "include": ["src/**/*.{css,ts,astro}"],
+    "kinds": { "length": false, "font-family": false, "tailwind-palette": true },
+    "arbitrary": "color",
+    "primitives": "color",
+    "exempt": {
+      "color": { "roles": { "theme": "*" }, "groups": ["Foundations / Art"], "files": ["src/styles/print.css"] },
+      "undefined-var": { "tiers": ["Explorations"] },
+      "breakpoint": { "files": ["src/styles/print.css"] },
+      "primitive-read": { "files": ["src/styles/print.css"] }
+    }
+  },
+  "graph": {
+    "keys": {
+      "inputs": "definitions",
+      "theme": { "role": "scope", "values": ["print"] },
+      "breakpoint": "breakpoint"
+    },
+    "taxonomy": {
+      "tiers": ["Foundations", "Primitives", "Explorations"],
+      "parked": { "marker": "@kept:", "group": "Explorations / Kept" }
+    }
+  }
+}

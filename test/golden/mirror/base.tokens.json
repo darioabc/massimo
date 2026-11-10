@@ -1,0 +1,479 @@
+{
+  "$description": "A mirror of the custom properties in src/styles/theme.css, written by massimo tokens mirror. Do not edit it by hand: change the CSS, then run node ../project/scripts/tokens.mjs mirror.",
+  "color": {
+    "$type": "color",
+    "accent-300": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.9255,
+          0.5608,
+          0.3843
+        ],
+        "hex": "#ec8f62"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--accent-300",
+          "css": "236 143 98"
+        }
+      }
+    },
+    "accent-600": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.7843,
+          0.3059,
+          0.1333
+        ],
+        "hex": "#c84e22"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--accent-600",
+          "css": "200 78 34"
+        }
+      }
+    },
+    "accent": {
+      "$value": "{color.accent-600}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-accent",
+          "css": "rgb(var(--accent-600))",
+          "scopes": {
+            ".band-light": "rgb(var(--accent-600))",
+            ".band-dark": "rgb(var(--accent-300))"
+          }
+        }
+      }
+    },
+    "focus": {
+      "$value": "{color.accent-600}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-focus",
+          "css": "rgb(var(--accent-600))"
+        }
+      }
+    },
+    "ground": {
+      "$value": "{color.sand-200}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-ground",
+          "css": "rgb(var(--sand-200))",
+          "scopes": {
+            ".band-light": "rgb(var(--sand-200))",
+            ".band-dark": "rgb(var(--ink-950))",
+            ".band-block": "var(--c-accent)",
+            "html.dark .band-block": "var(--c-accent)"
+          }
+        }
+      }
+    },
+    "line": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1137,
+          0.1216,
+          0.1255
+        ],
+        "hex": "#1d1f20",
+        "alpha": 0.14
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-line",
+          "css": "rgb(var(--ink-900) / 0.14)",
+          "scopes": {
+            ".band-light": "rgb(var(--ink-900) / 0.14)",
+            ".band-dark": "rgb(var(--cream-50) / 0.16)"
+          }
+        }
+      }
+    },
+    "scrim": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.0863,
+          0.0902,
+          0.0941
+        ],
+        "hex": "#161718",
+        "alpha": 0.5
+      },
+      "$description": "The page dimmed under a dialog, the same in both themes.",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-scrim",
+          "css": "rgb(var(--ink-950) / 0.5)",
+          "scopes": {
+            ".band-light": "rgb(var(--ink-950) / 0.5)",
+            ".band-dark": "rgb(var(--ink-950) / 0.5)"
+          }
+        }
+      }
+    },
+    "surface": {
+      "$value": "{color.sand-50}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-surface",
+          "css": "rgb(var(--sand-50))",
+          "scopes": {
+            ".band-light": "rgb(var(--sand-50))",
+            ".band-dark": "rgb(var(--ink-900))"
+          }
+        }
+      }
+    },
+    "text": {
+      "$value": "{color.ink-900}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-text",
+          "css": "rgb(var(--ink-900))",
+          "scopes": {
+            ".band-light": "rgb(var(--ink-900))",
+            ".band-dark": "rgb(var(--cream-50))",
+            ".band-block": "rgb(var(--sand-200))",
+            "html.dark .band-block": "rgb(var(--ink-950))",
+            ".dark": "#ffffff"
+          }
+        }
+      }
+    },
+    "text-muted": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1137,
+          0.1216,
+          0.1255
+        ],
+        "hex": "#1d1f20",
+        "alpha": 0.62
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--c-text-muted",
+          "css": "rgb(var(--ink-900) / 0.62)",
+          "scopes": {
+            ".band-light": "rgb(var(--ink-900) / 0.62)",
+            ".band-dark": "rgb(var(--cream-50) / 0.62)"
+          }
+        }
+      }
+    },
+    "cream-50": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.949,
+          0.9412,
+          0.9216
+        ],
+        "hex": "#f2f0eb"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--cream-50",
+          "css": "242 240 235"
+        }
+      }
+    },
+    "ink-900": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1137,
+          0.1216,
+          0.1255
+        ],
+        "hex": "#1d1f20"
+      },
+      "$description": "#1d1f20 ink",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--ink-900",
+          "css": "29 31 32"
+        }
+      }
+    },
+    "ink-950": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.0863,
+          0.0902,
+          0.0941
+        ],
+        "hex": "#161718"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--ink-950",
+          "css": "22 23 24"
+        }
+      }
+    },
+    "sand-50": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          1,
+          0.9922,
+          0.9725
+        ],
+        "hex": "#fffdf8"
+      },
+      "$description": "#fffdf8 a sheet",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--sand-50",
+          "css": "255 253 248"
+        }
+      }
+    },
+    "sand-200": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.9255,
+          0.898,
+          0.8196
+        ],
+        "hex": "#ece5d1"
+      },
+      "$description": "#ece5d1 the ground",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--sand-200",
+          "css": "236 229 209"
+        }
+      }
+    }
+  },
+  "duration": {
+    "$type": "duration",
+    "2": {
+      "$value": {
+        "value": 240,
+        "unit": "ms"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--dur-2"
+        }
+      }
+    }
+  },
+  "ease": {
+    "$type": "cubicBezier",
+    "out": {
+      "$value": [
+        0.22,
+        0.61,
+        0.36,
+        1
+      ]
+    }
+  },
+  "font": {
+    "$type": "fontFamily",
+    "body": {
+      "$value": [
+        "Geist",
+        "system-ui",
+        "sans-serif"
+      ],
+      "$description": "The reading face.",
+      "$extensions": {
+        "massimo": {
+          "css": "\"Geist\", system-ui, sans-serif"
+        }
+      }
+    }
+  },
+  "leading": {
+    "$type": "number",
+    "h2": {
+      "$value": 1.2,
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--h2-leading"
+        }
+      }
+    }
+  },
+  "text": {
+    "$type": "dimension",
+    "h2": {
+      "$value": {
+        "value": 2.5,
+        "unit": "rem"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--h2-size",
+          "css": "clamp(2rem, 1.5rem + 2vw, 2.5rem)"
+        }
+      }
+    }
+  },
+  "tracking": {
+    "$type": "dimension",
+    "h2": {
+      "$value": {
+        "value": -0.32,
+        "unit": "px"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--h2-tracking",
+          "css": "-0.02em"
+        }
+      }
+    }
+  },
+  "font-weight": {
+    "$type": "number",
+    "h2": {
+      "$value": "{other.weight-semibold}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--h2-weight"
+        }
+      }
+    }
+  },
+  "radius": {
+    "$type": "dimension",
+    "2": {
+      "$value": {
+        "value": 0.5,
+        "unit": "rem"
+      }
+    }
+  },
+  "spacing": {
+    "$type": "dimension",
+    "4": {
+      "$value": {
+        "value": 1,
+        "unit": "rem"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--space-4"
+        }
+      }
+    },
+    "10": {
+      "$value": {
+        "value": 2.5,
+        "unit": "rem"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--space-10"
+        }
+      }
+    },
+    "16": {
+      "$value": {
+        "value": 4,
+        "unit": "rem"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--space-16"
+        }
+      }
+    }
+  },
+  "other": {
+    "$type": "number",
+    "weight-semibold": {
+      "$value": 600,
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--weight-semibold"
+        }
+      }
+    }
+  },
+  "z": {
+    "$type": "number",
+    "bar": {
+      "$value": 50
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2,
+      "cssOnly": {
+        "color.hairline": {
+          "css": "color-mix(in srgb, var(--c-text) 24%, transparent)",
+          "after": "color.ground",
+          "cssVar": "--c-hairline",
+          "scopes": {
+            ".band-light": "color-mix(in srgb, var(--c-text) 24%, transparent)",
+            ".band-dark": "color-mix(in srgb, var(--c-text) 24%, transparent)",
+            ".band-block": "color-mix(in srgb, var(--c-text) 24%, transparent)"
+          }
+        },
+        "other.focus-ring": {
+          "css": "2px solid var(--c-focus)",
+          "after": "ease.out",
+          "cssVar": "--focus-ring",
+          "scopes": {
+            ".band-light": "2px solid var(--c-focus)",
+            ".band-dark": "2px solid var(--c-focus)",
+            ".band-block": "2px solid var(--c-focus)"
+          }
+        },
+        "other.lift": {
+          "css": "0 4px 0 var(--c-text)",
+          "after": "color.ink-950",
+          "cssVar": "--lift",
+          "scopes": {
+            ".band-light": "0 4px 0 var(--c-text)",
+            ".band-dark": "0 4px 0 var(--c-text)",
+            ".band-block": "0 4px 0 var(--c-text)"
+          }
+        },
+        "other.section-gap": {
+          "css": "calc(var(--space-16) + var(--space-4))",
+          "after": "color.sand-200",
+          "cssVar": "--section-gap",
+          "scopes": {
+            "@media (max-width: 60rem) :root": "calc(var(--space-10) + var(--space-4))"
+          }
+        }
+      },
+      "mirror": {
+        "from": [
+          "src/styles/theme.css"
+        ],
+        "scoped": {
+          "--c-art": {
+            "scopes": {
+              ".band-block": "rgb(var(--ink-900))",
+              "html.dark .band-block": "rgb(var(--cream-50))"
+            }
+          },
+          "--c-mark": {
+            "scopes": {
+              ".band-dark": "var(--c-focus)"
+            }
+          }
+        }
+      }
+    }
+  }
+}

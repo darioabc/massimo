@@ -1,0 +1,8 @@
+{
+  "note": "Counts of the policy problems the code still has. npm run system:check fails when one rises.",
+  "rules": {
+    "raw-colour": { "count": 1, "offenders": { "src/components/Poster.astro: #ff0000": 1 } },
+    "undefined-var": { "count": 0, "offenders": {} },
+    "logo-colour": { "count": 0, "offenders": {} }
+  }
+}

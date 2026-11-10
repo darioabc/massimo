@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const CONFIG_FILE = 'massimo.config.json'
-export const SCRIPTS_VERSION = '0.2.1'
+export const SCRIPTS_VERSION = '0.3.0'
 
 export const DEFAULTS = {
   version: 1,
@@ -33,6 +33,15 @@ export const DEFAULTS = {
     url: null,
     storyUrl: null,
     port: 4650,
+    // A lane that lists its stories in a manifest (read as text, never run),
+    // and where a slug's page and frame live, as paths with `{slug}`. Null
+    // keeps finding stories by file name.
+    manifest: null,
+    pages: null,
+    frames: null,
+    // The places (`Root / Group`) where a manifest story may name no
+    // component: token pages, decision records.
+    componentless: [],
   },
   tokens: {
     // Defaults to <projectDir>/tokens/tokens.json (see loadConfig).
@@ -52,17 +61,62 @@ export const DEFAULTS = {
     importFiles: [],
     figmaExport: null,
     outputs: [],
+    // The media widths the audit's breakpoint kind allows: { scale: ['40rem'],
+    // twins: ['40.0625rem'] }, the twins being each step's min-width partner.
+    breakpoints: null,
+    // The style files stay the source, and the token set at tokens.source is
+    // their checked mirror (`tokens.mjs mirror`), which everything else reads.
+    mirror: false,
+    // What `tokens.mjs resolved` lists in tokens/resolved.json: { files,
+    // layers, families, typeClasses }, all globs. Null lists tokens.styleFiles
+    // as one layer.
+    inventory: null,
   },
   audit: {
     include: ['src/**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}'],
     // Stories stage components with fixture values on purpose; they are not drift.
     exclude: ['**/*.test.*', '**/*.spec.*', '**/*.d.ts', '**/*.stories.*', '**/*.story.*', 'src/stories/**'],
+    // Kinds turned off by name, as { length: false }; true turns the Tailwind
+    // palette kind on with the Tailwind config's colours as the repo's own.
+    kinds: {},
+    // Per kind, what it skips: { color: { roles: { theme: '*' }, tiers: [], groups: [], files: [] } }.
+    exempt: {},
+    // 'all' counts every Tailwind arbitrary value; 'color' only the colours.
+    arbitrary: 'all',
+    // 'all' reads every literal token as a primitive; 'color' only colours,
+    // and with no token set yet, the literal colours tokens.styleFiles define.
+    primitives: 'all',
+    // --check also fails while the baseline is behind the code.
+    failWhenBehind: false,
+  },
+  guard: {
+    // Project commands ds:check runs as well, as [{ name, run }].
+    extraChecks: [],
   },
   ignore: ['node_modules', 'dist', 'build', '.git', '.next', '.nuxt', '.svelte-kit', '.astro', '.output', 'coverage', '.turbo', '.vercel', '.cache', 'out'],
   graph: {
     // ds: header keys a repo uses beyond the built-in ones (parents, children,
     // never, use-when, group, no-story), so they are read instead of reported.
     extraKeys: [],
+    // A repo's own keys with the role each plays (lib/roles.mjs): a role name,
+    // or { role, values, under }.
+    keys: {},
+    // { tiers, groups, placement, rules, parked, require, notLive }: the tiers
+    // in order, each group with a line on what belongs in it, the placement
+    // test, path rules that give a file its group, the marker of a parked file
+    // and its group, the keys each tier needs, and the tiers that are not live
+    // code, so need no story. Null takes any group.
+    taxonomy: null,
+    // Node kinds beyond components, each a list of globs: { layout: [...], page: [...] }.
+    kinds: {},
+    // Imports read beyond import statements: 'mdx' (the import lines of MDX
+    // files in the consumers) and 'glob' (import.meta.glob calls).
+    edges: [],
+    // 'anywhere' reads a ds: line in any comment; 'top' reads the first
+    // comment block only, and a ds: line anywhere else is a fault.
+    header: 'anywhere',
+    // Header faults fail the write and --check, not only the report.
+    strictFaults: false,
   },
   ticketPattern: null,
   figma: { fileKey: null },
@@ -70,7 +124,7 @@ export const DEFAULTS = {
 
 // Flags that never take a value, so `--strict build` keeps `build` as a
 // positional instead of reading it as the flag's value.
-export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts'])
+export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle'])
 
 // Parse argv into positionals and flags. `--a b`, `--a=b`, and a bare `--a`
 // (true) all work; a repeated flag collects into an array.
@@ -217,12 +271,14 @@ const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts f
 
 // The newest format of each file this version reads. A file in a newer one
 // was written by a newer massimo, and reading it as an older one would guess.
-export const FORMATS_READ = { config: 1, graph: 1, baseline: 1 }
-const newerMessage = (kind, version, where) =>
+// baseline 2: it tracks a kind added in 0.3.0 (audit.mjs NEWER_KINDS).
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1 }
+// Why a file of `kind` at `version` is too new to read, or null.
+export const newerMessage = (kind, version, where) =>
   typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null
-export function refuseNewer(kind, version, where) {
+export function refuseNewer(kind, version, where, code = 1) {
   const message = newerMessage(kind, version, where)
-  if (message) fail(message)
+  if (message) fail(message, code)
 }
 
 // Why a config cannot be used by these scripts, or null.

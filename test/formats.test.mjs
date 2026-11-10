@@ -53,11 +53,11 @@ test('a graph.json or baseline.json in a newer format is refused, not read as th
   assert.equal(docs.status, 1)
   assert.match(docs.stderr, /graph\.json is format 2/)
   mkdirSync(join(ctx.project, 'audits'), { recursive: true })
-  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 2, kinds: {} }))
+  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 3, kinds: {} }))
   for (const flag of ['--check', '--lower']) {
     const r = run('audit', ctx, [flag])
     assert.equal(r.status, 1, flag)
-    assert.match(r.stderr, /audits\/baseline\.json is format 2/)
+    assert.match(r.stderr, /audits\/baseline\.json is format 3, and these scripts \(\S+\) read up to 2/)
   }
 })
 
@@ -102,10 +102,10 @@ test('graph and audit --baseline never check against or overwrite a newer file',
   assert.match(g.stderr, /graph\.json is format 2/)
   assert.equal(readJson(ctx.project, 'graph.json').version, 2)
   mkdirSync(join(ctx.project, 'audits'), { recursive: true })
-  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 2, kinds: {} }))
+  writeFileSync(join(ctx.project, 'audits', 'baseline.json'), JSON.stringify({ version: 3, kinds: {} }))
   const a = run('audit', ctx, ['--baseline'])
   assert.equal(a.status, 1)
-  assert.equal(readJson(ctx.project, 'audits', 'baseline.json').version, 2)
+  assert.equal(readJson(ctx.project, 'audits', 'baseline.json').version, 3)
 })
 
 test('a vendored version in either quote style reads; one that cannot be read neither warns nor blocks', () => {
@@ -132,17 +132,18 @@ test('the hooks never fail on a config these scripts cannot use: the guard still
   assert.match(JSON.parse(start.stdout).systemMessage, /massimo\.config\.json is format 2/)
 })
 
-test('a project on 0.2.0 scripts is told to update, and a config asking for 0.2.1 runs on these', () => {
+test('a project on 0.2.0 scripts is told to update, and a config asking for this version runs on these', () => {
   const ctx = fresh()
+  const v = SCRIPTS_VERSION.replace(/\./g, '\\.')
   // init takes its project folder from the config; the other scripts here from --project-dir.
   for (const dir of [ctx.project, join(ctx.root, readJson(ctx.root, 'massimo.config.json').projectDir ?? 'design-system')]) {
     mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true })
     writeFileSync(join(dir, 'scripts', 'lib', 'project.mjs'), "export const CONFIG_FILE = 'massimo.config.json'\nexport const SCRIPTS_VERSION = '0.2.0'\n")
   }
-  assert.match(run('graph', ctx).stderr, /vendored scripts are 0\.2\.0, older than this 0\.2\.1/)
+  assert.match(run('graph', ctx).stderr, new RegExp(`vendored scripts are 0\\.2\\.0, older than this ${v}`))
   const init = run('init', ctx, ['--no-npm-scripts'])
   assert.equal(init.status, 0, init.stderr)
-  assert.ok(JSON.parse(init.stdout).warnings.some((w) => /vendored scripts are 0\.2\.0, the plugin has 0\.2\.1: re-run init with --update-scripts/.test(w)))
-  config(ctx, { minScripts: '0.2.1' })
+  assert.ok(JSON.parse(init.stdout).warnings.some((w) => new RegExp(`vendored scripts are 0\\.2\\.0, the plugin has ${v}: re-run init with --update-scripts`).test(w)))
+  config(ctx, { minScripts: SCRIPTS_VERSION })
   assert.equal(run('graph', ctx).status, 0)
 })

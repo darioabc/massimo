@@ -1,16 +1,16 @@
 :root,
-.tone-paper {
+.band-light {
   --c-text: #111111;
   --gap: 4rem;
 }
 html.dark,
-.tone-ink {
+.band-dark {
   --c-text: #eeeeee;
 }
-.tone-block {
+.band-block {
   --c-text: #fafafa;
 }
-html.dark .tone-block {
+html.dark .band-block {
   --c-text: #000000;
 }
 @media (max-width: 60rem) {

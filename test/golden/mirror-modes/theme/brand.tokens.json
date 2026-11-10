@@ -1,0 +1,28 @@
+{
+  "$description": "What changes in the brand context.",
+  "color": {
+    "$type": "color",
+    "paper": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          1,
+          0.9569,
+          0.9098
+        ],
+        "hex": "#fff4e8"
+      },
+      "$description": "a sheet",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--paper"
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2
+    }
+  }
+}

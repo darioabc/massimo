@@ -401,7 +401,28 @@ export function createResolver(root, config = {}) {
   }
   const installed = (spec) => declared.has(packageName(spec)) || existsSync(join(root, 'node_modules', packageName(spec)))
 
-  return function resolveImport(fromFile, rawSpec) {
+  // Where a specifier points, as a repo-relative path, without checking that
+  // anything is there: for an import.meta.glob pattern, whose files are
+  // matched afterwards. A bare specifier sits under the first tsconfig
+  // baseUrl, as resolveImport reads it; without one it is a package: null.
+  resolveImport.pathOf = (fromFile, spec) => {
+    if (spec.startsWith('./') || spec.startsWith('../')) return toRel(resolve(dirname(join(root, fromFile)), spec))
+    if (spec.startsWith('/')) return spec.replace(/^\/+/, '')
+    for (const { key, target } of aliases) {
+      if (spec === key || (spec.startsWith(key) && (key.endsWith('/') || spec[key.length] === '/'))) {
+        return toRel(join(root, target.replace(/^\.\//, ''), spec.slice(key.length).replace(/^\//, '')))
+      }
+    }
+    for (const p of patterns) {
+      if (!p.star || !spec.startsWith(p.prefix) || !spec.endsWith(p.suffix) || p.targets.length === 0) continue
+      return toRel(resolve(p.base, p.targets[0].replace('*', spec.slice(p.prefix.length, spec.length - p.suffix.length))))
+    }
+    return baseUrls.length > 0 ? toRel(resolve(baseUrls[0], spec)) : null
+  }
+
+  return resolveImport
+
+  function resolveImport(fromFile, rawSpec) {
     if (/^[a-z][a-z0-9+.-]*:/i.test(rawSpec) || rawSpec.startsWith('#')) return { external: rawSpec }
     const spec = rawSpec.replace(/[?#].*$/, '')
     const fromDir = dirname(join(root, fromFile))
@@ -463,7 +484,7 @@ export function isTestFile(file) {
 
 export const RULE_KEYS = ['parents', 'children', 'never', 'use-when', 'group', 'no-story']
 
-const RULE_START = /(?:\/\/+|\/\*+|<!--+|^[ \t]*\*+(?!\/))[ \t]*ds:([a-z][a-z-]*):?(?:[ \t]+(.*?))?[ \t]*\r?$/
+const RULE_START = /(?:\/\/+|\/\*+|<!--+|^[ \t]*\*+(?!\/))[ \t]*ds:([a-z][a-z-]*)(:?)(?:[ \t]+(.*?))?[ \t]*\r?$/
 const COMMENT_CLOSE = /\*+\/\}?\s*$|--+>\s*$/
 
 // The text of a pure comment line with its markers removed, or null when the
@@ -483,16 +504,20 @@ function commentText(line) {
 // `<!-- -->`, `{/* */}`), one key per line: `ds:group Primitives / Actions`.
 // A value wraps onto the comment lines after it until a blank comment line,
 // code, or another `ds:` line. Repeated keys accumulate, joined by a space.
-// Returns { rules, unknown }: `rules` holds the known keys in RULE_KEYS order
-// (a bare `ds:no-story` is kept as ''); `unknown` lists keys not in RULE_KEYS.
+// Returns { rules, unknown, entries }: `rules` holds the known keys in
+// RULE_KEYS order (a bare `ds:no-story` is kept as ''); `unknown` lists keys not
+// in RULE_KEYS; `entries` is every `ds:` line as written, `{ key, value, line }`,
+// for checks that need a repeat or a position the joined `rules` lose.
 export function extractRules(source, extraKeys = []) {
   const keys = [...RULE_KEYS, ...extraKeys.filter((k) => !RULE_KEYS.includes(k))]
   const found = {}
   const unknown = []
+  const entries = []
   let current = null
   const finish = () => {
     if (!current) return
     const value = current.parts.join(' ')
+    entries.push({ key: current.key, value, line: current.line, ...(current.colon ? { colon: true } : {}) })
     if (!keys.includes(current.key)) {
       if (!unknown.includes(current.key)) unknown.push(current.key)
     } else if (value) {
@@ -502,12 +527,14 @@ export function extractRules(source, extraKeys = []) {
     }
     current = null
   }
-  for (const line of source.split(/\r?\n/)) {
+  const lines = source.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     const m = RULE_START.exec(line)
     if (m) {
       finish()
-      const first = (m[2] ?? '').replace(/\s*(?:\*+\/\}?|--+>)\s*$/, '').trim()
-      current = { key: m[1], parts: first ? [first] : [], open: !COMMENT_CLOSE.test(line) }
+      const first = (m[3] ?? '').replace(/\s*(?:\*+\/\}?|--+>)\s*$/, '').trim()
+      current = { key: m[1], colon: m[2] === ':', parts: first ? [first] : [], open: !COMMENT_CLOSE.test(line), line: i + 1 }
     } else if (current?.open) {
       const text = commentText(line)
       if (text) {
@@ -523,7 +550,7 @@ export function extractRules(source, extraKeys = []) {
   finish()
   const rules = {}
   for (const key of keys) if (found[key] !== undefined) rules[key] = found[key]
-  return { rules, unknown }
+  return { rules, unknown, entries }
 }
 
 // ── CSS custom properties ───────────────────────────────────────────────────
@@ -588,7 +615,7 @@ export function parseCssBlocks(css, file = 'x.css') {
 const unquote = (s) => s.replace(/^['"]|['"]$/g, '')
 
 // A selector list split at its top-level commas (`:is(a, b)` stays whole).
-function selectorMembers(selector) {
+export function selectorMembers(selector) {
   const out = []
   let depth = 0
   let cur = ''
@@ -660,9 +687,9 @@ function classifyCompound(compound) {
 
 // One member of a selector list. A theme or the root only when every
 // compound in it is one (`[data-theme="dark"] body`, `html.dark`); a member
-// that reaches into the page (`html.dark .tone-block`, `.dark .card`) is a
+// that reaches into the page (`html.dark .band-block`, `.dark .card`) is a
 // component's scope, whatever theme it names.
-function classifyMember(member) {
+export function classifyMember(member) {
   const parts = compounds(member).map(classifyCompound)
   if (parts.length === 0 || parts.some((p) => p.kind === 'other')) return { mode: 'default', scope: 'local' }
   const theme = parts.filter((p) => p.kind === 'theme').pop()
@@ -675,7 +702,7 @@ function classifyMember(member) {
 // (@layer, or a media query of only `screen` or `all`), or `condition` (a
 // width, a motion preference, @supports, @container: an override). A colour
 // scheme together with another feature is a condition in that scheme.
-function atRuleKind(header) {
+export function atRuleKind(header) {
   if (/^@layer\b/i.test(header)) return { kind: 'transparent' }
   if (!/^@media\b/i.test(header)) return { kind: 'condition' }
   const query = header.replace(/^@media\s*/i, '')
@@ -694,7 +721,7 @@ function atRuleKind(header) {
 // component-local selector, or `conditional`: a root value under a
 // condition, such as a phone-width @media, which is an override and never
 // the default). Each member of a selector list is classified on its own:
-// `html.dark, .tone-ink` sets the dark theme. A nested selector is read with
+// `html.dark, .band-dark` sets the dark theme. A nested selector is read with
 // its parent in place of `&`.
 function classifyBlock(block) {
   const headers = block.headers

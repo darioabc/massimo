@@ -17,6 +17,7 @@ This flow does the graph, tokens and documentation work of three phases in one s
 - No `massimo.config.json` → run the start skill's Kickoff first (detect, a few questions, `init.mjs`), then come back. Say that extract covers graph, tokens and docs.
 - An existing token set (`tokens.mjs check` reads it): extract still helps (it proposes what the set lacks), but say so and agree whether to extend the set or start a draft beside it.
 - A resume: read `<project>/tokens/draft/report.md` and the decisions log, tell the user which families are approved, and continue from the next one.
+- CSS that has to stay the source (its file also holds component classes, or scripts read it as it is): the token set is a mirror of it, not a draft beside it. Say so, and follow the tokens skill's step 3 for `tokens.mirror` instead of steps 4 to 6 here: it sets `minScripts` to `0.3.0`, and runs `tokens.mjs resolved` after mirror and build.
 
 ## Run
 

@@ -111,7 +111,7 @@ const handmade = () => ({
       modes: ['Light', 'Dark'],
       variables: [
         { id: 'V:1', name: 'c-ground', type: 'COLOR', codeSyntax: { WEB: 'var(--c-ground)' }, values: { Light: { r: 0.9, g: 0.9, b: 0.8, a: 1 }, Dark: { r: 0.1, g: 0.1, b: 0.1, a: 1 } } },
-        { id: 'V:2', name: 'tone-block/c-ground', type: 'COLOR', codeSyntax: { WEB: 'var(--c-ground)' }, values: { Light: { r: 0.8, g: 0.3, b: 0.1, a: 1 }, Dark: { r: 0.9, g: 0.5, b: 0.4, a: 1 } } },
+        { id: 'V:2', name: 'band-block/c-ground', type: 'COLOR', codeSyntax: { WEB: 'var(--c-ground)' }, values: { Light: { r: 0.8, g: 0.3, b: 0.1, a: 1 }, Dark: { r: 0.9, g: 0.5, b: 0.4, a: 1 } } },
       ],
     },
   ],
@@ -125,7 +125,7 @@ test('a library made by hand is paired by code syntax, compared resolved, and ne
   assert.ok(!mismatches.some((m) => /color\/ground/.test(m)), mismatches.join('\n'))
   assert.deepEqual(mismatches, ['variable color/paper is not in Figma', 'variable color/ink is not in Figma'])
   assert.ok(notes.includes('variable color/ground is c-ground in Figma (Paper), paired by its code syntax --c-ground'))
-  assert.ok(notes.includes('tone-block/c-ground (Paper) also names --c-ground in its code syntax; c-ground (Paper) was paired with color/ground'))
+  assert.ok(notes.includes('band-block/c-ground (Paper) also names --c-ground in its code syntax; c-ground (Paper) was paired with color/ground'))
   assert.deepEqual({ figmaName: mirror.variables['color/ground'].figmaName, match: mirror.variables['color/ground'].match }, { figmaName: 'c-ground', match: 'code' })
   assert.equal(mirror.modes, 'all')
   // Recorded again, the pair is still one made by code syntax, compared resolved.
@@ -142,7 +142,7 @@ test('a library made by hand is paired by code syntax, compared resolved, and ne
   edited.collections[0].variables[0].values.Light = { r: 1, g: 1, b: 1, a: 1 }
   const { sections } = driftReport(coded, mirror, edited)
   assert.deepEqual(sections.figma, ['`color/ground` (`c-ground` in Figma) (Light): mirrored rgba(230, 230, 204, 1), now rgba(255, 255, 255, 1) in Figma'])
-  assert.deepEqual(sections.onlyFigma, ['`tone-block/c-ground`: made in Figma, not in code'])
+  assert.deepEqual(sections.onlyFigma, ['`band-block/c-ground`: made in Figma, not in code'])
 })
 
 test('a variable renamed in Figma stays paired by the id recorded last time', () => {

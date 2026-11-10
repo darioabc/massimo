@@ -43,8 +43,8 @@ export function channelColor(value) {
 // suffixes systems name their families with: `--space-4` is spacing,
 // `--dur-2` a duration, and `--h1-size` with `--h1-leading` a type step. A
 // colour is known by its value instead, since its name rarely says so
-// (`--paper-200`, `--c-text`).
-const PREFIX_GROUPS = [
+// (`--sand-200`, `--c-text`).
+export const PREFIX_GROUPS = [
   [/^(?:color|colour|clr|c)(?:-|$)/, 'color'],
   [/^(?:spacing|space|sp|gap)(?:-|$)/, 'spacing'],
   [/^(?:radius|radii|rounded)(?:-|$)/, 'radius'],
@@ -61,7 +61,7 @@ const PREFIX_GROUPS = [
   [/^(?:border-width|stroke)(?:-|$)/, 'border-width'],
   [/^size(?:-|$)/, 'size'],
 ]
-const SUFFIX_GROUPS = [
+export const SUFFIX_GROUPS = [
   [/-(?:font-size|size|fs)$/, 'text'],
   [/-(?:line-height|leading|lh)$/, 'leading'],
   [/-(?:letter-spacing|tracking)$/, 'tracking'],
@@ -77,8 +77,10 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // reference to it, and `rgb(var(--x) / 0.14)` the colour it makes in each
 // theme, its exact CSS kept. A fluid clamp() size takes its largest value,
 // its CSS kept too. Stems with a size and a line height, weight or tracking
-// (`--h1-size`, `--h1-leading`) come back as type steps.
-export function readCss(root, files) {
+// (`--h1-size`, `--h1-leading`) come back as type steps. `parse` reads one
+// file's properties; the token mirror passes one that places each selector
+// by the config's theme selectors instead of by the names themes usually have.
+export function readCss(root, files, parse = parseCustomProperties) {
   const entries = new Map()
   // Values set only inside a component's scope or under a condition: said in
   // a note when the same property is a token, never taken as its value. A
@@ -86,7 +88,7 @@ export function readCss(root, files) {
   const elsewhere = new Map()
   const onlyUnder = new Map()
   for (const file of files) {
-    for (const p of parseCustomProperties(readFileSync(join(root, file), 'utf8'), file)) {
+    for (const p of parse(readFileSync(join(root, file), 'utf8'), file)) {
       if (p.name.startsWith('--tw-')) continue
       if (p.scope === 'conditional') {
         const e = onlyUnder.get(p.name) ?? { default: undefined, modes: {}, source: file, condition: p.condition }
@@ -297,12 +299,16 @@ function cssValue(v) {
   return v.trim()
 }
 
+// Where a Tailwind 3 config's object starts, for findObject. The audit reads
+// screens and colours from the same place.
+export const TAILWIND_CONFIG_STARTS = [/export\s+default\s*(?:defineConfig\(\s*|\{\s*\.\.\.)?/, /module\.exports\s*=\s*/, /defineConfig\(\s*/, /const\s+config(?:\s*:\s*[\w.]+)?\s*=\s*/]
+
 // The theme a Tailwind 3 config sets (both `theme` and `theme.extend`), read
 // as text. Spreads of Tailwind's own defaults and anything computed are
 // skipped and named in the notes; nothing in the file is run.
 export function readTailwindConfig(root, file) {
   const src = readFileSync(join(root, file), 'utf8')
-  const config = findObject(src, [/export\s+default\s*(?:defineConfig\(\s*|\{\s*\.\.\.)?/, /module\.exports\s*=\s*/, /defineConfig\(\s*/, /const\s+config(?:\s*:\s*[\w.]+)?\s*=\s*/])
+  const config = findObject(src, TAILWIND_CONFIG_STARTS)
   const notes = []
   if (!config) return { tokens: [], notes: [`${file}: no config object found to read`] }
   const theme = isObject(config.theme) ? config.theme : {}
@@ -508,7 +514,7 @@ export function readFigmaExport(root, file) {
   }
   // The CSS variable a variable's code syntax names goes to one variable only:
   // the one named like it, else the first (a scoped override such as
-  // tone-block/c-ground keeps its own name).
+  // band-block/c-ground keeps its own name).
   const claims = new Map()
   for (const c of collections) {
     for (const v of c.variables ?? []) {

@@ -87,3 +87,163 @@ export function designMd(data) {
   for (const s of SECTIONS) if (body[s]) out.push(`## ${s}`, '', ...body[s], '')
   return `${out.join('\n').trimEnd()}\n`
 }
+
+// ── Reading a DESIGN.md ─────────────────────────────────────────────────────
+
+const isMap = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+
+// One YAML scalar, or undefined (with a problem) for what the subset does not
+// hold: a flow collection, a block scalar, an anchor, an alias or a tag.
+function yamlValue(raw, line, problems) {
+  const s = raw.trim()
+  if (s.startsWith('"')) {
+    const m = /^"(?:\\.|[^"\\])*"/.exec(s)
+    try {
+      if (m) return JSON.parse(m[0])
+    } catch {
+      // falls through to the problem below
+    }
+    problems.push({ line, message: `a double-quoted value that does not close or escape cleanly: ${s}` })
+    return undefined
+  }
+  if (s.startsWith("'")) {
+    const m = /^'((?:''|[^'])*)'/.exec(s)
+    if (m) return m[1].replace(/''/g, "'")
+    problems.push({ line, message: `a single-quoted value that does not close: ${s}` })
+    return undefined
+  }
+  const plain = s.replace(/\s+#.*$/, '')
+  if (/^[[{|>&*!]/.test(plain)) {
+    problems.push({ line, message: `"${plain}" is YAML this reader leaves out (a flow collection, a block scalar, an anchor, an alias or a tag)` })
+    return undefined
+  }
+  if (plain === 'true' || plain === 'false') return plain === 'true'
+  if (plain === 'null' || plain === '~' || plain === '') return null
+  if (/^-?\d+(?:\.\d+)?$/.test(plain)) return Number(plain)
+  return plain
+}
+
+// The front matter as data: nested maps, lists of scalars, quoted and plain
+// scalars and `#` comments, the subset DESIGN.md uses. What the subset cannot
+// hold is named in `problems` with its line, and left out rather than
+// guessed. `first` is the line number of the text's first line.
+export function readYaml(text, problems = [], first = 1) {
+  const lines = []
+  text.split(/\r?\n/).forEach((raw, i) => {
+    if (/^\s*(?:#.*)?$/.test(raw)) return
+    lines.push({ line: first + i, indent: raw.length - raw.trimStart().length, text: raw.trim() })
+  })
+  let at = 0
+  const block = (indent) => {
+    const isList = lines[at].text.startsWith('- ') || lines[at].text === '-'
+    const out = isList ? [] : {}
+    while (at < lines.length && lines[at].indent === indent) {
+      const { line, text: t } = lines[at]
+      at++
+      if (isList) {
+        const item = t.replace(/^-\s*/, '')
+        if (!item.startsWith('- ') && /^(?:"[^"]*"|'[^']*'|[^\s"'#][^:#]*?)\s*:(?:\s|$)/.test(item)) problems.push({ line, message: 'a list of maps, which this reader leaves out' })
+        else {
+          const v = yamlValue(item, line, problems)
+          if (v !== undefined) out.push(v)
+        }
+        while (at < lines.length && lines[at].indent > indent) at++
+        continue
+      }
+      const m = /^("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s"'#][^:#]*?)\s*:(?:\s+(.*))?$/.exec(t)
+      if (!m) {
+        problems.push({ line, message: `"${t}" is not a key and a value` })
+        while (at < lines.length && lines[at].indent > indent) at++
+        continue
+      }
+      const key = /^["']/.test(m[1]) ? yamlValue(m[1], line, problems) : m[1]
+      const rest = (m[2] ?? '').replace(/^#.*$/, '').trim()
+      if (rest) {
+        const v = yamlValue(rest, line, problems)
+        if (v !== undefined) out[key] = v
+        while (at < lines.length && lines[at].indent > indent) at++
+      } else if (at < lines.length && lines[at].indent > indent) {
+        out[key] = block(lines[at].indent)
+      } else {
+        out[key] = null
+      }
+    }
+    if (at < lines.length && lines[at].indent > indent) {
+      problems.push({ line: lines[at].line, message: 'a line indented deeper than the block it sits in' })
+      while (at < lines.length && lines[at].indent > indent) at++
+    }
+    return out
+  }
+  const out = {}
+  while (at < lines.length) {
+    const value = block(lines[at].indent)
+    if (isMap(value)) Object.assign(out, value)
+    else problems.push({ line: lines[0].line, message: 'the front matter is a list, not a map' })
+  }
+  return out
+}
+
+// Every leaf under a map, as [path, value].
+function yamlLeaves(tree, path = []) {
+  const out = []
+  for (const [k, v] of Object.entries(tree)) {
+    if (isMap(v)) out.push(...yamlLeaves(v, [...path, k]))
+    else out.push([[...path, k], v])
+  }
+  return out
+}
+
+// A DESIGN.md read back: its front matter's tokens and the rules its prose
+// gives components, for adopt's inventory and as a source extract can read.
+// Returns
+//   { version, name, description, tokens, components, rules, sections, problems }
+// `tokens` is [{ path, value }] for every leaf of every token group (colors,
+// typography, rounded, spacing and any other map), the group first in the
+// path. `components` is [{ name, properties, useWhen, never }]: the front
+// matter's `components` map, the Components section's `- **Name**: text`
+// lines, and the Do's and Don'ts section's `- Don't, in Name: text` lines.
+// `rules` holds every other bullet of those two sections as { section, text }.
+export function readDesignMd(text) {
+  const problems = []
+  const fence = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
+  if (!fence) problems.push({ line: 1, message: 'there is no front matter between --- lines, so no tokens' })
+  const front = fence ? readYaml(fence[1], problems, 2) : {}
+  const scalar = (v) => (v === undefined || v === null || isMap(v) || Array.isArray(v) ? null : String(v))
+  const tokens = []
+  const components = []
+  const component = (name) => {
+    let c = components.find((x) => x.name === name)
+    if (!c) {
+      c = { name, properties: {}, useWhen: null, never: null }
+      components.push(c)
+    }
+    return c
+  }
+  for (const [group, tree] of Object.entries(front)) {
+    if (group === 'components') {
+      if (isMap(tree)) for (const [name, props] of Object.entries(tree)) component(name).properties = isMap(props) ? props : {}
+    } else if (isMap(tree)) {
+      for (const [path, value] of yamlLeaves(tree)) tokens.push({ path: [group, ...path], value })
+    }
+  }
+  const sections = []
+  const rules = []
+  const body = fence ? text.slice(fence[0].length) : text
+  let section = null
+  for (const line of body.split(/\r?\n/)) {
+    const heading = /^##\s+(.+?)\s*$/.exec(line)
+    if (heading) {
+      section = heading[1]
+      sections.push(section)
+      continue
+    }
+    const bullet = /^\s*[-*]\s+(.+?)\s*$/.exec(line)
+    if (!bullet || !/^(?:Components|Do's and Don'ts|Dos and Don'ts)$/i.test(section ?? '')) continue
+    const use = /^\*\*(.+?)\*\*\s*:\s*(.+)$/.exec(bullet[1])
+    const dont = /^Don['\u2019]t,\s*in\s+(.+?):\s*(.+)$/.exec(bullet[1])
+    if (/^Components$/i.test(section) && use) component(use[1]).useWhen = use[2]
+    else if (dont) component(dont[1]).never = dont[2]
+    else rules.push({ section, text: bullet[1] })
+  }
+  return { version: scalar(front.version), name: scalar(front.name), description: scalar(front.description), tokens, components, rules, sections, problems }
+}

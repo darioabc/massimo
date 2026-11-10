@@ -48,6 +48,16 @@ Whatever the framework, the lane has the same five properties:
 9. **Re-run the graph** (`graph.mjs`) so story coverage updates. `state.mjs set stories in_progress --note "<n>/<target> storied"` after each batch, so a stop at any point resumes cleanly.
 10. **End** when the target is met: `state.mjs set stories done --note "<n> stories, lane at <url>"`. Next step: tokens.
 
+## A lane with a manifest
+
+A lane that lists its stories in a manifest (the Astro recipe's structured variant, or a repo's own lane of that shape) tells the graph where the list is, and the graph then reads it as text and checks it:
+
+- `stories.lane: "manifest"` with `stories.manifest` naming the file. The graph refuses the first without the second, and leaves a manifest unread while the lane is `native`.
+- `stories.pages` and `stories.frames` name each story's page and frame as paths with `{slug}`, such as `src/stories/pages/{slug}/index.astro`.
+- `stories.componentless` lists the places (`Root / Group`) where a story may name no component, such as token pages and decision records.
+
+Coverage then counts direct stories only: a node is covered when its story's page or frame imports it, through the lane's helpers too, or the entry names it. A node seen only inside a parent's story is listed as incidental and stays in the story queue. `graph.json` → `storyLane.problems` lists `story-title`, `story-files`, `story-states` and `no-story` findings; `graph.taxonomy.notLive` names the tiers that need no story. When writing stories in such a lane, add the entry with its root, group, component and states, and keep every value a literal.
+
 ## Rules
 
 - Stories never change component code. If a component cannot be rendered in isolation without a refactor, write the closest faithful story and list the gap; the user decides whether the refactor becomes work of its own.

@@ -16,13 +16,13 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder, writeFileAtomic } from './lib/project.mjs'
+import { tierOrder } from './lib/roles.mjs'
 import { isAlias } from './lib/source.mjs'
 import { truthy } from './lib/text.mjs'
 
 export const DOCS_START = '<!-- massimo:docs:start -->'
 export const DOCS_END = '<!-- massimo:docs:end -->'
 
-const TIERS = ['Foundations', 'Primitives', 'Patterns', 'Shells', 'Pages', 'Explorations']
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 const typeFamily = (t) => ({ color: 'Colour', dimension: 'Size and space', fontFamily: 'Type', fontWeight: 'Type', typography: 'Type', shadow: 'Shadow', border: 'Border', duration: 'Motion', cubicBezier: 'Motion', transition: 'Motion', number: 'Number', gradient: 'Gradient', strokeStyle: 'Border', css: 'CSS only' }[t] ?? 'Other')
 
@@ -78,13 +78,17 @@ export function docsBlock({ root, config, projectDir }) {
   } else {
     const nodes = graph.nodes ?? []
     const ruled = nodes.filter((n) => n.rules?.['use-when'])
-    lines.push(`${nodes.length} components, ${nodes.filter((n) => n.stories?.length).length} with a story, ${ruled.length} with a usage rule. The full map, with who uses what, is \`${projectRel}/graph.md\`.`, '')
+    // With graph.kinds, layouts and pages are nodes too, so the count says nodes.
+    const noun = graph.summary?.kinds ? ['node', 'nodes'] : ['component', 'components']
+    lines.push(`${nodes.length} ${noun[1]}, ${nodes.filter((n) => n.stories?.length).length} with a story, ${ruled.length} with a usage rule. The full map, with who uses what, is \`${projectRel}/graph.md\`.`, '')
     const byTier = new Map()
     for (const n of nodes.filter((x) => x.tier)) {
       if (!byTier.has(n.tier)) byTier.set(n.tier, [])
       byTier.get(n.tier).push(n)
     }
-    const tiers = [...byTier.keys()].sort((a, b) => (TIERS.indexOf(a) === -1 ? 99 : TIERS.indexOf(a)) - (TIERS.indexOf(b) === -1 ? 99 : TIERS.indexOf(b)))
+    // The same tier order as graph.md: the taxonomy's, or massimo's own.
+    const order = tierOrder(config)
+    const tiers = [...byTier.keys()].sort((a, b) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)))
     for (const tier of tiers) {
       lines.push(`### ${tier}`, '', '| Component | Use it when | Props |', '|---|---|---|')
       for (const n of byTier.get(tier)) {
@@ -94,12 +98,17 @@ export function docsBlock({ root, config, projectDir }) {
       lines.push('')
     }
     const untiered = nodes.filter((n) => !n.tier)
-    if (untiered.length) lines.push(`${untiered.length} ${untiered.length === 1 ? 'component has' : 'components have'} no \`ds:group\` yet: ${untiered.slice(0, 12).map((n) => n.name).join(', ')}${untiered.length > 12 ? ', and more' : ''}.`, '')
+    if (untiered.length) lines.push(`${untiered.length} ${untiered.length === 1 ? `${noun[0]} has` : `${noun[1]} have`} no \`ds:group\` yet: ${untiered.slice(0, 12).map((n) => n.name).join(', ')}${untiered.length > 12 ? ', and more' : ''}.`, '')
   }
 
   // Checks, Figma, designing.
   lines.push('## Checks', '')
-  if (pkg.scripts?.['ds:check']) lines.push(`\`npm run ds:check\` runs in CI: \`${pkg.scripts['ds:check']}\`. It fails on a stale graph, a raw value beyond the audit's baseline, or a generated token file that is out of date.`, '')
+  const dsCheck = pkg.scripts?.['ds:check']
+  const extra = (config.guard?.extraChecks ?? []).map((c) => c?.name).filter((n) => typeof n === 'string' && n.trim())
+  if (dsCheck && /scripts\/check\.mjs\b/.test(dsCheck)) {
+    // The check runner: every massimo check that applies, then the project's own.
+    lines.push(`\`npm run ds:check\` runs in CI: \`${dsCheck}\`. It runs every massimo check that applies to the project and fails on a stale graph, a raw value beyond the audit's baseline, a generated token file that is out of date, or a stale README.${extra.length > 0 ? ` It also runs the project's own checks (\`guard.extraChecks\`): ${extra.join(', ')}.` : ''}`, '')
+  } else if (dsCheck) lines.push(`\`npm run ds:check\` runs in CI: \`${dsCheck}\`. It fails on a stale graph, a raw value beyond the audit's baseline, or a generated token file that is out of date.`, '')
   else lines.push('No `ds:check` script yet; the guard phase adds one for CI.', '')
   const mirror = readJson(join(projectDir, 'figma', 'mirror.json'), null)
   if (mirror?.syncedAt) {

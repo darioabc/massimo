@@ -1,0 +1,53 @@
+{
+  "tokens": [
+    {
+      "path": [
+        "color",
+        "bg"
+      ],
+      "type": null,
+      "value": "#ffffff",
+      "modes": {
+        "dark": "#000000"
+      },
+      "css": null,
+      "cssVar": "--bg",
+      "description": "",
+      "source": "conditions.css"
+    },
+    {
+      "path": [
+        "color",
+        "brand"
+      ],
+      "type": null,
+      "value": "#0055ff",
+      "modes": {
+        "dark": "#88aaff"
+      },
+      "css": null,
+      "cssVar": "--brand",
+      "description": "",
+      "source": "conditions.css"
+    },
+    {
+      "path": [
+        "duration",
+        "base"
+      ],
+      "type": null,
+      "value": "200ms",
+      "modes": {},
+      "css": null,
+      "cssVar": "--duration-base",
+      "description": "",
+      "source": "conditions.css"
+    }
+  ],
+  "notes": [
+    "--brand is set only under @supports (--css: variables); its token takes that value",
+    "--duration-base is set only under @media (prefers-reduced-motion: no-preference); its token takes that value"
+  ],
+  "typeSteps": [],
+  "count": 3
+}

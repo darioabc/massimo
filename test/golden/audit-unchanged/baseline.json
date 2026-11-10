@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "generatedBy": "massimo audit",
+  "note": "Raw design values by kind and offender (\"<file>: <value>\": count). `audit.mjs --check` fails when any offender rises or a new one appears, even if the kind total holds. `--lower` records only counts that fell and never a rise. Raise or add an offender by hand, in a reviewed change that says why; move a key by hand when a file is renamed.",
+  "kinds": {
+    "color": {
+      "count": 6,
+      "offenders": {
+        "src/legacy.css: #000": 1,
+        "src/legacy.css: #fff": 1,
+        "src/legacy.css: #ffffff": 1,
+        "src/raw.tsx: #333": 1,
+        "src/raw.tsx: #ff0000": 1,
+        "src/raw.tsx: rgba(0, 0, 0, 0.5)": 1
+      }
+    },
+    "arbitrary": {
+      "count": 4,
+      "offenders": {
+        "src/raw.tsx: bg-[#0f0]": 1,
+        "src/raw.tsx: grid-cols-[1fr_2fr]": 1,
+        "src/raw.tsx: p-[6px]": 1,
+        "src/raw.tsx: text-[13px]": 1
+      }
+    },
+    "length": {
+      "count": 7,
+      "offenders": {
+        "src/legacy.css: 12px": 1,
+        "src/legacy.css: 13px": 1,
+        "src/legacy.css: 6px": 1,
+        "src/raw.tsx: 13px": 1,
+        "src/raw.tsx: 4px": 1,
+        "src/raw.tsx: 6px": 1,
+        "src/raw.tsx: 8px": 1
+      }
+    },
+    "font-family": {
+      "count": 2,
+      "offenders": {
+        "src/legacy.css: \"Helvetica Neue\", Arial, sans-serif": 1,
+        "src/raw.tsx: Inter, sans-serif": 1
+      }
+    },
+    "primitive-read": {
+      "count": 5,
+      "offenders": {
+        "src/adopt.css: --color-neutral-0": 1,
+        "src/adopt.css: --spacing-2": 1,
+        "src/adopt.tsx: --color-neutral-500": 1,
+        "src/adopt.tsx: --spacing-1": 1,
+        "src/raw.tsx: --color-neutral-0": 1
+      }
+    },
+    "undefined-var": {
+      "count": 3,
+      "offenders": {
+        "src/adopt.tsx: --local-x": 1,
+        "src/raw.tsx: --missing-var": 1,
+        "src/raw.tsx: --space": 1
+      }
+    },
+    "tailwind-palette": {
+      "count": 2,
+      "offenders": {
+        "src/raw.tsx: bg-slate-50": 1,
+        "src/raw.tsx: text-red-600": 1
+      }
+    }
+  }
+}

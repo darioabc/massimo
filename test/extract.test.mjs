@@ -119,14 +119,14 @@ test('a system in custom properties: its families kept, one token per variable, 
     {
       'src/styles/tokens.css': `:root {
   --ink-900: 29 31 32;
-  --paper-200: 236 229 209;
+  --sand-200: 236 229 209;
   --rgb-base-100: 250 250 247;
   --color-base-100: rgb(var(--rgb-base-100));
   --c-block: rgb(var(--ink-900));
-  --c-on-block-strong: rgb(var(--paper-200));
+  --c-on-block-strong: rgb(var(--sand-200));
   --rust-600: 200 78 34;
   --c-accent-bg: rgb(var(--rust-600));
-  --c-on-accent-bg: rgb(var(--paper-200));
+  --c-on-accent-bg: rgb(var(--sand-200));
   --c-primary: rgb(var(--rust-600));
   --c-focus: var(--c-primary);
   --space-1: 0.25rem;

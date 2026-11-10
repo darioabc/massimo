@@ -1,0 +1,107 @@
+{
+  "$description": "A mirror of the custom properties in src/styles/theme.css, written by massimo tokens mirror. Do not edit it by hand: change the CSS, then run node ../project/scripts/tokens.mjs mirror.",
+  "color": {
+    "$type": "color",
+    "edge": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.8471,
+          0.8,
+          0.6745
+        ],
+        "hex": "#d8ccac"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--edge"
+        }
+      }
+    },
+    "ink": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1137,
+          0.1216,
+          0.1255
+        ],
+        "hex": "#1d1f20"
+      },
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--ink",
+          "css": "29 31 32"
+        }
+      }
+    },
+    "mark": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.7843,
+          0.3059,
+          0.1333
+        ],
+        "hex": "#c84e22"
+      },
+      "$description": "the accent, by colour scheme",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--mark",
+          "css": "light-dark(#c84e22, #ec8f62)"
+        }
+      }
+    },
+    "paper": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          1,
+          0.9922,
+          0.9725
+        ],
+        "hex": "#fffdf8"
+      },
+      "$description": "a sheet",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--paper",
+          "scopes": {
+            "@media (prefers-color-scheme: dark) :root": "#101112"
+          }
+        }
+      }
+    },
+    "text": {
+      "$value": "{color.ink}",
+      "$extensions": {
+        "massimo": {
+          "cssVar": "--text",
+          "css": "rgb(var(--ink))",
+          "scopes": {
+            "@media (max-width: 40rem) .dark": "rgb(var(--ink) / 0.5)"
+          }
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2,
+      "mirror": {
+        "from": [
+          "src/styles/theme.css"
+        ],
+        "scoped": {
+          "--band-text": {
+            "scopes": {
+              ".band": "rgb(var(--ink) / 0.8)",
+              "@media (prefers-color-scheme: dark) .band": "rgb(var(--ink) / 0.9)"
+            }
+          }
+        }
+      }
+    }
+  }
+}

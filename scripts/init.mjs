@@ -34,16 +34,24 @@ function write(path, content, { overwrite = false } = {}) {
   return true
 }
 
+// detect's report, run once when something needs it; null when it fails.
+let detected
+function detect() {
+  if (detected !== undefined) return detected
+  try {
+    const out = execFileSync(process.execPath, [join(here, 'detect.mjs'), '--root', root], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
+    detected = JSON.parse(out.toString())
+  } catch (e) {
+    report.warnings.push(`detect failed, using defaults: ${e.message.split('\n')[0]}`)
+    detected = null
+  }
+  return detected
+}
+
 // 1. Config: detect's suggestion, with the caller's overrides on top.
 const configPath = join(root, CONFIG_FILE)
 if (!existsSync(configPath)) {
-  let suggested = {}
-  try {
-    const out = execFileSync(process.execPath, [join(here, 'detect.mjs'), '--root', root], { stdio: ['ignore', 'pipe', 'pipe'] })
-    suggested = JSON.parse(out.toString()).suggestedConfig
-  } catch (e) {
-    report.warnings.push(`detect failed, using defaults: ${e.message.split('\n')[0]}`)
-  }
+  const suggested = detect()?.suggestedConfig ?? {}
   let overrides = {}
   if (typeof flags['config-json'] === 'string') {
     try {
@@ -88,6 +96,12 @@ for (const dir of ['explorations', 'handoffs', 'audits', 'tokens', 'kit']) {
 if (!existsSync(join(projectDir, 'state.json'))) {
   const state = emptyState()
   setPhase(state, 'setup', 'in_progress', 'config and project folder created')
+  // The adopt phase is to do only when the repo has a setup of its own.
+  const adoptable = detect()?.adoptable ?? []
+  if (adoptable.length > 0) {
+    setPhase(state, 'adopt', 'todo', `found ${[...new Set(adoptable.map((a) => a.kind))].join(', ')}; start with /massimo:adopt`)
+    report.adoptable = adoptable
+  }
   report.created.push(`${projectRel}/state.json`)
   if (!dry) {
     saveState(projectDir, state)

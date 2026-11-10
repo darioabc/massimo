@@ -1,0 +1,12 @@
+# Keeps docs/system honest. Locally: npm run system.
+name: Check
+
+on:
+  pull_request:
+
+jobs:
+  system:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run system:check

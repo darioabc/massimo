@@ -39,6 +39,18 @@ test('no private leftovers', () => {
   }
 })
 
+// massimo learnt adoption on a real repo; its names and its own vocabulary
+// stay there, so fixtures and tests use generic ones.
+test('no names or vocabulary from the repos massimo was proven on', () => {
+  const banned = /folio|dariocodipietro|@parked:|ds:island|ds:sheet|tone-ink|--paper-\d/i
+  for (const f of [...docs, ...scripts, ...files('test', /\.mjs$/), ...files('test/fixtures', /./), 'CHANGELOG.md']) {
+    if (f.endsWith('conventions.test.mjs')) continue
+    assert.ok(!banned.test(text(f)), f)
+  }
+  // The README names its author under Made by, and nowhere else.
+  assert.ok(!banned.test(text('README.md').replace(/^## Made by\n[\s\S]*?(?=^## )/m, '')), 'README.md')
+})
+
 test('sorting never depends on the locale', () => {
   for (const f of scripts) assert.ok(!text(f).includes('localeCompare'), f)
 })

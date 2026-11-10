@@ -1,0 +1,8 @@
+---
+import StoryFrame from '../../StoryFrame.astro'
+import StoryState from '../../StoryState.astro'
+import { names } from '../../foundations'
+---
+<StoryFrame title="Palette">
+  {names.map((name) => <StoryState label={name}><span>{name}</span></StoryState>)}
+</StoryFrame>

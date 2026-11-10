@@ -229,11 +229,11 @@ test('parseCustomProperties: modes and scopes', () => {
 test('parseCustomProperties: each member of a selector list, scopes that reach into the page, and conditions', () => {
   const css = `
 :root,
-.tone-paper { --a: 1; }
+.band-light { --a: 1; }
 html.dark,
-.tone-ink { --a: 2; }
-html.dark .tone-block { --a: 3; }
-:root, .tone-paper, .tone-ink, .tone-block, .tone-quote { --lift: 4; }
+.band-dark { --a: 2; }
+html.dark .band-block { --a: 3; }
+:root, .band-light, .band-dark, .band-block, .band-quote { --lift: 4; }
 @media (max-width: 60rem) { :root { --gap: 5; } }
 @supports (color: oklch(0 0 0)) { :root { --a: 6; } }
 @layer base { .dark { --a: 7; } }
@@ -265,7 +265,7 @@ html.dark body { --a: 2; }
 html body { --a: 3; }
 :root > body { --a: 4; }
 html:not(.dark) body { --a: 5; }
-:where(html.dark .tone-block) { --a: 6; }
+:where(html.dark .band-block) { --a: 6; }
 .card:where(.dark, .dark *) { --a: 7; }
 :is(html.dark) { --a: 8; }
 .dark:root { --a: 9; }

@@ -1,0 +1,107 @@
+/* Design tokens for the fixture: a sand ground, ink text and three bands. */
+
+:root {
+  /* ── Palette ───────────────────────────────────────────
+   * Channels, so a role can add an alpha. */
+  --sand-200: 236 229 209; /* #ece5d1 the ground */
+  --sand-50: 255 253 248;  /* #fffdf8 a sheet */
+  --ink-900: 29 31 32;     /* #1d1f20 ink */
+  --ink-950: 22 23 24;
+  --cream-50: 242 240 235;
+  --accent-600: 200 78 34;
+  --accent-300: 236 143 98;
+
+  /* The reading face. */
+  --font-body: "Geist", system-ui, sans-serif;
+  --weight-semibold: 600;
+  --h2-size: clamp(2rem, 1.5rem + 2vw, 2.5rem);
+  --h2-leading: 1.2;
+  --h2-weight: var(--weight-semibold);
+  --h2-tracking: -0.02em;
+  --space-4: 1rem;
+  --space-10: 2.5rem;
+  --space-16: 4rem;
+  --radius-2: 0.5rem;
+  --dur-2: 240ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --z-bar: 50;
+  --section-gap: calc(var(--space-16) + var(--space-4));
+}
+
+@media (max-width: 60rem) {
+  :root { --section-gap: calc(var(--space-10) + var(--space-4)); }
+}
+
+/* Roles: light on :root and the light band, dark on html.dark and the dark band. */
+:root,
+.band-light {
+  --c-ground: rgb(var(--sand-200));
+  --c-surface: rgb(var(--sand-50));
+  --c-text: rgb(var(--ink-900));
+  --c-text-muted: rgb(var(--ink-900) / 0.62);
+  --c-line: rgb(var(--ink-900) / 0.14);
+  --c-accent: rgb(var(--accent-600));
+  /* The page dimmed under a dialog, the same in both themes. */
+  --c-scrim: rgb(var(--ink-950) / 0.5);
+}
+
+html.dark,
+.band-dark {
+  --c-ground: rgb(var(--ink-950));
+  --c-surface: rgb(var(--ink-900));
+  --c-text: rgb(var(--cream-50));
+  --c-text-muted: rgb(var(--cream-50) / 0.62);
+  --c-line: rgb(var(--cream-50) / 0.16);
+  --c-accent: rgb(var(--accent-300));
+  --c-scrim: rgb(var(--ink-950) / 0.5);
+}
+
+:root { --c-focus: rgb(var(--accent-600)); }
+html.dark { --c-focus: rgb(var(--accent-300)) !important; }
+
+/* A coloured band: the accent as its ground. */
+.band-block {
+  --c-ground: var(--c-accent);
+  --c-text: rgb(var(--sand-200));
+  --c-art: rgb(var(--ink-900));
+}
+html.dark .band-block {
+  --c-ground: var(--c-accent);
+  --c-text: rgb(var(--ink-950));
+  --c-art: rgb(var(--cream-50));
+}
+/* The dark band's mark takes the dark theme's focus colour. */
+.band-dark { --c-mark: var(--c-focus); }
+
+/* Composites, declared again in every scope so they follow it. */
+:root,
+.band-light,
+.band-dark,
+.band-block {
+  --lift: 0 4px 0 var(--c-text);
+  --focus-ring: 2px solid var(--c-focus);
+  --c-hairline: color-mix(in srgb, var(--c-text) 24%, transparent);
+}
+
+/* Looks like a theme, but the config's dark selector is html.dark. */
+.dark {
+  --c-text: #ffffff;
+}
+
+/* Type as classes. */
+.t-body { font-family: var(--font-body); font-size: var(--space-4); line-height: 1.5; }
+.t-h2,
+.card .title {
+  font-size: var(--h2-size);
+  line-height: var(--h2-leading);
+  font-weight: var(--h2-weight);
+}
+.t-quiet { text-transform: none; }
+.card { padding: var(--space-4); border-radius: var(--radius-2); }
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+}

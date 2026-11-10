@@ -1,6 +1,6 @@
 :root {
   --ink-900: 29 31 32;
-  --paper-200: 236 229 209;
+  --sand-200: 236 229 209;
   --c-text: rgb(var(--ink-900));
   --c-block: rgb(var(--ink-900));
   --c-line: rgb(var(--ink-900) / 0.14);
@@ -22,6 +22,6 @@
   --ink-900: 250 250 247;
 }
 .dark {
-  --c-text: rgb(var(--paper-200) / 0.88);
+  --c-text: rgb(var(--sand-200) / 0.88);
   --c-block: 0 0 0;
 }

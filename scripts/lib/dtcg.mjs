@@ -326,6 +326,7 @@ export function flattenFormat(doc, problems = [], where = '') {
         collection: typeof ext.collection === 'string' ? ext.collection : null,
         extensions: FOREIGN(node.$extensions),
         strict: true,
+        ...(isObject(ext.scopes) ? { scopes: ext.scopes } : {}),
       })
       return
     }
@@ -377,6 +378,7 @@ export function cssOnlyTokens(doc, problems = [], where = '') {
     strict: false,
     cssOnly: true,
     after: typeof entry?.after === 'string' ? entry.after : null,
+    ...(isObject(entry?.scopes) ? { scopes: entry.scopes } : {}),
   }))
 }
 
@@ -838,6 +840,8 @@ function extensionsOf(t, css) {
   if (t.on) m.contrast = t.use ? { on: t.on, use: t.use, ...(t.contrast !== CONTRAST_USES[t.use] ? { ratio: t.contrast } : {}) } : { on: t.on, ratio: t.contrast }
   if (t.collection) m.collection = t.collection
   if (css) m.css = css
+  // A mirror's values under selectors that are not themes, as CSS text by selector.
+  if (t.scopes && Object.keys(t.scopes).length > 0) m.scopes = t.scopes
   const ext = { ...(t.extensions ?? {}) }
   if (Object.keys(m).length > 0) ext.massimo = m
   return Object.keys(ext).length > 0 ? ext : null
@@ -910,8 +914,9 @@ const jsonText = tokenJson
 // A 2025.10 token set as files, keyed by path relative to the tokens folder:
 // the resolver document, `base.tokens.json`, and one file per other context
 // under its modifier's folder. Values with no DTCG type go to the base file's
-// `$extensions.massimo.cssOnly`.
-export function writeTokenSet({ tokens, defaultMode = 'light', modifier = 'theme', name = 'Design tokens', description } = {}) {
+// `$extensions.massimo.cssOnly`. A mirror of style files says so in the base
+// file's `$extensions.massimo.mirror`, and keeps each token's scopes there only.
+export function writeTokenSet({ tokens, defaultMode = 'light', modifier = 'theme', name = 'Design tokens', description, mirror = null } = {}) {
   // A name that is both a token and a group (color.neutral and
   // color.neutral.950) cannot be written as both; one would be lost.
   const names = new Set(tokens.map((t) => t.path.join('.')))
@@ -935,13 +940,15 @@ export function writeTokenSet({ tokens, defaultMode = 'light', modifier = 'theme
       if (Object.keys(t.modes).length > 0) entry.modes = t.modes
       if (t.cssVar !== cssVarFor(t.path)) entry.cssVar = t.cssVar
       if (t.description) entry.description = t.description
+      if (t.scopes && Object.keys(t.scopes).length > 0) entry.scopes = t.scopes
       return [t.name, entry]
     }))
   }
+  if (mirror) ext.mirror = mirror
   files['base.tokens.json'] = jsonText({ ...root, ...baseTree, $extensions: { massimo: ext } })
   const contexts = { [defaultMode]: [] }
   for (const mode of modes) {
-    const own = typed.filter((t) => mode in t.modes || mode in t.cssModes)
+    const own = typed.filter((t) => mode in t.modes || mode in t.cssModes).map((t) => (t.scopes ? { ...t, scopes: null } : t))
     const tree = treeOf(own, (t) => (mode in t.modes ? t.modes[mode] : t.value), (t) => t.cssModes[mode] ?? (mode in t.modes ? null : t.css))
     const onlyCss = cssOnly.filter((t) => mode in t.modes)
     const fileExt = { format: FORMAT_VERSION }

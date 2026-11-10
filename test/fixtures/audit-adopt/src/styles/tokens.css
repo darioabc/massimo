@@ -1,0 +1,18 @@
+:root {
+  /* Primitives: palette steps as channels, and one literal. */
+  --sand-200: 236 229 209;
+  --ink-900: #1d1f20;
+  /* Roles read the primitives. */
+  --c-text: rgb(var(--ink-900));
+  --c-line: rgb(var(--ink-900) / 0.14);
+  --space-4: 1rem;
+}
+
+html.dark {
+  --sand-200: 120 110 90;
+}
+
+/* A rule in the token file may read a primitive: that is where they belong. */
+.band {
+  background: rgb(var(--sand-200));
+}

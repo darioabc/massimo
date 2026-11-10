@@ -1,0 +1,13 @@
+---
+// ds:group Primitives / Actions
+// ds:use-when a reader runs an action; a link that only navigates
+// uses the plain anchor.
+// ds:styles card.css
+// ds:inputs --button-edge
+
+/* The site's one button. */
+interface Props { tone?: 'solid' | 'quiet' }
+const { tone = 'solid' } = Astro.props
+---
+
+<button class:list={['button', tone]}><slot /></button>

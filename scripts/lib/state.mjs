@@ -4,10 +4,15 @@
 
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ledgerPhase, loadLedger } from './adopt.mjs'
 import { SCRIPTS_VERSION, now, today, withLock, writeFileAtomic } from './project.mjs'
 
+// An optional phase only some repos have work for. A project without its
+// entry gets it as `whenMissing`, never as to do, so a project made before
+// the phase existed is not told it is next.
 export const PHASES = [
   { id: 'setup', title: 'Set up the project', skill: 'start' },
+  { id: 'adopt', title: "Adopt the repo's own setup", skill: 'adopt', optional: true, whenMissing: 'skipped' },
   { id: 'graph', title: 'Map the component graph', skill: 'graph' },
   { id: 'stories', title: 'Story lane and baseline stories', skill: 'stories' },
   { id: 'tokens', title: 'Audit and define tokens', skill: 'tokens' },
@@ -46,7 +51,7 @@ export function emptyState() {
     massimo: SCRIPTS_VERSION,
     createdAt: now(),
     updatedAt: now(),
-    phases: PHASES.map((p) => ({ id: p.id, status: 'todo', note: '', updatedAt: null })),
+    phases: PHASES.map((p) => ({ id: p.id, status: p.whenMissing ?? 'todo', note: '', updatedAt: null })),
     explorations: [],
   }
 }
@@ -55,17 +60,31 @@ export function statePath(projectDir) {
   return join(projectDir, 'state.json')
 }
 
-// Missing phases are added as `todo` in canonical order, so a project made
-// by an older version keeps working after the phase list grows.
+// A phase state.json does not have. The adopt phase is rebuilt from its
+// ledger when there is one with something in it, since an older script
+// drops the entry when it saves; without one it is skipped.
+function missingPhase(p, projectDir) {
+  const ledger = p.id === 'adopt' ? loadLedger(projectDir, { quiet: true }) : null
+  if (ledger && Object.keys(ledger.classes ?? {}).length > 0) return { id: p.id, ...ledgerPhase(ledger), updatedAt: null }
+  return { id: p.id, status: p.whenMissing ?? 'todo', note: '', updatedAt: null }
+}
+
+// Missing phases are added in canonical order (as `todo`, or an optional
+// phase's `whenMissing`), so a project made by an older version keeps
+// working after the phase list grows.
 export function loadState(projectDir) {
   const path = statePath(projectDir)
   if (!existsSync(path)) return null
   const state = JSON.parse(readFileSync(path, 'utf8'))
   const byId = new Map((state.phases ?? []).map((p) => [p.id, p]))
-  state.phases = PHASES.map((p) => byId.get(p.id) ?? { id: p.id, status: 'todo', note: '', updatedAt: null })
+  state.phases = PHASES.map((p) => byId.get(p.id) ?? missingPhase(p, projectDir))
   state.explorations ??= []
   return state
 }
+
+// An optional phase nobody has touched stays out of STATUS.md and the
+// session hook: it is skipped by default, not by a choice worth showing.
+const shown = (p) => !(phaseMeta(p.id)?.optional && p.status === 'skipped' && !p.updatedAt && !p.note)
 
 export function saveState(projectDir, state) {
   state.updatedAt = now()
@@ -124,7 +143,7 @@ export function upsertExploration(state, topic, fields) {
 export function progressMarkdown(state) {
   const lines = [`_Generated from state.json by state.mjs on ${String(state.updatedAt).slice(0, 10)}. Do not edit this block by hand._`, '']
   lines.push('| Phase | Status | Progress | Run |', '|---|---|---|---|')
-  for (const p of state.phases) {
+  for (const p of state.phases.filter(shown)) {
     const meta = phaseMeta(p.id)
     lines.push(`| ${meta.title} | ${SYMBOL[p.status]} ${LABEL[p.status]} | ${escapeCell(p.note || '')} | \`/massimo:${meta.skill}\` |`)
   }
@@ -198,7 +217,7 @@ function endsWithNewline(path) {
 // One compact paragraph for the SessionStart hook: enough for a fresh
 // session to know a project exists, where it stands and how to resume.
 export function hookContext(state, projectRel) {
-  const phases = state.phases.map((p) => `${p.id} ${SYMBOL[p.status]}${p.note ? ` (${p.note})` : ''}`).join(', ')
+  const phases = state.phases.filter(shown).map((p) => `${p.id} ${SYMBOL[p.status]}${p.note ? ` (${p.note})` : ''}`).join(', ')
   const next = nextPhase(state)
   const open = state.explorations.filter(isOpen)
   const parts = [

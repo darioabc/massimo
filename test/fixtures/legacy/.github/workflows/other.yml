@@ -1,0 +1,22 @@
+name: Other app
+
+on:
+  pull_request:
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: other
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm run build
+      - run: npm run stories:build
+  root:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm run lint
+      - name: In another folder
+        working-directory: other
+        run: npm run system:check
