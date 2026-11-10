@@ -272,13 +272,17 @@ const portIn = (cmd) => Number((/--port[ =](\d+)/.exec(cmd) ?? /(?:^|\s)-p[ =]?(
 // Each story file of the tools detect found, read statically, with what it
 // could not read, and for a CSF file the `meta.width` values it sets
 // (`widths`, only when it sets one). A file no reader knows (MDX, Svelte
-// CSF) is listed as not statically readable.
+// CSF) is listed as not statically readable. Storybook's indexer refuses a
+// CSF file with no default export, which Ladle reads, so with Storybook and
+// no Ladle such a file is not readable.
 function storyFileRecords(root, files, tools, text) {
   const out = []
+  const needsDefault = tools.includes('storybook') && !tools.includes('ladle')
   for (const f of files) {
     if (isTestFile(f)) continue
     if (CSF_FILE.test(f)) {
       const csf = readCsf(text(f), f)
+      if (needsDefault && csf.metaSpan === null && csf.stories.length > 0) csf.unreadable.unshift({ story: null, field: null, detail: 'it has no default export, so it is not a CSF file' })
       const widths = metaWidths(csf)
       out.push({
         file: f,
@@ -319,28 +323,51 @@ const LADLE_OBJECT = [/export\s+default\s*(?:\(\s*)?/, /module\.exports\s*=\s*/,
 // without running it: the story glob, `storyOrder`, `defaultStory`, the
 // port and `previewPort`, the width options (`[{ label, width }]`, 0 last)
 // and `outDir`. A setting that is missing or not a literal is null; one the
-// config sets with code (a glob list built when it runs, a function) is also
-// named in `notLiteral`, so nothing is guessed in its place.
+// config may set in a way massimo cannot read is also named in `notLiteral`,
+// so nothing is guessed in its place: one set with code (a glob list built
+// when it runs, a function), one the config leaves to an object it spreads
+// in (`{ ...base }`), and every one when the config holds no object massimo
+// can read.
+const LADLE_KEYS = ['stories', 'storyOrder', 'defaultStory', 'port', 'previewPort', 'outDir']
 function ladleSettings(files, text) {
   const config = files.find((f) => LADLE_CONFIG.test(f))
   const obj = config ? findObject(text(config) ?? '', LADLE_OBJECT) : null
   const strings = (v) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v : null)
-  const options = obj?.addons?.width?.options
-  const literalOptions = options && typeof options === 'object' && !Array.isArray(options) && !('expr' in options)
-  const widths = literalOptions ? Object.entries(options).filter(([k, v]) => /^\d+$/.test(k) && typeof v === 'string').map(([k, v]) => ({ label: v, width: Number(k) })) : []
+  const { widths, unread: widthsUnread } = obj ? ladleWidths(obj) : { widths: null, unread: false }
   const settings = {
     stories: typeof obj?.stories === 'string' ? obj.stories : strings(obj?.stories),
     storyOrder: strings(obj?.storyOrder),
     defaultStory: typeof obj?.defaultStory === 'string' ? obj.defaultStory : null,
     port: typeof obj?.port === 'number' ? obj.port : null,
     previewPort: typeof obj?.previewPort === 'number' ? obj.previewPort : null,
-    widths: widths.length > 0 ? widths.sort((a, b) => (a.width === 0) - (b.width === 0) || a.width - b.width) : null,
+    widths: widths ? widths.sort((a, b) => (a.width === 0) - (b.width === 0) || a.width - b.width) : null,
     outDir: typeof obj?.outDir === 'string' ? obj.outDir : null,
   }
+  if (config && !obj) return { ...settings, notLiteral: [...LADLE_KEYS, 'widths'] }
   const set = (key) => obj && Object.prototype.hasOwnProperty.call(obj, key)
-  const notLiteral = ['stories', 'storyOrder', 'defaultStory', 'port', 'previewPort', 'outDir'].filter((key) => set(key) && settings[key] === null)
-  if (options !== undefined && !literalOptions) notLiteral.push('widths')
+  const notLiteral = LADLE_KEYS.filter((key) => (set(key) ? settings[key] === null : Boolean(obj?.__spreads)))
+  if (widthsUnread) notLiteral.push('widths')
   return notLiteral.length > 0 ? { ...settings, notLiteral } : settings
+}
+
+// Ladle's width options, `addons.width.options`, as { widths, unread }:
+// `widths` is [{ label, width }] or null, from Ladle's own form, a name to
+// px (`{ phone: 380 }`), or px to a name (`{ 375: 'Mobile' }`). `unread`
+// when the options may be set in a way massimo cannot read: an expression
+// or a spread on the way to them, or an option it cannot read.
+function ladleWidths(obj) {
+  const literal = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && !('expr' in v) && !('spread' in v)
+  let at = obj
+  for (const key of ['addons', 'width', 'options']) {
+    const next = at[key]
+    if (next === undefined) return { widths: null, unread: Boolean(at.__spreads) }
+    if (!literal(next)) return { widths: null, unread: true }
+    at = next
+  }
+  const entries = Object.entries(at)
+  const widths = entries.flatMap(([k, v]) => (/^\d+$/.test(k) && typeof v === 'string' ? [{ label: v, width: Number(k) }] : typeof v === 'number' && v >= 0 ? [{ label: k, width: v }] : []))
+  if (at.__spreads || widths.length < entries.length) return { widths: null, unread: true }
+  return { widths: widths.length > 0 ? widths : null, unread: false }
 }
 
 // The values stories give `meta.width`, Ladle's width per state: the file's
@@ -521,14 +548,69 @@ function writerNamed(text, files) {
   return m && files.includes(m[1].replace(/^\.\//, '')) ? m[1].replace(/^\.\//, '') : null
 }
 
-// The files a package script runs directly (node, tsx, bun, python, sh),
-// and the other package scripts it runs, past flags with no value before
-// or after `run` (`pnpm -w run build:site`).
+// The files a package script runs directly (node, tsx, bun, python, sh, or
+// a shell script as the command itself, `./scripts/check.sh`), and the other
+// package scripts it runs (see packageScriptRuns).
 export function scriptRuns(cmd) {
   const s = String(cmd)
-  const runs = [...s.matchAll(/(?:^|[\s;&|(])(?:node|tsx|ts-node|bun|deno run|python3?|sh|bash)\s+(?:-{1,2}[\w-]+(?:[ =]\S+)?\s+)*\.?\/?([\w@./-]+\.(?:mjs|cjs|js|ts|mts|py|sh))\b/g)].map((m) => m[1].replace(/^\.\//, ''))
-  const scripts = [...s.matchAll(/\b(?:npm|pnpm|yarn|bun)\s+(?:-{1,2}[\w-]+\s+)*(?:run\s+)?(?:-{1,2}[\w-]+\s+)*([\w:.-]+)(?=$|[\s;&|)'"`])/g)].map((m) => m[1]).filter((n) => !n.startsWith('-') && !['ci', 'install', 'i', 'exec', 'x', 'run'].includes(n))
+  const runs = [...s.matchAll(/(?:^|[\s;&|(])(?:node|tsx|ts-node|bun|deno run|python3?|sh|bash)\s+(?:-{1,2}[\w-]+(?:[ =]\S+)?\s+)*\.?\/?([\w@./-]+\.(?:mjs|cjs|js|ts|mts|py|sh|bash))\b/g)].map((m) => m[1].replace(/^\.\//, ''))
+  // A shell script in a command's place: at the start of a line, after a
+  // YAML `run:` or a list dash, or after `;`, `&&`, `||`, `|` or `(`, past
+  // any VAR=value before it.
+  for (const m of s.matchAll(/(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*(?:[|>][-+]?[ \t]*)?)?|[;&|(][ \t]*)["']?(?:[A-Za-z_][\w]*=\S*[ \t]+)*\.?\/?([\w@.-][\w@./-]*\.(?:sh|bash))(?=$|[\s;&|)'"])/gm)) runs.push(m[1])
+  const scripts = packageScriptRuns(s).map((r) => r.name)
   return { files: [...new Set(runs)], scripts: [...new Set(scripts)] }
+}
+
+// Flags of npm, pnpm, yarn and bun that send a command to another package's
+// folder or workspace, each with the value it takes; npm's `-w` is one,
+// while pnpm's `-w` is the workspace root and takes no value.
+const ELSEWHERE_FLAGS = new Set(['--filter', '-F', '--workspace', '--prefix', '-C', '--dir', '--cwd'])
+// Other flags that take the next word as their value.
+const VALUE_FLAGS = new Set(['--loglevel', '--reporter', '--registry', '--workspace-concurrency'])
+const NOT_SCRIPTS = new Set(['ci', 'install', 'i', 'exec', 'x', 'run', 'run-script'])
+
+// The package scripts `s` runs through a package manager, as [{ name, index
+// }], `index` where the command starts. Flags before or after `run` are
+// passed over, with the value of one that takes one (`--loglevel warn`). A
+// command that a flag sends to another package (`pnpm --filter docs build`,
+// `npm -w docs run build`, `--prefix`, `-C`, `--dir`, `--cwd`, `yarn
+// workspace docs build`) runs that package's script, not this one's, so it
+// names none, unless the flag's value is this folder (`.`).
+export function packageScriptRuns(cmd) {
+  const s = String(cmd)
+  const out = []
+  const word = /[ \t]+([^\s;&|()'"`]+)/y
+  for (const m of s.matchAll(/\b(npm|pnpm|yarn|bun)(?=[ \t])/g)) {
+    const pm = m[1]
+    word.lastIndex = m.index + pm.length
+    let elsewhere = false
+    let ran = false
+    for (let w = word.exec(s); w; w = word.exec(s)) {
+      const t = w[1]
+      if (t.startsWith('-')) {
+        const eq = t.indexOf('=')
+        const flag = eq === -1 ? t : t.slice(0, eq)
+        const selects = ELSEWHERE_FLAGS.has(flag) || (flag === '-w' && pm === 'npm')
+        let value = eq === -1 ? null : t.slice(eq + 1)
+        if ((selects || VALUE_FLAGS.has(flag)) && value === null) {
+          const v = word.exec(s)
+          if (!v) break
+          value = v[1]
+        }
+        if (selects && !/^\.\/?$/.test(value)) elsewhere = true
+        continue
+      }
+      if (!ran && (t === 'run' || t === 'run-script')) {
+        ran = true
+        continue
+      }
+      if (pm === 'yarn' && /^workspaces?$/.test(t)) elsewhere = true
+      if (!elsewhere && /^[\w:.-]+$/.test(t) && !NOT_SCRIPTS.has(t)) out.push({ name: t, index: m.index })
+      break
+    }
+  }
+  return out
 }
 
 // The repo's own design-system files: a generated graph or index (markdown
@@ -1237,7 +1319,7 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
       const reached = reach(name)
       for (const a of assets) {
         if (!ownScript(a, name) && !reached.has(a)) continue
-        const m = new RegExp(`\\b(?:npm|pnpm|yarn|bun)\\s+(?:-{1,2}[\\w-]+\\s+)*(?:run\\s+)?(?:-{1,2}[\\w-]+\\s+)*${escapeRe(name)}(?![\\w:.-])`).exec(t)
+        const m = packageScriptRuns(t).find((r) => r.name === name)
         record(a, w, { file: w, line: m ? lineAt(t, m.index) : null, class: 'ci', how: 'runs', via: name })
       }
     }

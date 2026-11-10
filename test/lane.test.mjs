@@ -165,13 +165,13 @@ test('a file with no title, an export list it cannot read, and a home no story h
 test('under Ladle ids, a file of named stories with no default export is Ladle\'s own form: no problem, ids from its name', () => {
   const registry = fromText(
     {
-      'src/panel/PanelHeader.stories.tsx': "import type { Story } from '@ladle/react'\nexport const TitleOnly: Story = () => null\nexport const WithAction: Story = () => null\n",
+      'src/panel/Header.stories.tsx': "import type { Story } from '@ladle/react'\nexport const Plain: Story = () => null\nexport const WithButton: Story = () => null\n",
       'src/Empty.stories.tsx': 'const a = 1\n',
     },
     { ids: 'ladle' },
   )
   assert.deepEqual(registry.problems.map((p) => [p.file, p.detail]), [['src/Empty.stories.tsx', 'it has no default export, so it is not a CSF file']])
-  assert.deepEqual(Object.keys(registry.stories), ['panel-header--title-only', 'panel-header--with-action'])
+  assert.deepEqual(Object.keys(registry.stories), ['header--plain', 'header--with-button'])
 })
 
 test('an exported class is a state, and its span runs to the end of its body', () => {

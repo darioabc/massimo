@@ -155,22 +155,31 @@ function toolScripts(tool, read) {
   return [...found].sort(compare)
 }
 
-// The folders a story tool builds to: its config's `outDir`, else the tool's
-// default (Ladle's `build`) when the config leaves it out rather than setting
-// it with code, and each `-o` or `--outDir` its scripts pass to its build or
-// preview. Repo-relative, without `./` or a trailing slash.
+// The folders a story tool builds to, as { dirs, named }: its config's
+// `outDir`, each `-o` or `--outDir` that `commands` (its scripts, and the
+// workflows, hosting configs and shell scripts that run it) pass to its build
+// or preview, and the tool's default (Ladle's `build`) when one of those runs
+// its build or preview with no output flag while the config leaves `outDir`
+// out rather than setting it with code. `named` is the folders a config or a
+// flag names, not the default, which may also be an app's own build folder.
+// Repo-relative, without `./` or a trailing slash.
 const OUT_DIR_DEFAULT = { ladle: 'build' }
 function toolOutDirs(tool, name, commands) {
   const s = tool.settings ?? {}
-  const out = new Set()
-  if (typeof s.outDir === 'string') out.add(s.outDir)
-  else if (!(s.notLiteral ?? []).includes('outDir') && OUT_DIR_DEFAULT[name]) out.add(OUT_DIR_DEFAULT[name])
-  const flag = new RegExp(`\\b${escapeRe(name)}\\s+(?:build|preview)\\b[^;&|]*?\\s(?:-o|--outDir|--out-dir)[ =]([^\\s;&|'"\`]+)`, 'g')
-  for (const cmd of commands) for (const m of String(cmd).matchAll(flag)) out.add(m[1])
-  return [...out]
-    .map((d) => d.replace(/^\.\//, '').replace(/\/+$/, ''))
-    .filter((d) => d && d !== '.' && !d.startsWith('..') && !d.startsWith('/'))
-    .sort(compare)
+  const named = new Set()
+  if (typeof s.outDir === 'string') named.add(s.outDir)
+  const flag = new RegExp(`\\b${escapeRe(name)}\\s+(?:build|preview)\\b[^;&|\\n]*?\\s(?:-o|--outDir|--out-dir)[ =]([^\\s;&|'"\`]+)`, 'g')
+  for (const cmd of commands) for (const m of String(cmd).matchAll(flag)) named.add(m[1])
+  const run = new RegExp(`\\b${escapeRe(name)}\\s+(?:build|preview)\\b([^;&|\\n]*)`, 'g')
+  const toDefault = commands.some((cmd) => [...String(cmd).matchAll(run)].some((m) => !/(?:^|\s)(?:-o|--outDir|--out-dir)(?:[ =]|$)/.test(m[1])))
+  const all = new Set(named)
+  if (typeof s.outDir !== 'string' && !(s.notLiteral ?? []).includes('outDir') && OUT_DIR_DEFAULT[name] && toDefault) all.add(OUT_DIR_DEFAULT[name])
+  const clean = (set) =>
+    [...set]
+      .map((d) => d.replace(/^\.\//, '').replace(/\/+$/, ''))
+      .filter((d) => d && d !== '.' && !d.startsWith('..') && !d.startsWith('/'))
+      .sort(compare)
+  return { dirs: [...new Set(clean(all))], named: new Set(clean(named)) }
 }
 
 export const isBinaryPath = (file) => BINARY.test(file)
@@ -186,6 +195,11 @@ const VITE_COMMANDS = new Set(['build', 'serve'])
 const YAML_FOLDER_KEYS = ['path', 'paths', 'dir', 'directory', 'folder', 'publish', 'publish_dir', 'publish-dir', 'output', 'out', 'outdir', 'out_dir', 'out-dir', 'output_dir', 'output-dir', 'outputdirectory', 'dist', 'dist_dir', 'dist-dir', 'build_dir', 'build-dir', 'source', 'root'].join('|')
 const HASH_COMMENTS = /\.(?:ya?ml|sh|toml|env|gitignore|npmrc|conf)$|(?:^|\/)\.[\w.-]+ignore$|(?:^|\/)\.[\w.-]*rc$|(?:^|\/)_(?:headers|redirects)$/
 const DOC_FILE = /\.(?:md|mdx|markdown|txt|rst)$/i
+// The files whose lines are commands that may run a story tool: workflows,
+// hosting configs and shell scripts.
+const RUNS_COMMANDS = /^\.github\/workflows\/[^/]+\.ya?ml$|(?:^|\/)(?:netlify\.toml|vercel\.json)$|\.(?:sh|bash)$/
+// An ignore file, whose entry for a folder breaks nothing once the folder is gone.
+const IGNORE_FILE = /(?:^|\/)\.[\w.-]*ignore$/
 
 // The class of a file: ci, skill, test, docs or code. A mention on a line
 // that is only a comment is a `comment` instead, whatever the file.
@@ -272,10 +286,16 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   const scriptRes = scripts.map((s) => new RegExp(`(?:\\b(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?|["']run["']\\s*,\\s*["'])(${escapeRe(s)})(?![\\w:.-])`))
   const scriptKeys = scripts.map((s) => new RegExp(`^\\s*"(${escapeRe(s)})"\\s*:`))
   // A tool script read by its exact name, as a test that checks the script
-  // reads `PACKAGE.scripts['ladle:build']`. A script named as the tool is,
-  // which a quoted `'ladle'` may mean, counts only as a key in brackets.
-  const scriptNames = scripts.map((s) => new RegExp(s === name ? `\\[\\s*(["'\`])(${escapeRe(s)})\\1\\s*\\]` : `(["'\`])(${escapeRe(s)})\\1`))
-  // The tool's output folder, as a path or as a value.
+  // reads `PACKAGE.scripts['ladle:build']`. A name that names nothing else,
+  // one with a `:` or the tool's name joined to another word
+  // (`build-storybook`), counts as any quoted string. A plain word (`dev`,
+  // `build`, or the tool's own name), which code compares as a mode or a
+  // command, counts only as a key in brackets after a name (`scripts['dev']`).
+  const distinctive = (s) => s.includes(':') || (s !== name && new RegExp(`(?:^|[-_.])${escapeRe(name)}(?:$|[-_.])`).test(s))
+  const scriptNames = scripts.map((s) => new RegExp(distinctive(s) ? `(["'\`])(${escapeRe(s)})\\1` : `(?<=[\\w$)\\]]\\s*)\\[\\s*(["'\`])(${escapeRe(s)})\\1\\s*\\]`))
+  // The tool's output folder, as a path or as a value, from the commands
+  // that run the tool: its scripts, and the workflows, hosting configs and
+  // shell scripts that run it, their comment lines left out.
   let commands = []
   try {
     const all = JSON.parse(read('package.json') || '{}').scripts ?? {}
@@ -283,7 +303,11 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
   } catch {
     // a package.json that does not parse passes no output folder
   }
-  const outDirs = toolOutDirs(tool, name, commands)
+  for (const f of files.filter((x) => RUNS_COMMANDS.test(x) && !own(x)).sort(compare)) {
+    const body = read(f)
+    if (body) commands.push(...body.replace(/\\\r?\n/g, ' ').split('\n').filter((l) => !l.trimStart().startsWith('#')))
+  }
+  const { dirs: outDirs, named: namedOutDirs } = toolOutDirs(tool, name, commands)
   const outDirRes = outDirs.map((d) => {
     const at = `(?:\\.\\/)?${escapeRe(d)}`
     return {
@@ -295,9 +319,13 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       // In YAML only under a key that names a folder (`path: build`), since
       // `needs: build` or `name: build` name a job.
       yaml: new RegExp(`(?:^|[\\s{,])(?:${YAML_FOLDER_KEYS})["']?\\s*:\\s*(["']?)${at}\\/?\\1\\s*(?:[,}#].*)?$`, 'i'),
+      // An ignore file's entry for the folder (`build`, `/build/`, `build/**`).
+      entry: new RegExp(`^\\s*(?:\\*\\*\\/|\\/)?${escapeRe(d)}(?:\\/(?:\\*\\*?)?)?\\s*$`),
     }
   })
-  const inOutDir = (file) => outDirs.some((d) => file.startsWith(`${d}/`))
+  // A file under a folder a config or a flag names is the tool's output; the
+  // default folder may hold the repo's own tracked files, so it stays read.
+  const inOutDir = (file) => [...namedOutDirs].some((d) => file.startsWith(`${d}/`))
   const commandRe = new RegExp(`\\b(?:npx\\s+|bunx\\s+|pnpm\\s+exec\\s+|yarn\\s+)?(${escapeRe(name)}\\s+(?:serve|dev|build|preview|start))\\b`)
   const packageRes = packages.map((p) => new RegExp(`(?<![\\w@./-])(${escapeRe(p)})(?![\\w-])`))
   const modulePathRes = packages.map((p) => new RegExp(`node_modules/(${escapeRe(p)})(?![\\w-])`))
@@ -387,6 +415,15 @@ export function toolEdits({ consumers = [], packages = [], registry, tool, histo
       // files and a frozen file are left as they are.
       if (codeFile && !scriptKey && !noProse.has(file)) {
         for (const re of outDirRes) {
+          // An ignore file's entry for the folder breaks nothing once the
+          // tool goes: it still works, and the lane's folder needs its own.
+          if (IGNORE_FILE.test(file)) {
+            if (!re.entry.test(liveLine())) continue
+            const lanes = laneOutDir ? ` (${laneOutDir})` : ''
+            hit(n, { kind: 'valid', uses: `output folder ${re.dir}`, replacement: laneOutDir === re.dir ? 'nothing: the lane builds to the same folder' : `nothing before the tool goes: add an entry for the lane's output folder, stories.outDir${lanes}, and this one can go with the tool` })
+            used = true
+            continue
+          }
           const value = (live) => (yaml ? re.yaml.test(live) : DATA_FILE.test(file) || !VITE_COMMANDS.has(re.dir) ? re.quoted.test(live) : false)
           if (!value(l) && !re.path.test(l)) continue
           if (!value(liveLine()) && !re.path.test(liveLine())) continue
