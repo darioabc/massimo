@@ -8,15 +8,15 @@
 // nuxtApp reads the same from source without running anything: the app's
 // nuxt.config and its layers' (literal values only), each one's source
 // folder, the aliases, and the name Nuxt gives each component file.
-// withNuxt resolves an import through Nuxt's aliases when the config's
-// aliases and the tsconfig paths leave it unresolved, and nuxtEdges lists the
-// components a file uses through a template tag, an import from
+// withNuxt resolves an import through Nuxt's aliases when neither the
+// config's aliases nor a tsconfig paths pattern matches it, and nuxtEdges
+// lists the components a file uses through a template tag, an import from
 // "#components", or a resolveComponent() or h() call.
 //
-// The naming rule, the order the folders are scanned in, the lookup of a
-// tag and the aliases inside a layer follow Nuxt 4.6.4
+// The naming rule, the order of the layers and of the folders scanned, the
+// lookup of a tag and the aliases inside a layer follow Nuxt 4.6.4
 // (packages/nuxt/src/components/scan.ts and module.ts,
-// packages/nuxt/src/core/utils/names.ts,
+// packages/kit/src/loader/config.ts, packages/nuxt/src/core/utils/names.ts,
 // packages/nuxt/src/components/plugins/loader.ts and
 // packages/nuxt/src/core/plugins/layer-aliasing.ts), with splitByCase,
 // pascalCase and kebabCase from scule 1.3.0 (src/index.ts), which Nuxt names
@@ -354,46 +354,59 @@ function layerPath(root, from, source) {
   return null
 }
 
-// The app's layers in Nuxt's order: the root, the layers its extends lists
-// (each followed by the ones it extends), then the folders under layers/
-// that hold a nuxt.config, the last in alphabetical order first. A layer
-// directly under layers/ is named for its folder unless its $meta names it.
+// The app's layers in Nuxt's order, the first ranking highest: the root,
+// then the folders under layers/ that hold a nuxt.config (the last in
+// alphabetical order first), then the layers the root's extends lists, each
+// layer followed by the ones it extends. A folder reached again keeps its
+// first place. That order merges their options (`merged`). Then, for the
+// rank of their components (`layers`), the layers/ folders the root's
+// extends names move ahead of the other layers/ folders, in the order
+// extends lists them, taking the places those folders held. A layer directly
+// under layers/ is named for its folder unless its $meta names it.
 function readLayers(root, rootRead, warnings) {
-  const layers = []
-  const seen = new Set()
-  const visit = (dir, read, depth) => {
-    if (seen.has(dir)) return
-    seen.add(dir)
-    const config = read?.config ?? {}
-    const named = isObject(config.$meta) && typeof config.$meta.name === 'string' ? config.$meta.name : /^layers\/[^/]+$/.test(dir) ? dir.slice('layers/'.length) : null
-    layers.push({ dir, file: read?.file ?? null, config, name: named })
-    if (!read || depth > 8) return
-    for (const source of extendsOf(read, warnings)) {
-      const path = layerPath(root, dir, source)
-      if (path === null) {
-        warnings.push(`${read.file} extends "${source}", a layer outside the repo, so the graph does not read its components or aliases`)
-        continue
-      }
-      const child = readConfig(root, path, warnings)
-      if (!child) {
-        warnings.push(`${read.file} extends "${source}", but ${path || '.'} holds no nuxt.config, so Nuxt reads no layer there`)
-        continue
-      }
-      visit(path, child, depth + 1)
-    }
-  }
-  visit('', rootRead, 0)
   let auto = []
   try {
     auto = readdirSync(join(root, 'layers'), { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => `layers/${e.name}`)
   } catch {
     // no layers folder
   }
-  for (const dir of auto.sort((a, b) => compare(b, a))) {
-    const read = readConfig(root, dir, warnings)
-    if (read) visit(dir, read, 1)
+  auto.sort((a, b) => compare(b, a))
+  const local = new Set(auto)
+  // The layers/ folders the root's extends lists, in its order.
+  const listed = []
+  const layers = []
+  const seen = new Set()
+  const visit = (dir, read, depth) => {
+    seen.add(dir)
+    const config = read?.config ?? {}
+    const named = isObject(config.$meta) && typeof config.$meta.name === 'string' ? config.$meta.name : local.has(dir) ? dir.slice('layers/'.length) : null
+    layers.push({ dir, file: read?.file ?? null, config, name: named })
+    if (!read || depth > 8) return
+    const sources = extendsOf(read, warnings).map((source) => ({ source, path: layerPath(root, dir, source) }))
+    for (const { source, path } of depth === 0 ? [...auto.map((p) => ({ source: null, path: p })), ...sources] : sources) {
+      if (path === null) {
+        warnings.push(`${read.file} extends "${source}", a layer outside the repo, so the graph does not read its components or aliases`)
+        continue
+      }
+      if (depth === 0 && source !== null && local.has(path) && !listed.includes(path)) listed.push(path)
+      if (seen.has(path)) continue
+      const child = readConfig(root, path, warnings)
+      if (!child) {
+        if (source !== null) warnings.push(`${read.file} extends "${source}", but ${path || '.'} holds no nuxt.config, so Nuxt reads no layer there`)
+        continue
+      }
+      visit(path, child, depth + 1)
+    }
   }
-  return layers
+  visit('', rootRead, 0)
+  const merged = [...layers]
+  const slots = layers.flatMap((layer, i) => (local.has(layer.dir) ? [i] : []))
+  const rank = (layer) => (listed.includes(layer.dir) ? listed.indexOf(layer.dir) : listed.length)
+  const ordered = slots.map((slot) => layers[slot]).map((layer, i) => ({ layer, i })).sort((a, b) => rank(a.layer) - rank(b.layer) || a.i - b.i)
+  slots.forEach((slot, i) => {
+    layers[slot] = ordered[i].layer
+  })
+  return { layers, merged }
 }
 
 // ── Aliases ─────────────────────────────────────────────────────────────────
@@ -601,22 +614,24 @@ export function isNuxtApp(root, framework, files = null) {
 }
 
 // What the graph needs from a Nuxt app, or null for any other project:
-// { autoImports, aliases, local, configKeys, components, dirs }. `files` is
+// { autoImports, aliases, local, components, dirs }. `files` is
 // the root-relative list the graph walks. Anything the configs hold that
 // cannot be read without running them is a warning.
 export function nuxtApp(root, config, files, warnings = []) {
   const edges = [].concat(config.graph?.edges ?? [])
   if (!isNuxtApp(root, config.framework, files)) {
-    if (edges.includes('nuxt')) warnings.push('graph.edges lists "nuxt", but this is not a Nuxt app (the config\'s framework is not "nuxt" and the root has no nuxt.config), so it adds no edges')
+    for (const kind of NUXT_EDGE_KINDS) {
+      if (edges.includes(kind)) warnings.push(`graph.edges lists "${kind}", but this is not a Nuxt app (the config's framework is not "nuxt" and the root has no nuxt.config), so it ${kind === 'nuxt' ? 'adds no edges' : 'turns nothing off'}`)
+    }
     return null
   }
   const app = readApp(root, files, warnings)
-  return { ...app, autoImports: !edges.includes('!nuxt'), configKeys: Object.keys(config.aliases ?? {}) }
+  return { ...app, autoImports: !edges.includes('!nuxt') }
 }
 
 function readApp(root, files, warnings) {
   const rootRead = readConfig(root, '', warnings)
-  const layers = readLayers(root, rootRead, warnings)
+  const { layers, merged } = readLayers(root, rootRead, warnings)
   const major = nuxtMajor(root)
   for (const layer of layers) layer.srcDir = srcDirOf(root, layer.dir, layer.config, major)
   const app = layers[0]
@@ -640,7 +655,7 @@ function readApp(root, files, warnings) {
   // and each named layer, as Nuxt merges them.
   const builtIn = table({ '~': app.srcDir, '@': app.srcDir, '~~': '', '@@': '' })
   const own = {}
-  for (const layer of layers) {
+  for (const layer of merged) {
     const option = layer.config.alias
     if (option === undefined) continue
     if (!isObject(option)) {
@@ -657,7 +672,7 @@ function readApp(root, files, warnings) {
       own[key] = target
     }
   }
-  for (const layer of layers) if (layer.name && !(`#layers/${layer.name}` in own)) own[`#layers/${layer.name}`] = layer.dir
+  for (const layer of merged) if (layer.name && !(`#layers/${layer.name}` in own)) own[`#layers/${layer.name}`] = layer.dir
   const entries = { '~': app.srcDir, '@': app.srcDir, '~~': '', '@@': '' }
   if (isDir(join(root, 'shared'))) entries['#shared'] = 'shared'
   const aliases = table({ ...entries, ...own })
@@ -682,7 +697,7 @@ function readApp(root, files, warnings) {
   const layerDirs = []
   layers.forEach((layer, i) => layerDirs.push(...normalizeDirs(layer.config.components, layer.srcDir, layers.length - i, ctxFor(layer))))
   const fileSet = new Set(files)
-  const shadcn = shadcnComponents(root, layers, fileSet, ctxFor(app))
+  const shadcn = shadcnComponents(root, merged, fileSet, ctxFor(app))
   const dirs = [...shadcn.blocks.map((path) => ({ path, priority: 0, ignore: ['**/*'] })), ...layerDirs].map((d) => {
     const exts = Array.isArray(d.extensions) ? d.extensions.filter((e) => typeof e === 'string').map((e) => e.replace(/^\./, '')) : extensions
     const pattern = typeof d.pattern === 'string' || Array.isArray(d.pattern) ? [].concat(d.pattern).filter((p) => typeof p === 'string') : [exts.length > 1 ? `**/*.{${exts.join(',')}}` : `**/*.${exts[0] || '*'}`]
@@ -713,29 +728,35 @@ function nuxtPath(app, fromFile, spec) {
 }
 
 // A resolver that tries Nuxt's aliases for an import `resolve` leaves
-// without a file: a hit through them is the file, and an alias that points
+// without a file, unless one of the config's aliases or a tsconfig paths
+// pattern took it: a hit through them is the file, and an alias that points
 // at nothing is unresolved. Virtual modules (#imports, #components, #app...)
-// stay framework imports. pathOf, for import.meta.glob, goes through Nuxt's
-// aliases unless one of the config's aliases matches.
+// stay framework imports. pathOf, for import.meta.glob, goes the same way:
+// the config's aliases and the tsconfig paths first, else Nuxt's aliases.
 export function withNuxt(resolve, app) {
   if (!app) return resolve
   const wrapped = (fromFile, rawSpec) => {
     const hit = resolve(fromFile, rawSpec)
-    if (hit.file) return hit
+    if (hit.file || (!hit.external && resolve.aliased?.(rawSpec))) return hit
     const target = nuxtPath(app, fromFile, rawSpec.replace(/(?!^)[?#].*$/, ''))
     if (target === null) return hit
     const back = posix.relative(posix.dirname(fromFile), target) || '.'
     const found = resolve(fromFile, back.startsWith('.') ? back : `./${back}`)
     return found.file ? found : { unresolved: rawSpec }
   }
-  wrapped.pathOf = (fromFile, spec) => (app.configKeys.some((k) => matchesKey(spec, k)) ? null : nuxtPath(app, fromFile, spec)) ?? resolve.pathOf(fromFile, spec)
+  wrapped.pathOf = (fromFile, spec) => (resolve.aliased?.(spec) ? null : nuxtPath(app, fromFile, spec)) ?? resolve.pathOf(fromFile, spec)
   return wrapped
 }
 
 // ── What a file uses ────────────────────────────────────────────────────────
 
+// A template's {{ }} interpolation, or an opening tag with its attributes,
+// whose quoted values may hold < and >.
+const TEMPLATE_TOKEN_RE = /\{\{[\s\S]*?\}\}|<([A-Za-z][\w-]*)(?=[\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>?/g
+
 // The tags a Vue file's template opens that can name a component: one with a
-// capital or a hyphen, not one of Vue's own, not a dotted member.
+// capital or a hyphen, not one of Vue's own, not a dotted member. Text in an
+// interpolation or a quoted attribute value is not a tag.
 function templateTags(source) {
   const body = source.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
   const open = /<template\b([^>]*)>/i.exec(body)
@@ -743,9 +764,9 @@ function templateTags(source) {
   const end = body.lastIndexOf('</template')
   const inner = body.slice(open.index + open[0].length, end > open.index ? end : body.length).replace(/<!--[\s\S]*?-->/g, '')
   const out = []
-  for (const m of inner.matchAll(/<([A-Za-z][\w-]*)(?=[\s/>])/g)) {
+  for (const m of inner.matchAll(TEMPLATE_TOKEN_RE)) {
     const tag = m[1]
-    if ((/[A-Z]/.test(tag) || tag.includes('-')) && !VUE_BUILT_INS.has(pascalCase(tag))) out.push(tag)
+    if (tag && (/[A-Z]/.test(tag) || tag.includes('-')) && !VUE_BUILT_INS.has(pascalCase(tag))) out.push(tag)
   }
   return out
 }
@@ -840,14 +861,27 @@ export function nuxtEdges(app, file, source) {
   return out
 }
 
+// The outermost of `dirs`, sorted: a folder inside another is left out.
+const outermost = (dirs) =>
+  [...new Set(dirs)]
+    .sort((a, b) => a.length - b.length || compare(a, b))
+    .filter((dir, i, list) => !list.slice(0, i).some((o) => o === '' || dir.startsWith(`${o}/`)))
+    .sort(compare)
+
 // The folders whose files a Nuxt app registers as components and that hold
 // a .vue file, outermost only, sorted; null for a project that is not a Nuxt
 // app or registers none. detect suggests them as components.include.
 export function nuxtComponentFolders(root, files, framework) {
   if (!isNuxtApp(root, framework, files)) return null
   const { dirs } = readApp(root, files, [])
-  const held = dirs.map((d) => d.path).filter((dir) => files.some((f) => f.startsWith(`${dir}/`) && f.endsWith('.vue')))
-  const outer = [...new Set(held)].sort((a, b) => a.length - b.length || compare(a, b)).filter((dir, i, list) => !list.slice(0, i).some((o) => o === '' || dir.startsWith(`${o}/`)))
-  return outer.length > 0 ? outer.sort(compare) : null
+  const outer = outermost(dirs.map((d) => d.path).filter((dir) => files.some((f) => f.startsWith(`${dir}/`) && f.endsWith('.vue'))))
+  return outer.length > 0 ? outer : null
+}
+
+// detect's component folders, `dirs`, with the ones a Nuxt app registers,
+// `nuxt`, added: the outermost of both, sorted. Without `nuxt`, `dirs` as
+// they are.
+export function withNuxtFolders(dirs, nuxt) {
+  return nuxt ? outermost([...dirs, ...nuxt]) : dirs
 }
 

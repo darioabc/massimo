@@ -574,6 +574,14 @@ export function createResolver(root, config = {}) {
     return baseUrls.length > 0 ? toRel(resolve(baseUrls[0], spec)) : null
   }
 
+  // Whether a specifier goes through one of the config's aliases or a
+  // tsconfig paths pattern, whether or not a file is there.
+  resolveImport.aliased = (rawSpec) => {
+    const spec = rawSpec.replace(/(?!^)[?#].*$/, '')
+    if (aliases.some(({ key }) => spec === key || (spec.startsWith(key) && (key.endsWith('/') || spec[key.length] === '/')))) return true
+    return patterns.some((p) => (p.star ? spec.startsWith(p.prefix) && spec.endsWith(p.suffix) && spec.length >= p.prefix.length + p.suffix.length : spec === p.prefix))
+  }
+
   return resolveImport
 
   function resolveImport(fromFile, rawSpec) {

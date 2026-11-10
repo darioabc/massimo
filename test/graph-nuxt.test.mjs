@@ -156,10 +156,12 @@ test('detect suggests every components folder a Nuxt app registers, each layer\'
   try {
     const r = spawnSync(process.execPath, [join(SCRIPTS, 'detect.mjs'), '--root', t.root], { encoding: 'utf8' })
     assert.equal(r.status, 0, r.stderr)
+    // layers/notes/components is not registered, but holds components by the usual rule, so it stays.
     assert.deepEqual(JSON.parse(r.stdout).suggestedConfig.components.include, [
       'app/components/**/*.vue',
       'app/widgets/**/*.vue',
       'layers/base/app/components/**/*.vue',
+      'layers/notes/components/**/*.vue',
       'vendor/theme/components/**/*.vue',
     ])
   } finally {
@@ -167,28 +169,138 @@ test('detect suggests every components folder a Nuxt app registers, each layer\'
   }
 })
 
-test('detect suggests the folder a Nuxt 3 layout registers, not one Nuxt leaves alone', () => {
-  const base = mkdtempSync(join(tmpdir(), 'massimo-nuxt-'))
-  try {
-    const files = {
-      'package.json': '{ "dependencies": { "nuxt": "^3.12.0" } }',
-      'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
-      'components/TheHeader.vue': '<template><header /></template>\n',
-      'components/global/SiteIcon.vue': '<template><i /></template>\n',
-      'docs/elements/Callout.vue': '<template><aside /></template>\n',
-      'docs/elements/Note.vue': '<template><aside /></template>\n',
-      'docs/elements/Tip.vue': '<template><aside /></template>\n',
-      'pages/index.vue': '<template><TheHeader /></template>\n',
-      'app/router.options.ts': 'export default {}\n',
-    }
-    for (const [path, text] of Object.entries(files)) {
-      mkdirSync(dirname(join(base, path)), { recursive: true })
-      writeFileSync(join(base, path), text)
-    }
-    const r = spawnSync(process.execPath, [join(SCRIPTS, 'detect.mjs'), '--root', base], { encoding: 'utf8' })
-    assert.equal(r.status, 0, r.stderr)
-    assert.deepEqual(JSON.parse(r.stdout).suggestedConfig.components.include, ['components/**/*.vue'])
-  } finally {
-    rmSync(base, { recursive: true, force: true })
+// A scratch repo holding `files`, as { root, cleanup }.
+function repoOf(files) {
+  const root = mkdtempSync(join(tmpdir(), 'massimo-nuxt-'))
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true })
+    writeFileSync(join(root, path), text)
   }
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+const detectInclude = (root) => {
+  const r = spawnSync(process.execPath, [join(SCRIPTS, 'detect.mjs'), '--root', root], { encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  return JSON.parse(r.stdout).suggestedConfig.components.include
+}
+
+test('detect suggests the folder a Nuxt 3 layout registers at the root, beside the folders it found before', () => {
+  const t = repoOf({
+    'package.json': '{ "dependencies": { "nuxt": "^3.12.0" } }',
+    'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+    'components/TheHeader.vue': '<template><header /></template>\n',
+    'components/global/SiteIcon.vue': '<template><i /></template>\n',
+    'docs/elements/Callout.vue': '<template><aside /></template>\n',
+    'docs/elements/Note.vue': '<template><aside /></template>\n',
+    'docs/elements/Tip.vue': '<template><aside /></template>\n',
+    'pages/index.vue': '<template><TheHeader /></template>\n',
+    'app/router.options.ts': 'export default {}\n',
+  })
+  try {
+    assert.deepEqual(detectInclude(t.root), ['components/**/*.vue', 'docs/elements/**/*.vue'])
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('detect keeps a Nuxt app\'s component folder that Nuxt does not register, which the app imports by path', () => {
+  const t = repoOf({
+    'package.json': '{ "dependencies": { "nuxt": "^4.1.0" } }',
+    'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+    'app/components/TheHeader.vue': '<template><header /></template>\n',
+    'app/ui/Button.vue': '<template><button><slot /></button></template>\n',
+    'app/ui/Card.vue': '<template><section /></template>\n',
+    'app/ui/Input.vue': '<template><input /></template>\n',
+    'app/ui/Select.vue': '<template><select /></template>\n',
+    'app/pages/index.vue': '<script setup lang="ts">\nimport Button from \'~/ui/Button.vue\'\n</script>\n<template><TheHeader /><Button /></template>\n',
+  })
+  try {
+    assert.deepEqual(detectInclude(t.root), ['app/components/**/*.vue', 'app/ui/**/*.vue'])
+  } finally {
+    t.cleanup()
+  }
+})
+
+// The graph of a scratch repo holding `files`, written with `config`.
+function graphOfFiles(files, config) {
+  const t = repoOf({ ...files, 'massimo.config.json': JSON.stringify(config) })
+  try {
+    const ctx = { root: t.root, project: join(t.root, 'ds') }
+    const r = run('graph', ctx)
+    assert.equal(r.status, 0, r.stderr)
+    const json = readJson(ctx.project, 'graph.json')
+    return { json, stderr: r.stderr, node: (name) => json.nodes.find((n) => n.name === name), file: (file) => json.nodes.find((n) => n.file === file) }
+  } finally {
+    t.cleanup()
+  }
+}
+
+const nuxtConfig = (include, extra = {}) => ({ version: 1, framework: 'nuxt', components: { include, exclude: [] }, consumers: ['**/*.{vue,ts}'], aliases: {}, ...extra })
+
+test('a component name two layers define goes to the layers/ folder before a layer extends lists, and to the one extends names first among layers/ folders', () => {
+  const page = '<template>\n  <Badge />\n  <Chip />\n</template>\n'
+  const vue = '<template><span /></template>\n'
+  const g = graphOfFiles(
+    {
+      'package.json': '{ "dependencies": { "nuxt": "^4.1.0" } }',
+      'nuxt.config.ts': "export default defineNuxtConfig({ extends: ['./vendor/theme', './layers/alpha'] })\n",
+      'app/pages/index.vue': page,
+      'vendor/theme/nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+      'vendor/theme/components/Badge.vue': vue,
+      'layers/zeta/nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+      'layers/zeta/app/components/Badge.vue': vue,
+      'layers/zeta/app/components/Chip.vue': vue,
+      'layers/alpha/nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+      'layers/alpha/app/components/Chip.vue': vue,
+    },
+    nuxtConfig(['vendor/theme/components/**/*.vue', 'layers/*/app/components/**/*.vue']),
+  )
+  // An auto-scanned layer ranks above a layer extends lists.
+  assert.equal(g.file('layers/zeta/app/components/Badge.vue').usage, 1)
+  assert.equal(g.file('vendor/theme/components/Badge.vue').usage, 0)
+  // Among the layers/ folders, zeta ranks first by name, but extends lists alpha, which moves ahead.
+  assert.equal(g.file('layers/alpha/app/components/Chip.vue').usage, 1)
+  assert.equal(g.file('layers/zeta/app/components/Chip.vue').usage, 0)
+})
+
+test('Nuxt\'s aliases leave alone an import that the config\'s own alias or a tsconfig path matches, though it points at nothing', () => {
+  const files = {
+    'package.json': '{ "dependencies": { "nuxt": "^4.1.0" } }',
+    'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+    'app/lib/only-in-app.ts': 'export const x = 1\n',
+    'app/shared/kit.ts': 'export const y = 1\n',
+    'src/Card.vue': '<template><div /></template>\n',
+    'app/pages/index.vue': "<script setup lang=\"ts\">\nimport { x } from '@/lib/only-in-app'\nimport { y } from '~/shared/kit'\n</script>\n<template><div>{{ x }} {{ y }}</div></template>\n",
+    'tsconfig.json': '{ "compilerOptions": { "paths": { "~/*": ["./src/*"] } } }\n',
+  }
+  const g = graphOfFiles(files, nuxtConfig(['src/**/*.vue'], { aliases: { '@': 'src' } }))
+  assert.deepEqual(g.json.unresolved, { '@/lib/only-in-app': ['app/pages/index.vue'], '~/shared/kit': ['app/pages/index.vue'] })
+  // Without the config's alias and the tsconfig path, Nuxt's ~ and @ find both files.
+  const own = graphOfFiles({ ...files, 'tsconfig.json': '{}\n' }, nuxtConfig(['src/**/*.vue']))
+  assert.deepEqual(own.json.unresolved, {})
+})
+
+test('a tag inside a quoted attribute value or an interpolation is not a use', () => {
+  const vue = '<template><span /></template>\n'
+  const g = graphOfFiles(
+    {
+      'package.json': '{ "dependencies": { "nuxt": "^4.1.0" } }',
+      'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+      'app/components/Quoted.vue': vue,
+      'app/components/Shown.vue': vue,
+      'app/components/Real.vue': vue,
+      'app/pages/index.vue': '<template>\n  <div title="<Quoted>" :data-x="\'<Quoted />\'">{{ \'<Shown>\' }} {{ a > b }}</div>\n  <Real :when="a > b" />\n</template>\n',
+    },
+    nuxtConfig(['app/components/**/*.vue']),
+  )
+  assert.equal(g.node('Quoted').usage, 0)
+  assert.equal(g.node('Shown').usage, 0)
+  assert.equal(g.node('Real').usage, 1)
+})
+
+test('"!nuxt" in graph.edges of a project that is not a Nuxt app is a warning and changes nothing', () => {
+  const g = graphOf('app', (c) => ({ ...c, graph: { edges: ['!nuxt'] } }))
+  assert.equal(`${JSON.stringify(g.json, null, 2)}\n`, read(GOLDEN, 'graph-app', 'graph.json'))
+  assert.match(g.stderr, /graph\.edges lists "!nuxt", but this is not a Nuxt app/)
 })
