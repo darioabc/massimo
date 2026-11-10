@@ -153,6 +153,17 @@ test('the csf scaffold is the folder of the recipe\'s files, and only once the c
   assert.equal(csfScaffold(flat.root, flat.config), null)
 })
 
+test("a lane of the repo's own beside the entry is no csf scaffold, and any one file only the csf recipe writes makes one", () => {
+  // The entry, a main.tsx and story types are what the native recipe or a hand-made lane writes too.
+  const own = { 'stories.html': SCAFFOLD['stories.html'], 'vite.stories.config.ts': 'export default {}\n', 'src/stories/main.tsx': `import Gallery from './Gallery'\nexport { Gallery }\n`, 'src/stories/Gallery.tsx': 'export default function Gallery() { return null }\n', 'src/stories/story.ts': 'export type Story = () => null\n' }
+  const repoLane = lane(own)
+  assert.equal(csfScaffold(repoLane.root, repoLane.config), null)
+  for (const file of ['Shell.tsx', 'Canvas.tsx', 'massimo.d.ts']) {
+    const csf = lane({ ...own, [`src/stories/${file}`]: 'export {}\n' })
+    assert.equal(csfScaffold(csf.root, csf.config), 'src/stories', file)
+  }
+})
+
 test('the scaffold folder is one warning when the entry CSS does not exclude it, and none when it does', () => {
   const uncovered = lane({ ...SCAFFOLD, 'src/styles/base.css': BASE, 'src/styles/app.css': ENTRY }, (c) => {
     c.stories = layout(c)

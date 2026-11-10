@@ -146,6 +146,16 @@ test("the csf lane's scaffold is reported as massimo's own lane: kept, but nothi
     assert.deepEqual(out.adoptable, [{ kind: 'stories', paths: [], note: 'ladle stories' }])
     assert.deepEqual([out.suggestedConfig.stories.devCommand, out.suggestedConfig.stories.url], [null, null])
   })
+  // A lane of the repo's own beside the same entry, with none of the files only
+  // the csf recipe writes, stays the repo's lane under the opt-in.
+  const { 'src/stories/Shell.tsx': _shell, ...entry } = SCAFFOLD
+  const own = { ...entry, 'src/stories/main.tsx': "import Gallery from './Gallery'\nexport { Gallery }\n", 'src/stories/Gallery.tsx': 'export default function Gallery() {\n  return null\n}\n' }
+  repo({ ...own, 'massimo.config.json': JSON.stringify({ stories: { lane: 'csf', include: ['src/**/*.stories.{tsx,ts}'] } }) }, (root) => {
+    const out = detect(root)
+    assert.deepEqual([out.storyTools.lane.dir, out.storyTools.lane.csf], ['src/stories', undefined])
+    assert.deepEqual(out.adoptable.map((a) => a.note), ['a gated story lane', 'ladle stories'])
+    assert.equal(out.suggestedConfig.stories.devCommand, 'npm run ds:stories')
+  })
   // Without the opt-in, the same files are a gated lane, reported as before.
   repo(SCAFFOLD, (root) => {
     const out = detect(root)

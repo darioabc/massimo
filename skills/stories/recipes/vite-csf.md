@@ -43,7 +43,7 @@ src/stories/stories.extra.css  rules the lane needs and the app must never ship
 
 The scaffold is the project's from then on: restyle the shell, extend the frame. Keep the shell on the canvas's URLs, and keep `Shell.tsx` and `Canvas.tsx` importing only React and `virtual:massimo-stories`.
 
-Once these files are written, massimo knows them as its own lane: `stories.lane` is `csf`, and the recipe's files sit beside the module script `stories.html` loads. detect reports the lane marked `csf: true`, so nothing is scaffolded over it, and adopt never takes it for a lane the repo had: scan lists no story lane for it, plan adds no asset for it, and config proposes no `stories` keys from it.
+Once these files are written, massimo knows them as its own lane: `stories.lane` is `csf`, and a file only this recipe writes (`Shell.tsx`, `Canvas.tsx` or `massimo.d.ts`) sits beside the module script `stories.html` loads. A lane the repo built there itself, with an entry and a `main.tsx` but none of those three, stays the repo's lane. detect reports the lane marked `csf: true`, so nothing is scaffolded over it, and adopt never takes it for a lane the repo had: scan lists no story lane for it, plan adds no asset for it, and config proposes no `stories` keys from it.
 
 ## Config
 
