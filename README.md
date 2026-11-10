@@ -47,6 +47,8 @@ Requires Node 18 or newer. Optional: Playwright in the repo (for screenshots and
 
 `/massimo:start` detects your stack, asks a few short questions (who your users are, which products set the bar, brand feel, accessibility bar, where real data lives), and creates the project. Then it walks you through the phases, one at a time. Every run of `/massimo:start` after that picks up where the last session stopped.
 
+In a monorepo, the project lives at the root or in one package. Keep it at the root, with component globs into the packages, when components, stories or tokens sit in different packages, or the story tool or the tokens sit at the root. Keep it in a package (`init.mjs --root <package>`) when that package holds the whole system: the scripts, the package's npm scripts and the session hook then find it from inside that package, and a script run from the repo top needs `--root <package>`.
+
 | Phase | Command | What you get |
 |---|---|---|
 | Set up | `/massimo:start` | `massimo.config.json`, the `design-system/` project folder, product grounding |
