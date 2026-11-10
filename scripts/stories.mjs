@@ -182,7 +182,7 @@ const line = (p) => `  [${p.rule}] ${p.file ? `${p.file}: ` : ''}${p.detail}`
 // hold as rules of their own.
 function cssIn(dir, read = cssClasses) {
   const out = new Set()
-  for (const f of walk(dir)) if (f.endsWith('.css')) for (const c of read(readFileSync(join(dir, f), 'utf8'))) out.add(c)
+  for (const f of walk(dir, { gitignore: false })) if (f.endsWith('.css')) for (const c of read(readFileSync(join(dir, f), 'utf8'))) out.add(c)
   return out
 }
 

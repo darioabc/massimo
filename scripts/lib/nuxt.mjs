@@ -886,6 +886,12 @@ export function nuxtSrcDir(root, files, framework) {
   return srcDirOf(root, '', readConfig(root, '', [])?.config ?? {}, nuxtMajor(root))
 }
 
+// The root's own nuxt.config as literals, anything computed left as
+// { expr }; null when the root has none.
+export function nuxtRootConfig(root) {
+  return readConfig(root, '', [])?.config ?? null
+}
+
 // detect's component folders, `dirs`, with the ones a Nuxt app registers,
 // `nuxt`, added: the outermost of both, sorted. Without `nuxt`, `dirs` as
 // they are.

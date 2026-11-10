@@ -6,6 +6,7 @@
 // Node 18 in CI without installing anything. Paths are always repo-relative
 // and POSIX-separated so output is identical across platforms.
 
+import { execFileSync } from 'node:child_process'
 import { readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -16,12 +17,34 @@ export function compare(a, b) {
 
 const ALWAYS_IGNORED = ['node_modules', '.git']
 
+// What git ignores under `root`, as root-relative POSIX paths: each ignored
+// file, and each folder it ignores whole with a trailing slash. A file git
+// tracks is never in it. Empty outside a git checkout, or when git cannot
+// list from `root`.
+function gitIgnored(root) {
+  try {
+    const out = execFileSync('git', ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    }).toString()
+    return new Set(out.split('\0').filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
 // Every file under `root`, as sorted repo-relative POSIX paths. Directories
 // named in `ignore` are never entered. A nested directory that holds its own
 // `.git` (a git worktree or a vendored checkout) is skipped too: it is another
-// project, and scanning it would double-count everything.
-export function walk(root, { ignore = [] } = {}) {
+// project, and scanning it would double-count everything. In a git checkout,
+// what git ignores is left out as well, as `git ls-files` leaves it out:
+// build output, a copy of the web build inside a native project. Pass
+// `gitignore: false` to walk a folder that is ignored by design, such as a
+// build to read.
+export function walk(root, { ignore = [], gitignore = true } = {}) {
   const skip = new Set([...ALWAYS_IGNORED, ...ignore])
+  const ignored = gitignore ? gitIgnored(root) : new Set()
   const out = []
   const visit = (abs, relDir, isRoot) => {
     let entries
@@ -34,7 +57,9 @@ export function walk(root, { ignore = [] } = {}) {
     for (const entry of entries) {
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
-        if (!skip.has(entry.name)) visit(join(abs, entry.name), relPath, false)
+        if (!skip.has(entry.name) && !ignored.has(`${relPath}/`)) visit(join(abs, entry.name), relPath, false)
+      } else if (ignored.has(relPath)) {
+        continue
       } else if (entry.isFile()) {
         out.push(relPath)
       } else if (entry.isSymbolicLink()) {
