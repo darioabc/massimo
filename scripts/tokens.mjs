@@ -1147,7 +1147,9 @@ function buildKit(model, origin, files, config) {
         ? 'No tokens yet: mockups use system defaults until the tokens phase.'
         : `Source: custom properties extracted from ${files.join(', ') || 'the style files'} (no tokens.json yet).`
   const out = [`/* ${HEADER} */`, `/* ${source} Link this file from mockups so they look like the product. */`, '']
-  out.push(...cssBlock(':root', ['color-scheme: light;', ...modeLines(model, 'default', false)]))
+  // :root carries the default theme's scheme: dark when the default mode is dark.
+  const scheme = model.defaultMode === 'dark' ? 'dark' : 'light'
+  out.push(...cssBlock(':root', [`color-scheme: ${scheme};`, ...modeLines(model, 'default', false)]))
   const dark = model.modes.includes('dark') ? modeLines(model, 'dark', false) : []
   out.push('', ...cssBlock(kitSelector(config, model, 'dark'), ['color-scheme: dark;', ...dark]))
   if (dark.length > 0 && config.tokens.darkMedia) {
@@ -1155,7 +1157,9 @@ function buildKit(model, origin, files, config) {
     out.push('', '@media (prefers-color-scheme: dark) {', ...cssBlock(`:root${optOut.map((s) => `:not(${s})`).join('')}`, ['color-scheme: dark;', ...dark], '  '), '}')
   }
   for (const mode of model.modes.filter((m) => m !== 'default' && m !== 'dark')) {
-    out.push('', ...cssBlock(kitSelector(config, model, mode), modeLines(model, mode, false)))
+    // Under a dark default, a light theme sets its own scheme back.
+    const own = scheme === 'dark' && mode === 'light' ? ['color-scheme: light;'] : []
+    out.push('', ...cssBlock(kitSelector(config, model, mode), [...own, ...modeLines(model, mode, false)]))
   }
   out.push('', '*, *::before, *::after {', '  box-sizing: border-box;', '}')
   const body = ['margin: 0;', `font-family: ${font ? `var(${font})` : 'system-ui, sans-serif'};`]
@@ -1756,7 +1760,7 @@ function main() {
     // What the sources define, then the code's own values for the gaps.
     const { sources } = readSources(root, config)
     const audit = runAudit(root, config, { raw: true })
-    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling })
+    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling, defaultMode: config.tokens.defaultMode })
     if (proposal.tokens.length === 0) fail('found nothing to propose: no style files, config, theme or token files, and no raw values in the code')
     const { tokens, losses, defaultMode } = draftFrom(proposal.tokens, config)
     const set = writeTokenSet({
@@ -1851,7 +1855,8 @@ function main() {
   // And with tokens.inventory or tokens.mirror on, resolved.json too.
   const listed = inventoryChecked(config) && typeof flags.source !== 'string' ? resolvedState(root, config, projectDir, shown) : null
   if (listed && !listed.current) process.stderr.write(`  behind the style files: ${shown(listed.path)}${existsSync(listed.path) ? '' : ' (missing)'}\n`)
-  const failures = contrastChecks(model).filter((c) => !c.pass)
+  const checks = contrastChecks(model)
+  const failures = checks.filter((c) => !c.pass)
   const strict = truthy(flags.strict)
   // The Figma library is a mirror, so drift is reported, never failed on.
   const mirror = tokens.origin === 'tokens' ? figmaMirror(root, projectDir, config, tokens.files) : null
@@ -1862,7 +1867,12 @@ function main() {
   for (const c of failures) {
     process.stderr.write(`  ${strict ? 'fail' : 'warn'}: ${c.mode}: ${c.token} on ${c.on} is ${c.ratio.toFixed(2)}:1, needs ${c.needs}:1${c.use}\n`)
   }
-  const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}`]
+  // How many pairs were checked when none failed, and plainly when none were.
+  const pairs = new Set(checks.map((c) => `${c.token} ${c.on}`)).size
+  const contrast = checks.length === 0
+    ? 'no contrast pairs checked'
+    : `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}${failures.length === 0 ? ` in ${pairs} ${pairs === 1 ? 'pair' : 'pairs'}` : ''}`
+  const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, contrast]
   if (mirror) parts.push(mirror.current ? 'figma mirror current' : 'figma mirror behind')
   if (config.tokens.mirror && typeof flags.source !== 'string') parts.push(behind.length > 0 ? 'token mirror behind the style files' : 'token mirror current')
   if (listed) parts.push(listed.current ? 'resolved.json current' : 'resolved.json behind')

@@ -42,6 +42,7 @@ import { deltaE, parseColor, toHex } from './lib/color.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, warnIfVendoredOlder } from './lib/project.mjs'
 import {
+  aliasPath,
   classLibraries,
   extractRules,
   flattenDtcg,
@@ -52,7 +53,7 @@ import {
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { findObject, leaves } from './lib/jsobject.mjs'
-import { TAILWIND_CONFIG_STARTS, channelColor } from './lib/readers.mjs'
+import { TAILWIND_CONFIG_STARTS, channelColor, readCss } from './lib/readers.mjs'
 import { headerRoles, keyRoles, knownKeys, placeFile } from './lib/roles.mjs'
 import { truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
@@ -350,8 +351,9 @@ function tailwindColorNames(theme) {
 // ── What a colour is used for ───────────────────────────────────────────────
 
 // The job a raw colour does where it sits: a background, text, a border, an
-// SVG fill, a shadow, or something else. Read from the CSS property or JS key
-// before it on the same line, or from the Tailwind utility around it.
+// SVG fill, a shadow, or something else. Read from the CSS property, JS key
+// or SVG attribute before it on the same line, or from the Tailwind utility
+// around it.
 const ROLE_OF = [
   [/^(?:background(?:-color|-image)?|bg|backgroundColor|background)$/i, 'bg'],
   [/^(?:color|text|caret-color|caretColor|placeholder)$/i, 'text'],
@@ -366,9 +368,18 @@ function utilityRole(utility) {
   return ROLE_OF.find(([re]) => re.test(prop))?.[1] ?? 'other'
 }
 
+// An SVG presentation attribute just before the value: `fill="#ea580c"`,
+// `stroke='…'`, `stopColor={"…"}`, or an icon's `color="…"`, which its
+// currentColor fills and strokes take. Each colours the drawing, so each is
+// a fill, never a border or text.
+const SVG_ATTRIBUTE = /(?:^|\s)(?:fill|stroke|stop-color|stopColor|color)\s*=\s*(?:\{\s*)?["'`]?$/
+const DECLARED = /\b(?:const|let|var)\s+[\w$]+\s*=\s*(?:\{\s*)?["'`]?$/
+
 function colorRole(code, offset) {
   const lineStart = code.lastIndexOf('\n', offset) + 1
   const before = code.slice(lineStart, offset)
+  // An attribute styles the drawing; a variable of that name holds data.
+  if (SVG_ATTRIBUTE.test(before) && !DECLARED.test(before)) return 'fill'
   const utility = /(?:^|[\s"'`])-?(bg|text|border(?:-[trblxyse])?|ring|outline|fill|stroke|divide|shadow|from|via|to|decoration|accent|caret|placeholder)-\[$/.exec(before)
   const prop = utility?.[1].replace(/-[trblxyse]$/, '') ?? /([A-Za-z-]+)['"]?\s*:\s*[^:;{}]*$/.exec(before)?.[1]
   if (!prop) return 'other'
@@ -580,6 +591,16 @@ function scanFile(file, source, ctx, info) {
       const p = PALETTE_UTILITY.exec(token)
       if (p && !ctx.ownColors.has(p[1])) add(offset, 'tailwind-palette', token.replace(/^-/, ''))
     }
+    // Every palette colour class, the repo's own ramps too, and the ones
+    // under a dark: variant, for what extract says it could not propose.
+    if (ctx.colorClasses && PALETTE_UTILITY.test(token)) {
+      const c = ctx.colorClasses
+      c.count++
+      c.classes.set(token, (c.classes.get(token) ?? 0) + 1)
+      const at = code.indexOf(token, offset)
+      const variants = at >= offset && at - offset < 200 ? code.slice(offset, at) : ' '
+      if (!/\s/.test(variants) && /(?:^|:)dark:/.test(variants)) c.dark++
+    }
   }
 
   // Media widths off the breakpoint scale: @media queries, and Tailwind
@@ -684,6 +705,43 @@ function stylePrimitives(customProps) {
 function isColorPrimitive(t) {
   if (isAlias(t.value) || (t.type ?? t.groupType) !== 'color' || (t.collection ?? 'Primitives') !== 'Primitives') return false
   return ![t.css, ...Object.values(t.cssModes ?? {})].some((css) => typeof css === 'string' && /var\(/.test(css))
+}
+
+// The colour each custom property of the style files holds in each theme,
+// as the CSS reader reads it: channels (`184 58% 28%`) as their colour, and
+// `var(--x)` or `hsl(var(--x))` followed to the property they name. The
+// default theme's colours come first, then the other themes'; within each,
+// the properties that hold a colour of their own, then the ones that refer
+// to another.
+function readerColors(root, styleFiles) {
+  let tokens
+  try {
+    tokens = readCss(root, styleFiles).tokens
+  } catch {
+    // a sheet the reader cannot read leaves only the literal colours
+    return []
+  }
+  const byPath = new Map(tokens.map((t) => [t.path.join('.'), t]))
+  const themes = [...new Set(tokens.flatMap((t) => Object.keys(t.modes)))]
+  const valueIn = (t, theme) => (theme === 'default' ? t.value : t.modes[theme] ?? t.value)
+  const colorOf = (value, theme, depth = 0) => {
+    if (!isAlias(value)) return typeof value === 'string' ? parseColor(value) : null
+    const target = byPath.get(aliasPath(value))
+    return target && depth < 8 ? colorOf(valueIn(target, theme), theme, depth + 1) : null
+  }
+  const out = []
+  for (const group of [['default'], themes]) {
+    for (const refers of [false, true]) {
+      for (const t of tokens) {
+        if (!t.cssVar || t.cssVar.startsWith('--tw-') || isAlias(t.value) !== refers) continue
+        for (const theme of group) {
+          const parsed = colorOf(valueIn(t, theme), theme)
+          if (parsed && parsed.a > 0) out.push({ name: t.cssVar, value: toHex(parsed), parsed })
+        }
+      }
+    }
+  }
+  return out
 }
 
 // The story lane's policy problems the graph wrote to graph.json
@@ -1006,6 +1064,13 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     primitives = dtcgTokens.length > 0 ? new Set(dtcgTokens.filter(isColorPrimitive).map((t) => t.cssVar)) : stylePrimitives(customProps)
   }
   if (dtcgTokens.length === 0 && primitives.size === 0) skipped.set('primitive-read', 'no token set yet')
+  // A set where no token aliases another has no semantic token to read
+  // instead, so every read of it would count: the kind waits for aliases.
+  const aliased = (t) => isAlias(t.value) || Object.values(t.modes ?? {}).some(isAlias)
+  if (!colorPrimitives && dtcgTokens.length > 0 && !dtcgTokens.some(aliased)) {
+    primitives = new Set()
+    skipped.set('primitive-read', 'the token set has no aliases yet, so it has no semantic tokens to read instead of its primitives')
+  }
 
   const styling = config.styling ?? []
   const libraries = classLibraries(config)
@@ -1053,6 +1118,7 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     palette,
     ownColors,
     tailwindText: new Map(),
+    colorClasses: hasTailwind ? { count: 0, dark: 0, classes: new Map() } : null,
     inventory: {},
     arbitraryColorOnly: config.audit?.arbitrary === 'color',
     colorVars: config.audit?.arbitrary === 'color' ? colorProperties(customProps, dtcgTokens) : new Set(),
@@ -1154,6 +1220,13 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     const parsed = parseColor(p.value)
     if (parsed && parsed.a > 0 && !p.name.startsWith('--tw-')) tokenColors.push({ name: p.name, value: toHex(parsed), parsed })
   }
+  // Then the colours the CSS reader resolves: channel triplets and var()
+  // chains, after the literals so a tie keeps the literal's name.
+  const listed = new Set(tokenColors.map((t) => `${t.name} ${t.value}`))
+  for (const t of readerColors(root, styleFiles)) {
+    if (!listed.has(`${t.name} ${t.value}`)) tokenColors.push(t)
+    listed.add(`${t.name} ${t.value}`)
+  }
   const clusters = []
   for (const c of colors) {
     if (!c.parsed) {
@@ -1251,6 +1324,13 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     // CLI, never written to latest.json.
     kinds,
     warnings,
+    // Tailwind palette colour classes in use: read by tokens.mjs extract,
+    // never written to latest.json.
+    colorClasses: ctx.colorClasses && {
+      count: ctx.colorClasses.count,
+      dark: ctx.colorClasses.dark,
+      top: [...ctx.colorClasses.classes].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).slice(0, 3).map(([name, count]) => ({ name, count })),
+    },
   }
 }
 
@@ -1484,7 +1564,7 @@ function main() {
   const date = today()
   const auditsDir = join(projectDir, 'audits')
   mkdirSync(auditsDir, { recursive: true })
-  const { findings, kinds, warnings, ...summary } = result
+  const { findings, kinds, warnings, colorClasses, ...summary } = result
   const json = { version: 1, generatedBy: 'massimo audit', date, ...summary, findings }
   writeFileSync(join(auditsDir, 'latest.json'), `${JSON.stringify(json, null, 2)}\n`)
   writeFileSync(join(auditsDir, 'latest.md'), renderMarkdown(result, date, scriptCommand(root, projectDir, 'audit')))
