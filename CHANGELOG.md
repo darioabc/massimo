@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-Fixes from running massimo on public repos it had never seen. After updating, run `init.mjs --update-scripts`, then `adopt.mjs scan` before the next `plan`. No file format changes.
+Fixes from running massimo on public repos it had never seen. After updating, run `init.mjs --update-scripts`, then `adopt.mjs scan` before the next `plan`. No file format changes: the inventory gains a few fields (`widths` on a story file that sets `meta.width`, and Ladle's `previewPort` and `notLiteral`) that older scripts ignore.
+
+### Changed
+
+- `tokens.mjs check` says how many contrast pairs it checked when none fails (`0 contrast failures in 12 pairs`), and says plainly when it checked none, where it used to print `0 contrast failures` either way.
+- The audit skips `primitive-read`, with the reason in `latest.md`, against a token set where no token aliases another, so adopting a flat draft no longer flags every read of the repo's own variables. Baseline entries of that kind are not checked until the set gains an alias.
+- init warns, and writes nothing, when the repo checks its formatting and its ignore patterns leave in the project folder or `massimo.config.json`. For prettier it names the lines to add to `.prettierignore`; for a format check in CI by Biome, dprint or oxfmt, it names the tool and the config that holds its ignore patterns.
 
 ### Fixed
 
@@ -15,6 +21,21 @@ Fixes from running massimo on public repos it had never seen. After updating, ru
 - Extract keeps the first value when two places set one custom property for the same theme with different values, such as two files, and a plain `:root` stays the default theme when a light theme's selector sets the same property. A note names both places and says which value the token keeps. Extract prints its notes and lists them under Notes in `report.md`.
 - Tokens Studio files in the W3C form (`$value`, `$type`, `$description`) are read; before, they gave no tokens. Token sets merge deeply in their order, and a token that refers to its own path keeps the earlier set's token, with a note. Extract says when an import file gave no tokens.
 - The csf lane's scaffold, once written from the vite-csf recipe, is massimo's own lane and no longer read back as the repo's: scan lists no lane for it, plan leaves the stories class where it was and adds no asset, and `config` proposes no stories keys from it. Only a file the recipe alone writes (`Shell.tsx`, `Canvas.tsx` or `massimo.d.ts` beside the lane's module script) marks the scaffold, so a lane of the repo's own in that folder stays the repo's. detect still reports the scaffold under `storyTools.lane`, marked `csf: true`, so nothing is scaffolded over it, and leaves it out of `adoptable` and the suggested config. A ledger or an older inventory that already lists the scaffold drops it on the next `plan`, which says so.
+- detect in a monorepo: a root that holds packages and no framework of its own is a monorepo, so the start skill asks which package to work on. A package reads what the workspace root installs (a framework the package names itself still wins), and a package that holds stories uses the story tool the root configures. A workspace root that names no framework takes the one most of its packages use, and its packages' dependencies count for styling. One package per component (components in `packages/<name>/src/`) is one component folder, `packages/*/src/**/*.{tsx,jsx}`, and every component glob detect suggests matches a file.
+- detect: style files are read without their comments, so a comment that mentions Tailwind does not make a repo Tailwind, and a style file that declares no custom property no longer leads the token sources. vanilla-extract is found from any `@vanilla-extract` package or `*.css.ts` file.
+- `init.mjs --dry-run` reports the framework and project folder the real run writes.
+- The start skill's kickoff says when to keep the root with globs into the packages and when to pick a package, and a chosen package reaches init and every later script through `--root`.
+- Extract in a Tailwind repo: a radius or font size takes Tailwind's name only when its value is Tailwind's for that name, and is named by its size otherwise, so wiring the tokens never changes what a `rounded-*` or `text-*` class renders. The radius, spacing and shadow tables list the Tailwind classes the code uses, which need no tokens.
+- Extract: widths and heights the code repeats, and durations under 1ms, are listed under Not proposed with the reason, instead of being left out. The body size is the one a `body`, `html` or `:root` rule sets, else the most used. A name with a dot is written with `_`, with a note, so every draft passes `tokens.mjs check`.
+- Extract: a theme file's root is a theme call (up to two arguments before its object, `createGlobalTheme(':root', vars, {…})` included), a `theme…` or `tokens…` object, or the default export; any other exported object is named in the notes. The strings of a theme contract are names, not values, and class-shaped strings count as Tailwind classes only when the styling includes Tailwind.
+- Extract pairs a text colour with its group's background when no name pairs it (disabled text excepted), and its notes say when it proposes no semantic colour or no dark theme, and why.
+- The audit counts SVG presentation attributes inside a tag (`fill`, `stroke`, `stop-color` and the like) as fill styling, and its nearest token follows channel triplets and `var()` chains, or the token set once the style files' own declarations are gone.
+- The kit's `:root` takes the colour scheme of the default mode. The tokens and extract skills say what happens to a style file's own `:root` declarations once a css output declares the same names.
+- The graph reads prop defaults in an Astro component's destructuring of `Astro.props`, and counts a component that an `astro.config.*` names by path as used by that config.
+- `adopt.mjs scan` reads a Ladle story file of named stories with no default export as Ladle does. It finds a story tool's consumers by the tool's own command line in Playwright configs, workflows, hosting configs (`netlify.toml`, `vercel.json`, at any depth) and shell scripts, and classes the package scripts a deploy build runs as deploy. Run below the git toplevel, it says that the files above were not read.
+- `adopt.mjs config --lane csf` proposes a lane port that neither Ladle's port nor its preview port holds, viewports from Ladle's own width options or, without them, from the default width names the stories use, and nothing from a Ladle setting written as code, with a note naming the key to set by hand.
+- `convert stories` lists Ladle's output folder where code and config name it, as an edit to point at `stories.outDir`, and a test or script that reads a tool script by its exact name as an open edit. edits.md reads comments in JSONC, `_headers` and `_redirects` files.
+- The vite-csf recipe keeps Tailwind on the repo's own entry, names what `config --lane csf` proposes and what stays hand work, and shows a class-based theme switcher.
 
 ## 0.4.0
 
