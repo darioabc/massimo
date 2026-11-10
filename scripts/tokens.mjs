@@ -571,23 +571,40 @@ function readSources(root, config) {
 // sheet gives it (text.heading--line-height), as written. The tailwind
 // outputs write a step's own parts from these, so its text-* class renders as
 // the config made it. A part a source already defines is left as it is.
+// Outside Tailwind 4, a step of Tailwind's own type scale that the config
+// writes as a size alone (`xs: '0.7rem'`) replaces Tailwind's
+// [size, { lineHeight }] pair, so its class sets no line height: its line
+// height is kept as `initial`, the value a Tailwind 4 sheet gives a part to
+// drop Tailwind's own, and the tailwind3 output writes that step bare.
 const STEP_PARTS = [['lineHeight', 'line-height', 'line height'], ['letterSpacing', 'letter-spacing', 'letter spacing'], ['fontWeight', 'font-weight', 'weight']]
-function textStepParts(sources, proposal, file) {
+function textStepParts(sources, proposal, file, styling) {
   const have = new Set(proposal.tokens.map((t) => t.path.join('.')))
   const parts = new Map()
-  for (const step of sources.filter((s) => s.kind === 'tailwind').flatMap((s) => s.typeSteps ?? [])) {
+  const add = (path, value, note) => {
+    if (!have.has(path.join('.'))) parts.set(path.join('.'), { path, type: null, value, modes: {}, description: '', source: file, note })
+  }
+  const configs = sources.filter((s) => s.kind === 'tailwind')
+  for (const step of configs.flatMap((s) => s.typeSteps ?? [])) {
     const name = step.path.at(-1)
     if (name === '$root' || !have.has(step.path.join('.'))) continue
     for (const [key, css, words] of STEP_PARTS) {
       const v = step[key]
       if (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '')) continue
-      const path = [...step.path.slice(0, -1), `${name}--${css}`]
-      if (have.has(path.join('.'))) continue
-      parts.set(path.join('.'), { path, type: null, value: String(v).trim(), modes: {}, description: '', source: file, words, name })
+      add([...step.path.slice(0, -1), `${name}--${css}`], String(v).trim(), `the ${words} the config gives text-${name}`)
     }
   }
-  return [...parts.values()].map(({ words, name, ...t }) => {
-    proposal.report.push({ family: 'typography', token: t.path.join('.'), value: t.value, from: file, note: `the ${words} the config gives text-${name}` })
+  if (!styling.includes('tailwind4')) {
+    for (const s of configs) {
+      const paired = new Set((s.typeSteps ?? []).map((step) => step.path.join('.')))
+      for (const t of s.tokens ?? []) {
+        const [group, name, ...rest] = t.path
+        if (group !== 'text' || rest.length > 0 || !Object.hasOwn(TAILWIND3_LINE_HEIGHTS, name) || paired.has(t.path.join('.')) || !have.has(t.path.join('.'))) continue
+        add(['text', `${name}--line-height`], 'initial', `the config writes text-${name} as a size alone, so Tailwind 3 sets no line height for it`)
+      }
+    }
+  }
+  return [...parts.values()].map(({ note, ...t }) => {
+    proposal.report.push({ family: 'typography', token: t.path.join('.'), value: t.value, from: file, note })
     return t
   })
 }
@@ -882,24 +899,22 @@ function objectLiteral(obj, depth = 0) {
   return `{\n${lines.join('\n')}\n${'  '.repeat(depth)}}`
 }
 
-// How the outputs feed Tailwind 3, or null when the project is not on it (its
-// styling names Tailwind 4, or neither Tailwind 3 nor a Tailwind config) or
-// has no tailwind3 output. Tailwind 3 applies an opacity modifier
-// (bg-primary/50, or one in @apply) only to a colour it can parse or one
-// written with its <alpha-value> placeholder, so each colour the tailwind3
-// output can write that way is in `colors`:
+// How the outputs feed Tailwind 3, or null when the project has no tailwind3
+// output or its styling names Tailwind 4. Tailwind 3 applies an opacity
+// modifier (bg-primary/50, or one in @apply) only to a colour it can parse or
+// one written with its <alpha-value> placeholder, so each colour the
+// tailwind3 output can write that way is in `colors`:
 //   - a variable that holds channels in every theme (`236 229 209`) as
 //     rgb(var(--x) / <alpha-value>), or hsl() for `210 40% 98%`;
-//   - with a css output, an opaque sRGB colour, or a reference to one, as
-//     rgb(var(--x-rgb) / <alpha-value>), and channelLines gives the css
-//     output its `--x-rgb` in each theme the colour has a value of its own.
+//   - with a css output, an opaque colour written in sRGB (hex, rgb(), hsl()
+//     or hwb()), or a reference to one, as rgb(var(--x-rgb) / <alpha-value>),
+//     and channelLines gives the css output its `--x-rgb` in each theme the
+//     colour has a value of its own.
 // A translucent colour, one outside sRGB, one with CSS of its own and one
 // whose `-rgb` name another token has stay var().
 function tailwind3Wiring(model, config) {
-  const styling = config.styling ?? []
   const outputs = config.tokens.outputs ?? []
-  if (styling.includes('tailwind4') || !(styling.includes('tailwind3') || config.tokens.tailwindConfig)) return null
-  if (!outputs.some((o) => o.format === 'tailwind3')) return null
+  if ((config.styling ?? []).includes('tailwind4') || !outputs.some((o) => o.format === 'tailwind3')) return null
   const cssOutput = outputs.some((o) => o.format === 'css')
   const taken = new Set(model.tokens.flatMap((t) => cssNames(model, t)))
   // The exact CSS a token keeps beside its value in one mode, as declarations() reads it.
@@ -912,11 +927,16 @@ function tailwind3Wiring(model, config) {
     const next = model.target(t, mode)
     return next && depth < 32 ? tripletIn(next, mode, depth + 1) : null
   }
-  // An opaque sRGB colour as its channels, rounded as the css output's hex is.
+  // An opaque colour written in sRGB (hex, rgb(), hsl() or hwb(), as a DTCG
+  // object or as CSS text) as its channels, rounded to bytes as the css
+  // output's hex is.
   const byte = (n) => Math.round(Math.min(1, Math.max(0, n)) * 255)
   const channelsOf = (v) => {
     if (v && typeof v === 'object' && v.colorSpace === 'srgb' && (v.alpha ?? 1) === 1 && v.components?.every((c) => typeof c === 'number')) return v.components.map(byte).join(' ')
-    const c = typeof v === 'string' && /^(?:#|rgba?\()/i.test(v.trim()) ? parseColor(v) : null
+    const text = v && typeof v === 'object'
+      ? (['hsl', 'hwb'].includes(v.colorSpace) && v.components?.every((c) => typeof c === 'number') ? colorCss(v) : null)
+      : typeof v === 'string' && /^(?:#|rgba?\(|hsla?\(|hwb\()/i.test(v.trim()) ? v : null
+    const c = text === null ? null : parseColor(text)
     return c && c.a === 1 ? [c.r, c.g, c.b].map(byte).join(' ') : null
   }
   // A token's `--x-rgb` text in each mode it declares a value in, or null when
@@ -965,6 +985,8 @@ function buildTailwind3(model, wiring = null) {
   const theme = { colors: {}, spacing: {}, borderRadius: {}, fontFamily: {}, fontWeight: {}, fontSize: {}, boxShadow: {}, transitionTimingFunction: {}, transitionDuration: {}, zIndex: {}, opacity: {} }
   // The text steps a token other than a composite writes: a size step
   // (`display`, which a source defines) and a source's own parts of a step.
+  // A part that is `initial` in every theme drops that part from the step
+  // (null below), as it drops one of Tailwind 4's own.
   const sized = new Set()
   const sourceParts = new Map()
   for (const t of model.tokens) {
@@ -976,7 +998,8 @@ function buildTailwind3(model, wiring = null) {
       continue
     }
     const step = [...hit.keys.slice(0, -1), part[1]].join('.')
-    sourceParts.set(step, { ...sourceParts.get(step), [TEXT_PART_KEYS[part[2]]]: `var(${t.cssVar})` })
+    const dropped = model.modes.every((mode) => /^initial$/i.test(String(model.raw(t, mode)).trim()))
+    sourceParts.set(step, { ...sourceParts.get(step), [TEXT_PART_KEYS[part[2]]]: dropped ? null : `var(${t.cssVar})` })
   }
   // A step of Tailwind's own type scale. theme.extend replaces Tailwind's
   // own [size, { lineHeight }] pair for it as a whole.
@@ -1018,7 +1041,7 @@ function buildTailwind3(model, wiring = null) {
   }
   // In a Tailwind 3 project, an own step that a size token alone writes takes
   // Tailwind's own line height too, and every step takes its source's own
-  // parts over any other.
+  // parts over any other; a dropped part leaves the step without it.
   const stepAt = (step) => step.split('.').reduce((node, key) => (node && typeof node === 'object' && !Array.isArray(node) ? node[key] : undefined), theme.fontSize)
   for (const step of new Set([...sized, ...sourceParts.keys()])) {
     const keys = step.split('.')
@@ -1026,8 +1049,8 @@ function buildTailwind3(model, wiring = null) {
     if (value === undefined || (value && typeof value === 'object' && !Array.isArray(value))) continue
     const [size, options] = Array.isArray(value) ? value : [value, {}]
     const ownLine = wiring && !Array.isArray(value) && own(keys) ? { lineHeight: TAILWIND3_LINE_HEIGHTS[keys[0]] } : {}
-    const merged = { ...options, ...ownLine, ...sourceParts.get(step) }
-    if (Object.keys(merged).length > 0) setNested(theme.fontSize, keys, [size, merged])
+    const merged = Object.fromEntries(Object.entries({ ...options, ...ownLine, ...sourceParts.get(step) }).filter(([, v]) => v !== null))
+    setNested(theme.fontSize, keys, Object.keys(merged).length > 0 ? [size, merged] : size)
   }
   for (const k of Object.keys(theme)) if (Object.keys(theme[k]).length === 0) delete theme[k]
   const notes = wiring
@@ -2009,7 +2032,7 @@ function main() {
     const { sources } = readSources(root, config)
     const audit = runAudit(root, config, { raw: true })
     const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling, defaultMode: config.tokens.defaultMode })
-    proposal.tokens.push(...textStepParts(sources, proposal, config.tokens.tailwindConfig))
+    proposal.tokens.push(...textStepParts(sources, proposal, config.tokens.tailwindConfig, config.styling ?? []))
     if (proposal.tokens.length === 0) fail('found nothing to propose: no style files, config, theme or token files, and no raw values in the code')
     const { tokens, losses, defaultMode } = draftFrom(proposal.tokens, config)
     const set = writeTokenSet({

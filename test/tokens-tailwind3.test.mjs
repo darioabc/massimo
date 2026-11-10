@@ -3,9 +3,11 @@
 // size and Tailwind 3's own line height (or a source's), never a weight or
 // letter spacing; a step a size token writes gets that size and the parts a
 // source sets for it, which extract keeps from a config's [size, line-height]
-// pair. In a Tailwind 3 project each opaque colour takes <alpha-value> over
-// channels the css output writes, so opacity modifiers keep working. A family
-// list that holds var() stays a list.
+// pair; a step of Tailwind's the config writes as a size alone keeps no line
+// height. In a project with a tailwind3 output that is not on Tailwind 4,
+// each opaque colour written in sRGB (hex, rgb(), hsl(), hwb()) takes
+// <alpha-value> over channels the css output writes, so opacity modifiers
+// keep working. A family list that holds var() stays a list.
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -195,6 +197,89 @@ test('a project not on Tailwind 3 writes its colours as before, and one with no 
   }
 })
 
+// bg-x/50 as Tailwind 3 writes it from the output's colour, against the
+// colour the css output gives var(--x), both resolved through the css output.
+function atHalf(root, path, name, cssVar) {
+  const vars = declared(read(root, path), ':root')
+  const own = parseColor(resolve(`var(${cssVar})`, vars))
+  const modified = parseColor(resolve(exported(root, 'tokens.tailwind.cjs').colors[name].replace('<alpha-value>', '0.5'), vars))
+  return { own, modified: modified && { ...modified, a: Number(modified.a.toFixed(4)) } }
+}
+
+test('an opaque hsl() or hwb() colour, from a token file, a legacy token file, a Tailwind 3 config or a stylesheet, takes <alpha-value> too', () => {
+  const sets = [
+    [{ 'tokens/tokens.resolver.json': resolver, 'tokens/base.tokens.json': { ...MARK, color: { $type: 'color', mint: { $value: { colorSpace: 'hsl', components: [160, 84, 39], hex: '#10b77f' } }, dusk: { $value: { colorSpace: 'hwb', components: [239, 40, 5], hex: '#6669f2' } }, glass: { $value: { colorSpace: 'hsl', components: [160, 84, 39], alpha: 0.5, hex: '#10b77f' } } } }, 'tokens/theme/dark.tokens.json': {} }, tailwind3()],
+    [{ 'tokens/tokens.json': { color: { $type: 'color', ink: { $value: '#0f172a' }, mint: { $value: 'hsl(160 84% 39%)' }, dusk: { $value: 'hwb(239 40% 5%)' }, glass: { $value: 'hsla(160, 84%, 39%, 0.5)' } } } }, tailwind3({ source: 'tokens/tokens.json' })],
+  ]
+  for (const [files, config] of sets) {
+    const r = repo(files, config)
+    try {
+      const build = tokens(r.root, 'build')
+      assert.equal(build.status, 0, build.stderr)
+      const { colors } = exported(r.root, 'tokens.tailwind.cjs')
+      for (const name of ['mint', 'dusk']) {
+        assert.equal(colors[name], `rgb(var(--color-${name}-rgb) / <alpha-value>)`)
+        const { own, modified } = atHalf(r.root, 'src/tokens.css', name, `--color-${name}`)
+        assert.deepEqual({ ...modified, a: 1 }, { ...own, r: Math.round(own.r * 255) / 255, g: Math.round(own.g * 255) / 255, b: Math.round(own.b * 255) / 255 }, `${name} at 50%`)
+        assert.equal(modified.a, 0.5)
+      }
+      // A translucent colour has no channels to give.
+      assert.equal(colors.glass, 'var(--color-glass)')
+    } finally {
+      r.cleanup()
+    }
+  }
+  const r = repo(
+    {
+      'tailwind.config.js': "module.exports = { content: ['./src/**/*.tsx'], theme: { extend: { colors: { accent: 'hsl(160 84% 39%)' } } } }",
+      'src/styles.css': ':root {\n  --app-brand: hsl(239 84% 67%);\n}\n',
+      'src/page.tsx': 'export const P = () => <div className="bg-accent/50 text-[var(--app-brand)]">a</div>\n',
+      'package.json': '{"name":"acme"}',
+    },
+    {
+      styling: ['tailwind3'],
+      tokens: {
+        styleFiles: ['src/styles.css'],
+        tailwindConfig: 'tailwind.config.js',
+        source: 'design-system/tokens/draft/tokens.resolver.json',
+        outputs: [{ format: 'css', path: 'src/tokens.css' }, { format: 'tailwind3', path: 'tokens.tailwind.cjs' }],
+      },
+    },
+  )
+  try {
+    const out = tokens(r.root, 'extract')
+    assert.equal(out.status, 0, out.stderr)
+    const build = tokens(r.root, 'build')
+    assert.equal(build.status, 0, build.stderr)
+    const { colors } = exported(r.root, 'tokens.tailwind.cjs')
+    assert.equal(colors.accent, 'rgb(var(--color-accent-rgb) / <alpha-value>)')
+    assert.equal(colors['app-brand'], 'rgb(var(--app-brand-rgb) / <alpha-value>)')
+    // bg-accent/50 renders the config's hsl(160 84% 39% / 0.5), to the byte.
+    const { modified } = atHalf(r.root, 'src/tokens.css', 'accent', '--color-accent')
+    const want = parseColor('hsl(160 84% 39% / 0.5)')
+    assert.deepEqual([modified.r, modified.g, modified.b, modified.a].map((n) => Math.round(n * 255)), [want.r, want.g, want.b, want.a].map((n) => Math.round(n * 255)))
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a project whose styling names no Tailwind is wired for Tailwind 3 when it has a tailwind3 output, as an app on @nuxtjs/tailwindcss alone is', () => {
+  const r = repo({ 'tokens/tokens.resolver.json': resolver, 'tokens/base.tokens.json': { ...colourSet, ...typeSet, color: colourSet.color }, 'tokens/theme/dark.tokens.json': colourDark }, { ...tailwind3(), styling: ['css'] })
+  try {
+    const build = tokens(r.root, 'build')
+    assert.equal(build.status, 0, build.stderr)
+    const text = read(r.root, 'tokens.tailwind.cjs')
+    const { colors, fontSize } = exported(r.root, 'tokens.tailwind.cjs')
+    assert.equal(colors.brand['500'], 'rgb(var(--color-brand-500-rgb) / <alpha-value>)')
+    assert.equal(declared(read(r.root, 'src', 'tokens.css'), ':root')['--color-brand-500-rgb'], '99 102 241')
+    assert.deepEqual(fontSize.sm, ['var(--font-size-sm)', { lineHeight: '1.25rem' }])
+    assert.match(text, /\/\/ Spread it at the top of the config's theme\.extend/)
+    assert.doesNotMatch(text, /\/\/ Use it as: module\.exports/)
+  } finally {
+    r.cleanup()
+  }
+})
+
 test('a font family list that holds var() is written as a list, so the family it names still applies', () => {
   const r = repo(
     {
@@ -267,6 +352,56 @@ test("extract keeps a Tailwind 3 config's own [size, line-height] steps, and the
   }
 })
 
+test("a Tailwind 3 config's own step of Tailwind's scale written as a size alone stays without a line height, in this build and the next ones once wired", () => {
+  const config = (styling) => ({
+    styling,
+    tokens: {
+      styleFiles: ['src/styles.css'],
+      tailwindConfig: 'tailwind.config.js',
+      source: 'design-system/tokens/draft/tokens.resolver.json',
+      outputs: [{ format: 'css', path: 'src/tokens.css' }, { format: 'tailwind3', path: 'tokens.tailwind.cjs' }],
+    },
+  })
+  const files = {
+    'src/styles.css': ':root {\n  --app-gap: 1px;\n}\n',
+    'tailwind.config.js': "module.exports = { content: ['./src/**/*.tsx'], theme: { extend: { fontSize: { xs: '0.7rem', sm: ['13px', '18px'], lead: '1.2rem' } } } }",
+    'src/page.tsx': 'export const P = () => <div className="text-xs"><p className="text-sm">a</p><p className="text-lead">b</p></div>\n',
+    'package.json': '{"name":"acme"}',
+  }
+  const r = repo(files, config(['tailwind3']))
+  try {
+    const out = tokens(r.root, 'extract')
+    assert.equal(out.status, 0, out.stderr)
+    assert.match(read(r.root, 'design-system', 'tokens', 'draft', 'report.md'), /\| `text\.xs--line-height` \| initial \| tailwind\.config\.js \| the config writes text-xs as a size alone, so Tailwind 3 sets no line height for it \|/)
+    const build = tokens(r.root, 'build')
+    assert.equal(build.status, 0, build.stderr)
+    const check = () => {
+      const { fontSize } = exported(r.root, 'tokens.tailwind.cjs')
+      // text-xs renders the config's 0.7rem and no line height, as before wiring.
+      assert.equal(fontSize.xs, 'var(--text-xs)')
+      assert.deepEqual(fontSize.sm, ['var(--text-sm)', { lineHeight: 'var(--text-sm--line-height)' }])
+      assert.equal(fontSize.lead, 'var(--text-lead)')
+    }
+    check()
+    // Wired, the config no longer writes those steps; the token set still says how.
+    writeFileSync(join(r.root, 'tailwind.config.js'), "module.exports = { content: ['./src/**/*.tsx'], theme: { extend: { ...require('./tokens.tailwind.cjs') } } }")
+    const again = tokens(r.root, 'build')
+    assert.equal(again.status, 0, again.stderr)
+    check()
+  } finally {
+    r.cleanup()
+  }
+  // On Tailwind 4 a size alone keeps Tailwind's own line height, so extract records none.
+  const v4 = repo(files, config(['tailwind4']))
+  try {
+    const out = tokens(v4.root, 'extract')
+    assert.equal(out.status, 0, out.stderr)
+    assert.doesNotMatch(read(v4.root, 'design-system', 'tokens', 'draft', 'report.md'), /text\.xs--line-height/)
+  } finally {
+    v4.cleanup()
+  }
+})
+
 test("the tokens skill says how to merge the tailwind3 output into a config's own theme.extend and how @nuxtjs/tailwindcss reads it", () => {
   const skill = read(SCRIPTS, '..', 'skills', 'tokens', 'SKILL.md')
   assert.match(skill, /spread the output at its top: `extend: \{ \.\.\.require\('\.\/tokens\.tailwind\.cjs'\)/)
@@ -274,4 +409,11 @@ test("the tokens skill says how to merge the tailwind3 output into a config's ow
   assert.match(skill, /Keep every section the output does not write, such as `screens`, `animation`, `keyframes` and `backgroundImage`/)
   assert.match(skill, /`@nuxtjs\/tailwindcss`, the module loads the app's own `tailwind\.config`/)
   assert.match(skill, /`rgb\(var\(--x-rgb\) \/ <alpha-value>\)`/)
+  assert.match(skill, /Unless `styling` names `tailwind4`[^.]*, the output writes each opaque colour written in sRGB \(hex, `rgb\(\)`, `hsl\(\)`, `hwb\(\)`\)/)
+  assert.match(skill, /one whose `-rgb` name another token already has stay `var\(\)`/)
+  assert.match(skill, /in a config function ask for an opacity \(`theme\('colors\.brand\.500 \/ 1'\)`\)/)
+  assert.match(skill, /Inside a palette both write, merge shade by shade \(`brand: \{ \.\.\.tokens\.colors\.brand, \.\.\.ownBrand \}`\)/)
+  assert.match(skill, /`tailwindcss\.config` option in `nuxt\.config`, whose keys win over the files'/)
+  assert.match(skill, /the one `configPath` names, when it is set/)
+  assert.match(skill, /extract keeps this as `text\.xs--line-height` set to `initial`, and the output writes the step bare/)
 })
