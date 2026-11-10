@@ -35,7 +35,7 @@ import {
   stripComments,
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
-import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
+import { calledMapClasses, callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
 import { closeBracket, componentsOf, listFaults, readCsf, readManifest, readStoryStates, slugFiles, slugPath, stateName } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
@@ -111,7 +111,9 @@ function classLiterals(code, file) {
       continue
     }
     for (const inner of stringLiterals(literal.text, 'bound.ts')) {
-      out.push({ text: inner.text, start: literal.start + inner.start, classAttr: bound[1] === 'class' })
+      // An operand of a comparison (`variant === 'link'`) is a value, not a class list.
+      const compared = /[=!]==?\s*$/.test(literal.text.slice(0, inner.start - 1)) || /^\s*[=!]==?/.test(literal.text.slice(inner.start + inner.text.length + 1))
+      out.push({ text: inner.text, start: literal.start + inner.start, classAttr: bound[1] === 'class' && !compared })
     }
   }
   return out
@@ -1008,14 +1010,21 @@ export function buildGraph(root, config, command = "graph.mjs") {
   // own declarations.
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
   const customProps = []
+  // What the style files @import, as paths from the root.
+  const styleImports = new Set()
   for (const f of styleFiles) {
-    customProps.push(...parseCustomProperties(readFileSync(join(root, f), 'utf8'), f))
+    const css = readFileSync(join(root, f), 'utf8')
+    customProps.push(...parseCustomProperties(css, f))
+    for (const m of stripComments(css, f).matchAll(/@import\s+(?:url\(\s*)?["']([^"']+)["']/g)) styleImports.add(join(f, '..', m[1]).replaceAll('\\', '/'))
   }
   const outputProps = []
+  // The outputs a style file imports, which graph.md names under Tokens.
+  const importedOutputs = []
   for (const output of config.tokens.outputs ?? []) {
     const path = output?.path
     if (!['css', 'tailwind4'].includes(output?.format) || typeof path !== 'string' || !existsSync(join(root, path))) continue
     outputProps.push(...parseCustomProperties(readFileSync(join(root, path), 'utf8'), path))
+    if (styleImports.has(join(path).replaceAll('\\', '/'))) importedOutputs.push(path)
   }
   const libraries = classLibraries(config).map((lib) => ({
     ...lib,
@@ -1089,9 +1098,12 @@ export function buildGraph(root, config, command = "graph.mjs") {
   const nodes = nodeFiles.map((file) => {
     const source = readFileSync(join(root, file), 'utf8')
     const code = stripComments(source, file)
+    const sourceOf = importedSource(file, source)
+    // The classes of the cva or tv maps it imports and calls are its own class lists.
+    const mapLiterals = calledMapClasses(code, sourceOf).map((text) => ({ text, start: 0, classAttr: true }))
     const classes = Object.fromEntries(libraries.map((lib) => [lib.id, new Set()]))
     const tokens = new Set()
-    for (const { text, start, classAttr } of classLiterals(code, file)) {
+    for (const { text, start, classAttr } of [...classLiterals(code, file), ...mapLiterals]) {
       if (isProse(text)) continue
       const words = text.split(/[\s"'`{}(),;]+/).filter(Boolean).map(bareClass)
       if (words.length === 0) continue
@@ -1108,7 +1120,9 @@ export function buildGraph(root, config, command = "graph.mjs") {
       }
     }
     const cssVars = new Set()
-    for (const m of code.matchAll(/var\(\s*(--[\w-]+)/g)) if (!m[1].startsWith('--tw-')) cssVars.add(m[1])
+    for (const src of [code, ...mapLiterals.map((l) => l.text)]) {
+      for (const m of src.matchAll(/var\(\s*(--[\w-]+)/g)) if (!m[1].startsWith('--tw-')) cssVars.add(m[1])
+    }
     const header = readHeader(source, file, keys, headerMode)
     for (const key of header.unknown) {
       warnings.push(`${file}: unknown header key "ds:${key}"`)
@@ -1157,7 +1171,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       composes: [...composes.get(file)].map((f) => nameOf.get(f)).sort(byName),
       composedBy: sortedAreas,
       usage: importersOf.get(file).size,
-      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) })), importedSource(file, source)),
+      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) })), sourceOf),
       packages: sortedUnique(packages.get(file)),
       style: {
         classes: Object.fromEntries(Object.entries(classes).filter(([, set]) => set.size > 0).map(([id, set]) => [id, sortedUnique(set)])),
@@ -1225,7 +1239,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     faults: faultList,
     ...(lane ? { storyLane: laneSummary(lane, nodes, problems) } : {}),
   }
-  const view = { order: tierOrder(config), taxonomy }
+  const view = { order: tierOrder(config), taxonomy, importedOutputs: sortedUnique(importedOutputs) }
   return { json, markdown: renderMarkdown(json, rulesNodes, command, view), warnings, faultLines: sortedUnique(faultLines) }
 }
 
@@ -1501,6 +1515,7 @@ function renderMarkdown(json, rulesNodes, command, view) {
     out.push(`Defined in ${tokens.styleFiles.map(code).join(', ')}.`, '')
     for (const [group, names] of Object.entries(tokens.groups)) out.push(`- ${group} (${names.length}): ${names.join(', ')}`)
     out.push('')
+    if (view.importedOutputs?.length > 0) out.push(`Colour tokens also come from the built token outputs these files import: ${view.importedOutputs.map(code).join(', ')}.`, '')
   }
 
   const specs = Object.keys(unresolved)

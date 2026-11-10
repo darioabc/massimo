@@ -5,7 +5,7 @@
 // like the rest of the graph; it aims for the right answer on ordinary
 // components, not a full type checker.
 
-import { parseObjectAt } from './jsobject.mjs'
+import { parseArrayAt, parseObjectAt } from './jsobject.mjs'
 
 // The `{…}` that starts at or after `from`, with what is between its braces.
 function braceBody(src, from) {
@@ -98,10 +98,67 @@ function variantMaps(src) {
 
 const escapeName = (s) => s.replace(/\$/g, '\\$')
 
+// Where `src` binds `name` to a cva or tv call (`const buttonVariants = cva(`).
+const mapBinding = (src, name) => new RegExp(`(?<![\\w$])(?:const|let|var)\\s+${escapeName(name)}\\s*(?::[^=]*)?=\\s*(?:cva|tv)\\s*\\(`).exec(src)
+
 // The variant map bound to `name` in `src` (`const buttonVariants = cva(…)`), or null.
 function namedMap(src, name) {
-  const m = new RegExp(`(?<![\\w$])(?:const|let|var)\\s+${escapeName(name)}\\s*(?::[^=]*)?=\\s*(?:cva|tv)\\s*\\(`).exec(src)
+  const m = mapBinding(src, name)
   return m ? mapAt(src, m.index + m[0].length) : null
+}
+
+// Every literal string under a value read by parseObjectAt; a skipped
+// expression gives none.
+const stringsIn = (v) =>
+  typeof v === 'string' ? [v] : Array.isArray(v) ? v.flatMap(stringsIn) : v && typeof v === 'object' && !('expr' in v) && !('spread' in v) ? Object.values(v).flatMap(stringsIn) : []
+
+// The class strings of the variant map bound to `name` in `src`, for a call
+// whose argument parseObjectAt read as `args` (null when it is no object
+// literal): cva's base classes, tv's base and slots, each compound variant's
+// class, and each variant's options. A variant the call sets to a literal
+// reads that option alone, and one it leaves out reads its default, so
+// `buttonVariants({ variant: 'outline' })` reads the outline classes; an
+// expression, a spread or an argument that is no object reads every option.
+// Null when `src` binds no variant map to `name`.
+function mapClasses(src, name, args) {
+  const m = mapBinding(src, name)
+  const at = m ? m.index + m[0].length : -1
+  const map = m ? mapAt(src, at) : null
+  if (!map) return null
+  const lead = /^\s*(?:(['"`])((?:\\.|(?!\1)[\s\S])*)\1|(\[))/.exec(src.slice(at))
+  const base = !lead ? [] : lead[3] ? stringsIn(parseArrayAt(src, at + lead[0].length - 1)) : [lead[2]]
+  const compound = [].concat(map.compoundVariants ?? [], map.compoundSlots ?? []).flatMap((c) => [...stringsIn(c?.class), ...stringsIn(c?.className)])
+  const defaults = map.defaultVariants && typeof map.defaultVariants === 'object' ? map.defaultVariants : {}
+  // The value the call gives a variant: undefined when it is not known, null for none.
+  const given = (k) => (!args ? undefined : Object.hasOwn(args, k) ? args[k] : args.__spreads ? undefined : Object.hasOwn(defaults, k) ? defaults[k] : null)
+  const variants = Object.entries(map.variants).flatMap(([k, options]) => {
+    const v = given(k)
+    if (v === null) return []
+    const one = ['string', 'boolean', 'number'].includes(typeof v) && options && typeof options === 'object' && Object.hasOwn(options, String(v))
+    return stringsIn(one ? options[String(v)] : options)
+  })
+  return [...base, ...stringsIn(map.base), ...stringsIn(map.slots), ...variants, ...compound]
+}
+
+// The class strings a component reads through the cva or tv maps it imports
+// and calls (`buttonVariants({ variant })`), each call read as mapClasses
+// reads it. `sourceOf(name)` is the source of the module the component
+// imports `name` from, or null.
+export function calledMapClasses(code, sourceOf) {
+  const out = new Set()
+  const sources = new Map()
+  for (const m of code.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(\s*/g)) {
+    if (!sources.has(m[1])) {
+      const src = sourceOf(m[1])
+      sources.set(m[1], src && mapBinding(src, m[1]) ? src : null)
+    }
+    const src = sources.get(m[1])
+    if (!src) continue
+    const at = m.index + m[0].length
+    const args = code[at] === ')' ? {} : code[at] === '{' ? parseObjectAt(code, at) : null
+    for (const list of mapClasses(src, m[1], args) ?? []) out.add(list)
+  }
+  return [...out]
 }
 
 // The values and default of a prop typed through a variant map, as
@@ -157,7 +214,7 @@ export function componentProps(source, file, name, sourceOf = null) {
   }
   // Vue: defineProps<{…}>(), defineProps<Other & {…}>() or defineProps({…}).
   const vueType = /defineProps\s*<\s*(?:[A-Za-z_$][\w$.]*(?:<[^<>]*>)?\s*&\s*)*\{/.exec(src)
-  if (vueType) add(propsFromTypeBody(braceBody(src, vueType.index) ?? ''), 'type')
+  if (vueType) add(propsFromTypeBody(braceBody(src, vueType.index + vueType[0].length - 1) ?? ''), 'type')
   const vueObj = !vueType && /defineProps\s*\(\s*\{/.exec(src)
   if (vueObj) {
     const obj = parseObjectAt(src, src.indexOf('{', vueObj.index))
@@ -236,13 +293,14 @@ export function componentStates(source, props = []) {
 
 // The prop and value an attribute at a .vue call site sets, or null for one
 // that sets no prop: a directive (v-if, v-for, v-model, v-slot, v-on, a bare
-// v-bind), a slot (#name), an event (@name), key, ref, class, style or a
-// listener. `:name` and `v-bind:name` bind an expression, which counts as its
-// text when it is a quoted literal or true or false, else as `{…}`. A
-// kebab-case name is the camelCase prop Vue matches it to; aria-* and data-*
-// attributes keep their names.
+// v-bind), a slot (#name), an event (@name), key, ref, class, style, a
+// listener, or a dynamic argument (`:[name]`), whose prop is not known.
+// `:name` and `v-bind:name` bind an expression, which counts as its text when
+// it is a quoted literal or true or false, else as `{…}`. A kebab-case name
+// is the camelCase prop Vue matches it to; aria-* and data-* attributes keep
+// their names.
 function vueAttribute(raw, value, quoted) {
-  if (/^(?:#|@|v-(?!bind:))/.test(raw)) return null
+  if (/^(?:#|@|v-(?!bind:))|\[/.test(raw)) return null
   const bound = /^(?::|v-bind:)/.test(raw)
   const written = raw.replace(/^(?::|v-bind:)/, '').split('.')[0]
   const prop = /^(?:aria|data)-/.test(written) ? written : written.replace(/-(\w)/g, (_, c) => c.toUpperCase())
@@ -254,9 +312,10 @@ function vueAttribute(raw, value, quoted) {
 }
 
 // An attribute in a tag: its name, then a value in quotes or braces. A .vue
-// call site also names slots with `#`.
+// call site also names slots with `#`, and a directive's argument may be
+// dynamic (`:[name]`, `v-bind:[name]`).
 const ATTRIBUTE = /([A-Za-z_:@][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(['"`])([^'"`]*)\4\s*\}|\{([^}]*)\}))?/g
-const VUE_ATTRIBUTE = /([A-Za-z_:@#][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(['"`])([^'"`]*)\4\s*\}|\{([^}]*)\}))?/g
+const VUE_ATTRIBUTE = /([A-Za-z_:@#][\w:.-]*(?:\[[^\]]*\][\w.-]*)?)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(['"`])([^'"`]*)\4\s*\}|\{([^}]*)\}))?/g
 
 // How call sites set a component's props: for each prop, how many times each
 // value was passed (`true` for a bare attribute, `{…}` for an expression).

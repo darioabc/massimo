@@ -29,7 +29,7 @@ function graphOf(files, config, { docs = false } = {}) {
     assert.equal(r.status, 0, r.stderr)
     if (docs) assert.equal(run('docs', t).status, 0)
     const json = readJson(t.project, 'graph.json')
-    return { json, node: (name) => json.nodes.find((n) => n.name === name), readme: docs ? read(t.project, 'README.md') : null }
+    return { json, md: read(t.project, 'graph.md'), node: (name) => json.nodes.find((n) => n.name === name), readme: docs ? read(t.project, 'README.md') : null }
   } finally {
     t.cleanup()
   }
@@ -88,6 +88,17 @@ test('a word in a .vue bound class is a class-library root, as in a static class
   assert.deepEqual(g.node('Tile').style.classes, { daisyui: ['card'] })
 })
 
+test('an operand of a comparison in a .vue bound class is a value, not a class', () => {
+  const g = graphOf(
+    {
+      'src/styles.css': '@import "tailwindcss";\n',
+      'src/components/Anchor.vue': `<template>\n  <a :class="variant === 'link' ? 'card' : 'no-underline'"><slot /></a>\n  <b :class="'menu' !== tone ? 'badge' : 'x-y'" />\n</template>\n`,
+    },
+    vueConfig({ styling: ['tailwind4', 'daisyui'] }),
+  )
+  assert.deepEqual(g.node('Anchor').style.classes, { daisyui: ['badge', 'card'] })
+})
+
 test('a component keeps its token edges once its style file imports the css and tailwind4 outputs in place of its own declarations', () => {
   const component = `<template>\n  <div class="bg-card text-card-foreground"><span class="text-primary bg-ink" /></div>\n</template>\n`
   const before = graphOf({ 'src/styles.css': THEME, 'src/components/Panel.vue': component }, vueConfig())
@@ -114,6 +125,9 @@ test('a component keeps its token edges once its style file imports the css and 
   // The style files' own token list is what it was: the outputs only name colours.
   assert.deepEqual(after.json.tokens.styleFiles, ['src/styles.css'])
   assert.equal(after.json.tokens.total, 0)
+  // graph.md names the outputs the style file imports; the scss output and the unbuilt one are not css it reads.
+  assert.match(after.md, /Colour tokens also come from the built token outputs these files import: `src\/tokens\.css`, `src\/tokens\.theme\.css`\./)
+  assert.doesNotMatch(before.md, /built token outputs/)
 })
 
 test('a .vue call site: directives, slots, events, key and ref set no prop; a bound prop drops its colon; kebab names are the camelCase prop', () => {
@@ -133,6 +147,8 @@ test('a .vue call site: directives, slots, events, key and ref set no prop; a bo
     'data-state': { '{…}': 1 },
     count: { '{…}': 1 },
   })
+  // A dynamic argument names no prop that is known.
+  assert.deepEqual(callSiteUsage('Badge', [{ file: 'src/pages/index.vue', text: '<Badge :[attr]="x" v-bind:[name]="y" @[event].prevent="z" #[slot]="s" tone="info" />' }]), { tone: { info: 1 } })
   // The same text outside a .vue file reads as it always has.
   assert.deepEqual(Object.keys(callSiteUsage('Badge', [{ file: 'src/page.tsx', text: '<Badge v-if="a" :variant="b" />' }])).sort(), [':variant', 'v-if'])
 })
@@ -282,7 +298,63 @@ test('props typed through a variant map read the map only when the module that h
   assert.deepEqual(withMap.variant, { name: 'variant', values: ['default', 'outline'], default: 'default', optional: true, from: 'type' })
   const alone = Object.fromEntries(componentProps(BUTTON, 'Button.vue', 'Button').map((p) => [p.name, p]))
   assert.deepEqual(alone.variant, { name: 'variant', optional: true, from: 'type' })
+  // The object literal a generic argument holds is not the props' own.
+  const generic = `<script setup lang="ts">\nconst props = defineProps<Omit<{ hidden: string }, 'hidden'> & { variant?: string }>()\n</script>\n`
+  assert.deepEqual(componentProps(generic, 'Tag.vue', 'Tag').map((p) => p.name), ['variant'])
   // An indexed type whose module holds no variant map adds nothing.
   const other = Object.fromEntries(componentProps(BUTTON, 'Button.vue', 'Button', () => 'export type ButtonVariants = { variant: string }').map((p) => [p.name, p]))
   assert.deepEqual(other.variant, { name: 'variant', optional: true, from: 'type' })
+})
+
+const ACTION_INDEX = `import { cva } from "class-variance-authority";
+
+export const actionVariants = cva("inline-flex ring-ring", {
+  variants: {
+    variant: {
+      default: "bg-primary text-primary-foreground",
+      outline: ["border bg-background", "shadow-[0_0_0_1px_var(--edge)]"],
+    },
+    size: { sm: "h-8", lg: "h-10" },
+  },
+  compoundVariants: [{ variant: "outline", size: "sm", class: "text-muted" }],
+  defaultVariants: { variant: "default" },
+});
+export const notAMap = (...a: string[]) => "bg-card " + a.join(" ");
+`
+
+// A component in the action folder whose template calls `call`.
+const actionCaller = (call, imports = 'actionVariants') => `<script setup lang="ts">
+import { ${imports} } from "@/components/ui/action";
+import { cn } from "@/lib/cn";
+const props = defineProps<{ variant?: string; size?: string; class?: string }>();
+</script>
+
+<template>
+  <button :class="cn(${call}, props.class)"><slot /></button>
+</template>
+`
+
+test('a component reads the classes of the cva map it imports and calls: the option a literal picks, the default it leaves out, every option an expression may pick', () => {
+  const theme = '@import "tailwindcss";\n\n@theme inline {\n' + ['background', 'card', 'muted', 'primary', 'primary-foreground', 'ring'].map((c) => `  --color-${c}: var(--${c});\n`).join('') + '}\n'
+  const g = graphOf(
+    {
+      'src/styles.css': theme,
+      'src/lib/cn.ts': 'export const cn = (...a: unknown[]) => a.join(" ")\n',
+      'src/components/ui/action/index.ts': ACTION_INDEX,
+      'src/components/ui/action/Action.vue': actionCaller('actionVariants({ variant, size })'),
+      'src/components/ui/action/ActionOutline.vue': actionCaller("actionVariants({ variant: 'outline' })"),
+      'src/components/ui/action/ActionPlain.vue': actionCaller('actionVariants()'),
+      'src/components/ui/action/ActionTyped.vue': actionCaller('props.class', 'type actionVariants'),
+      'src/components/ui/action/ActionOther.vue': actionCaller('notAMap("x")', 'notAMap'),
+      'tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@/*': ['./src/*'] } } }),
+    },
+    vueConfig(),
+  )
+  const style = (name) => ({ tokens: g.node(name).style.tokens, cssVars: g.node(name).style.cssVars })
+  assert.deepEqual(style('Action'), { tokens: ['background', 'muted', 'primary', 'primary-foreground', 'ring'], cssVars: ['--edge'] })
+  assert.deepEqual(style('ActionOutline'), { tokens: ['background', 'muted', 'ring'], cssVars: ['--edge'] })
+  assert.deepEqual(style('ActionPlain'), { tokens: ['muted', 'primary', 'primary-foreground', 'ring'], cssVars: [] })
+  // Importing the map without calling it, or calling a function that is no map, reads nothing from it.
+  assert.deepEqual(style('ActionTyped'), { tokens: [], cssVars: [] })
+  assert.deepEqual(style('ActionOther'), { tokens: [], cssVars: [] })
 })
