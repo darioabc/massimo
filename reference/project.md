@@ -57,7 +57,7 @@ Keys for the csf story lane, all inert until set. A config that sets any of them
 - `stories.home` (default null): the id that `/` and `/stories` open.
 - `stories.viewports` (default null): `[{ label, width, height }]` in px, where a width of `0` fills the pane. Null gives Phone 390x844, Desktop 1440x900 and Full. The shell shows each state in an iframe of one of these sizes.
 - `stories.sideBySide` (default `[]`): globs of story files whose states the shell may show together. Every other file shows one state at a time.
-- `stories.switchers` (default `[]`): `[{ name, label, attribute, values, unset, default }]`. Each switch sets `attribute` on `<html>`; the `unset` value removes it; a `default` of null asks the frame's `switchDefaults`.
+- `stories.switchers` (default `[]`): `[{ name, label, attribute, values, unset, default }]`. Each switch sets `attribute` on `<html>`; the `unset` value removes it; a `default` of null asks the frame's `switchDefaults`. A switch with `attribute: null` sets nothing, and the frame applies its value from its `switches` prop, as a class-based theme needs (the vite-csf recipe shows how). Never `attribute: "class"`, which would replace every class on `<html>`.
 - `stories.banners` (default null): `{ <meta key>: { tone, lead } }`. A state whose merged meta sets that key to a non-empty string shows the banner.
 - `stories.frame` (default null): a project module whose default export wraps every state.
 - `stories.storyOnly` (default `[]`): globs of modules only stories use, beyond the ones the import graph finds. `stories.mjs --check` fails when app code imports one, once `stories.appCss.base` is set.

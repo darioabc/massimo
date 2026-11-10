@@ -345,3 +345,112 @@ test('a frozen file and the files the lane\'s recipe writes are not listed for t
   // the project's own frame keeps its line
   assert.deepEqual(prose({ frozen: [{ file: 'src/Kept.stories.tsx', sha256: 'x' }], lane: recipeFiles(ctx.root) }), ['src/stories/frame.tsx'])
 })
+
+test('a test or code file that reads a tool script by its exact name holds the retirement; a bare quoted tool name counts only as a key', () => {
+  put('scripts/deploy-config.test.ts', [
+    'it.each([',
+    "  ['deploy.app.jsonc', 'build:app'],",
+    "  ['deploy.preview.jsonc', 'ladle:build'],",
+    "])('%s drops _redirects', (file, script) => expect(PACKAGE.scripts[script]).toBeDefined())",
+    "expect(PACKAGE.scripts['ladle']).toBeDefined()",
+    "const mode = 'ladle'",
+    '',
+  ].join('\n'))
+  const found = toolEdits({ consumers: [], packages: [], registry, tool, historical: [], read, files: [...files, 'scripts/deploy-config.test.ts'] })
+  const line = (n) => found.find((e) => e.file === 'scripts/deploy-config.test.ts' && e.line === n)
+  assert.deepEqual(line(3), { file: 'scripts/deploy-config.test.ts', line: 3, class: 'test', uses: 'script ladle:build by its name', replacement: "it reads the script by its name: point it at the lane's script", status: 'open' })
+  assert.equal(line(5).uses, 'script ladle by its name')
+  assert.equal(line(5).status, 'open')
+  assert.equal(line(6).status, 'prose')
+  assert.equal(line(2), undefined)
+})
+
+test("the tool's output folder in code and config is an edit to point at the lane's; a comment, Vite's command and a job's name are not", () => {
+  put('deploy.preview.jsonc', [
+    '{',
+    '  // `npm run ladle:build` deletes _redirects from build/ before this deploys.',
+    '  "assets": {',
+    '    "directory": "build"',
+    '  }',
+    '}',
+    '',
+  ].join('\n'))
+  put('eslint.config.js', "export default [\n  { ignores: ['dist/**', 'build/**'] }, // the tool's output (npm run ladle:build)\n]\n")
+  put('vite.config.ts', "export default ({ command }) => ({ base: command === 'build' ? '/app/' : '/' })\n")
+  put('.github/workflows/pages.yml', 'jobs:\n  deploy:\n    needs: build\n    steps:\n      - uses: actions/upload-pages-artifact@v3\n        with:\n          path: build\n')
+  put('docs/deploy.md', 'The stories build into `build/`.\n')
+  put('tools/notes.ts', '// Carried from .ladle/vite.config.ts: revalidate the optimized deps.\nexport const notes = 1\n')
+  const added = ['deploy.preview.jsonc', 'eslint.config.js', 'vite.config.ts', '.github/workflows/pages.yml', 'docs/deploy.md', 'tools/notes.ts']
+  const found = toolEdits({ consumers: [], packages: [], registry, tool, historical: [], read, files: [...files, ...added], laneOutDir: 'dist-stories' })
+  const at = (file, n) => found.find((e) => e.file === file && e.line === n)
+  const change = "point it at the lane's output folder, stories.outDir (dist-stories)"
+  assert.deepEqual(at('deploy.preview.jsonc', 4), { file: 'deploy.preview.jsonc', line: 4, class: 'code', uses: 'output folder build', replacement: change, status: 'open' })
+  // A comment line in JSONC is a comment, and names the script, not the folder.
+  assert.deepEqual([at('deploy.preview.jsonc', 2).class, at('deploy.preview.jsonc', 2).uses], ['comment', 'script ladle:build'])
+  // The use in the line's code is the edit; its trailing comment's script goes.
+  assert.deepEqual(at('eslint.config.js', 2), { file: 'eslint.config.js', line: 2, class: 'code', uses: 'output folder build', replacement: change, status: 'open' })
+  assert.equal(at('vite.config.ts', 1), undefined)
+  assert.equal(at('.github/workflows/pages.yml', 3), undefined)
+  assert.deepEqual([at('.github/workflows/pages.yml', 7).class, at('.github/workflows/pages.yml', 7).uses], ['ci', 'output folder build'])
+  assert.ok(!found.some((e) => e.file === 'docs/deploy.md'))
+  assert.deepEqual([at('tools/notes.ts', 1).class, at('tools/notes.ts', 1).uses], ['comment', '.ladle/vite.config.ts'])
+  // A folder the config names, or one a tool script passes with -o, is the folder instead.
+  const named = toolEdits({ consumers: [], packages: [], registry, tool: { ...tool, settings: { outDir: 'ladle-static' } }, historical: [], read, files: [...files, ...added] })
+  assert.ok(!named.some((e) => /output folder build/.test(e.uses)))
+  const pkg = JSON.stringify({ scripts: { ladle: 'ladle serve', 'ladle:build': 'ladle build -o .stories-out' } }, null, 2)
+  put('tests/visual.spec.ts', "const dir = join(here, '.stories-out')\n")
+  const flagged = toolEdits({ consumers: [], packages: [], registry, tool: { ...tool, settings: { outDir: null, notLiteral: ['outDir'] } }, historical: [], read: (f) => (f === 'package.json' ? pkg : read(f)), files: [...files, ...added, 'tests/visual.spec.ts'] })
+  assert.equal(flagged.find((e) => e.file === 'tests/visual.spec.ts').uses, 'output folder .stories-out')
+  // An outDir set with code gives no default folder.
+  assert.ok(!flagged.some((e) => /output folder build/.test(e.uses)))
+})
+
+// toolEdits on a repo held in memory, for the tool's scripts as `scripts`.
+const inMemory = (repo, scripts, extra = {}) =>
+  toolEdits({ consumers: [], packages: [], registry: { files: {}, stories: {} }, tool: { tool: 'ladle', config: ['.ladle/config.mjs'], scripts, port: null, settings: { outDir: null } }, read: (f) => repo[f] ?? null, files: Object.keys(repo), ...extra })
+const openAt = (found) => found.filter((e) => e.status === 'open' && e.class !== 'comment' && e.file !== 'package.json').map((e) => `${e.file}:${e.line} ${e.uses}`)
+
+test('a plain-word tool script is read by its name only as a key in brackets, never as a mode or a command code compares', () => {
+  const repo = {
+    'package.json': JSON.stringify({ scripts: { dev: 'ladle serve', 'ladle:build': 'ladle build -o .stories-out', build: 'tsc -p tsconfig.build.json && pnpm ladle:build' } }, null, 2),
+    '.ladle/config.mjs': 'export default {}\n',
+    'src/env.ts': "export const isDev = import.meta.env.MODE === 'dev'\n",
+    'vite.config.ts': "export default ({ command }) => ({ base: command === 'build' ? '/app/' : '/' })\n",
+    'tsconfig.build.json': '{\n  "exclude": ["build"]\n}\n',
+    'tests/scripts.test.ts': "expect(mode).toBe('dev')\nexpect(PACKAGE.scripts['dev']).toBeDefined()\nexpect(PACKAGE.scripts.build).toContain('ladle:build')\n",
+  }
+  assert.deepEqual(openAt(inMemory(repo, ['dev', 'ladle:build'])), ['tests/scripts.test.ts:2 script dev by its name', 'tests/scripts.test.ts:3 script ladle:build by its name'])
+})
+
+test("Ladle's default build folder is its output only when a command builds there, and tracked files in it are still read", () => {
+  const repo = {
+    'package.json': JSON.stringify({ scripts: { ladle: 'ladle serve' } }, null, 2),
+    '.ladle/config.mjs': 'export default {}\n',
+    'tsconfig.json': '{\n  "compilerOptions": { "outDir": "build" }\n}\n',
+    'build/check.mjs': "execSync('npm run ladle')\n",
+  }
+  // Only `ladle serve`: build/ is the app's folder, not Ladle's.
+  assert.deepEqual(openAt(inMemory(repo, ['ladle'])), ['build/check.mjs:1 script ladle'])
+  // A workflow that runs `ladle build` with no -o builds there; a file git tracks under it is still read.
+  repo['.github/workflows/stories.yml'] = 'jobs:\n  stories:\n    steps:\n      # ladle build -o elsewhere is not run\n      - run: npx ladle build\n'
+  const built = inMemory(repo, ['ladle'])
+  assert.deepEqual(openAt(built), ['.github/workflows/stories.yml:5 command ladle build', 'build/check.mjs:1 script ladle', 'tsconfig.json:2 output folder build'])
+  assert.ok(!built.some((e) => /output folder elsewhere/.test(e.uses)))
+  // So does a hosting config's build command, or a shell script, with the default folder or one it names.
+  delete repo['.github/workflows/stories.yml']
+  repo['scripts/stories.sh'] = '#!/bin/sh\nladle build \\\n  -o .stories-out\n'
+  const named = inMemory(repo, ['ladle'])
+  assert.ok(!named.some((e) => /output folder build/.test(e.uses)))
+  repo['netlify.toml'] = '[build]\n  command = "npx ladle build"\n'
+  assert.ok(inMemory(repo, ['ladle']).some((e) => e.file === 'tsconfig.json' && e.uses === 'output folder build'))
+})
+
+test("an ignore file's entry for the tool's output folder still works and holds nothing up", () => {
+  const repo = {
+    'package.json': JSON.stringify({ scripts: { 'ladle:build': 'ladle build' } }, null, 2),
+    '.ladle/config.mjs': 'export default {}\n',
+    '.gitignore': 'node_modules\nbuild/\n/build\n# build/\nbuild-cache/\n',
+  }
+  const found = inMemory(repo, ['ladle:build'], { laneOutDir: 'dist-stories' }).filter((e) => e.file === '.gitignore')
+  assert.deepEqual(found, [2, 3].map((line) => ({ file: '.gitignore', line, class: 'code', uses: 'output folder build', replacement: "nothing before the tool goes: add an entry for the lane's output folder, stories.outDir (dist-stories), and this one can go with the tool", status: 'valid' })))
+})

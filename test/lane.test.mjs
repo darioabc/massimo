@@ -153,13 +153,25 @@ test('a file with no title, an export list it cannot read, and a home no story h
   assert.deepEqual(registry.problems.map((p) => [p.rule, p.file, p.detail]), [
     ['story-files', 'src/Barrel.stories.tsx', 'it passes on every export of ./more, which are not listed'],
     ['story-files', 'src/Broken.stories.tsx', 'it cannot be read (ENOENT)'],
-    ['story-files', 'src/Loose.stories.tsx', 'it has no default export, so it is not a CSF file'],
+    ['story-files', 'src/Loose.stories.tsx', 'it declares no title, so its states take their slug from the file name'],
     ['story-files', 'src/Untitled.stories.tsx', 'it declares no title, so its states take their slug from the file name'],
     ['story-files', null, 'stories.home is pages--gone--plain, which no story has'],
   ])
   // Files with no title still list their states, under the file's name.
   assert.deepEqual(Object.keys(registry.stories), ['loose--plain', 'untitled--plain'])
   assert.equal(registry.home, null)
+})
+
+test('under Ladle ids, a file of named stories with no default export is Ladle\'s own form: no problem, ids from its name', () => {
+  const registry = fromText(
+    {
+      'src/panel/Header.stories.tsx': "import type { Story } from '@ladle/react'\nexport const Plain: Story = () => null\nexport const WithButton: Story = () => null\n",
+      'src/Empty.stories.tsx': 'const a = 1\n',
+    },
+    { ids: 'ladle' },
+  )
+  assert.deepEqual(registry.problems.map((p) => [p.file, p.detail]), [['src/Empty.stories.tsx', 'it has no default export, so it is not a CSF file']])
+  assert.deepEqual(Object.keys(registry.stories), ['header--plain', 'header--with-button'])
 })
 
 test('an exported class is a state, and its span runs to the end of its body', () => {

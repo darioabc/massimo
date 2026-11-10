@@ -515,7 +515,9 @@ function namedExports(code, blanked) {
 // first and last line (1-based) of what Ladle counts as the export: the
 // declaration after `export`, or its name in an export list. A story's
 // `meta` is the literal fields of `Story.meta = {...}`, or null when it sets
-// none. A title left out is null: Storybook then takes it from the path.
+// none. A title left out is null: Storybook then takes it from the path. So
+// does Ladle when there is no default export at all, so only a file with
+// neither a default export nor a story is said not to be a CSF file.
 export function readCsf(text, file = 'x.stories.tsx') {
   const code = stripComments(text, file)
   const blanked = stringsBlanked(text, code, file)
@@ -532,9 +534,11 @@ export function readCsf(text, file = 'x.stories.tsx') {
   if (metaAt !== null) out.metaSpan = spanOf(metaAt, statementEnd(blanked, metaAt))
   let only = null
   let except = null
-  if (meta === null) skip(null, null, 'it has no default export, so it is not a CSF file')
-  else if (isSkipped(meta)) skip(null, null, `its default export is ${meta.expr ?? meta.spread}, not an object literal`)
-  else {
+  // No default export is said once the stories are read (below): a file with
+  // named stories and no default export is Ladle's, which takes the title
+  // from the path.
+  if (meta !== null && isSkipped(meta)) skip(null, null, `its default export is ${meta.expr ?? meta.spread}, not an object literal`)
+  else if (meta !== null) {
     if (meta.__spreads) skip(null, '...', `the default export spreads ${meta.__spreads.join(', ')} into it`)
     for (const [key, value] of Object.entries(meta)) {
       if (key === 'args' || key === 'argTypes') out[key] = true
@@ -615,6 +619,8 @@ export function readCsf(text, file = 'x.stories.tsx') {
     out.argTypes ||= story.argTypes
     out.stories.push(story)
   }
+  // No default export and no stories: not a CSF file at all.
+  if (meta === null && out.stories.length === 0) out.unreadable.unshift({ story: null, field: null, detail: 'it has no default export, so it is not a CSF file' })
   return out
 }
 

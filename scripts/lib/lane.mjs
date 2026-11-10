@@ -42,7 +42,8 @@ const titleLevels = (title) => title.split('/').map((part) => part.trim()).filte
 // The registry of `files` (repo-relative story paths), each read through
 // `read(file)`. Test files are skipped. Problems, all under the rule
 // `story-files`, are a file that cannot be read, a title or export list the
-// reader cannot read in full, a file with no title, a storyName that a
+// reader cannot read in full, a file with no title (under the export ids;
+// Ladle's ids take the file name, as Ladle does), a storyName that a
 // Ladle id needs and cannot be read, an export name Ladle refuses, a
 // duplicate id, and a `stories.home` that names no story.
 export function laneRegistry({ root, config, files, read } = {}) {
@@ -62,7 +63,9 @@ export function laneRegistry({ root, config, files, read } = {}) {
     const csf = readCsf(text, file)
     const faults = listFaults(csf)
     for (const u of faults) problem(file, u.story ? `${u.story}: ${u.detail}` : u.detail)
-    if (csf.title === null && !faults.some((u) => u.story === null)) problem(file, 'it declares no title, so its states take their slug from the file name')
+    // Under Ladle's ids a file with no title is Ladle's own case: it takes
+    // the file name, as Ladle does, so its ids are Ladle's.
+    if (csf.title === null && rule !== 'ladle' && !faults.some((u) => u.story === null)) problem(file, 'it declares no title, so its states take their slug from the file name')
     const slug = csf.title === null ? fileSlug(file, rule) : titleSlug(csf.title, rule)
     const levels = csf.title === null ? [file.split('/').pop().split('.')[0]] : titleLevels(csf.title)
     const fileMeta = isPlain(csf.meta.meta) ? csf.meta.meta : {}

@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { compare } from './glob.mjs'
 import { DEFAULTS, FORMATS_READ, needsScripts, olderThan, refuseNewer, today } from './project.mjs'
 import { openEdits } from './redirects.mjs'
+import { LADLE_WIDTHS } from './vite-stories.mjs'
 
 export const LEDGER_FORMAT = 1
 export const CLASSES = ['graph', 'stories', 'audit', 'tokens', 'docs']
@@ -479,16 +480,26 @@ export function statusTable(ledger) {
 // ── The proposed config ─────────────────────────────────────────────────────
 
 const LADLE_DEFAULT_PORT = 61000
+const LADLE_DEFAULT_PREVIEW_PORT = 8080
 const LADLE_DEFAULT_STORIES = 'src/**/*.stories.{js,jsx,ts,tsx}'
 const RUN = { npm: 'npm run', pnpm: 'pnpm run', yarn: 'yarn', bun: 'bun run' }
+
+// The names of Ladle's default widths that the stories' `meta.width` uses,
+// narrowest first, from the inventory's story files.
+const ladleWidthNames = (inv) =>
+  [...new Set((inv.stories.files ?? []).flatMap((f) => f.widths ?? []))].filter((w) => typeof w === 'string' && Object.prototype.hasOwnProperty.call(LADLE_WIDTHS, w)).sort((a, b) => LADLE_WIDTHS[a] - LADLE_WIDTHS[b])
 
 // The config keys scan can fill: the header keys and their roles, the
 // taxonomy, node kinds for pages and layouts with headers, the lane's
 // manifest, pages, frames, dev command and port, and the lane folder kept out
 // of the audit. With `lane: 'csf'` on a Ladle repo (the opt-in of
 // `config --lane csf`), also the csf lane: Ladle's own settings as ids, the
-// story glob, order, home, viewports and a port beside Ladle's, the frozen
-// design targets in `frozen`, and the minScripts those keys need.
+// story glob, order, home, viewports (Ladle's width options, or with none
+// set, one per default width name the stories' meta.width uses, and Full), a port
+// that neither Ladle's port nor its preview port holds, the frozen design
+// targets in `frozen`, and the minScripts those keys need. A Ladle setting
+// massimo cannot read without running the config is not guessed: no key is
+// proposed from it (csfNotes says which to set by hand).
 export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen = [] } = {}) {
   const proposed = { version: 1 }
   const graph = {}
@@ -516,24 +527,61 @@ export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen 
   const ladle = laneKind === 'csf' ? inv.stories.tools.find((t) => t.tool === 'ladle') : null
   if (ladle) {
     const s = ladle.settings ?? {}
-    // Ladle's own defaults when its config leaves them out: the port, and the glob
-    // minus mdx, which the CSF reader does not handle.
+    const unread = new Set(s.notLiteral ?? [])
+    // Ladle's own defaults when its config leaves them out: the port, the
+    // preview port, and the glob minus mdx, which the CSF reader does not handle.
     const ladlePort = s.port ?? ladle.port ?? LADLE_DEFAULT_PORT
-    const port = ladlePort + 1
+    const previewPort = s.previewPort ?? (unread.has('previewPort') ? null : LADLE_DEFAULT_PREVIEW_PORT)
+    let port = ladlePort + 1
+    while (port === previewPort) port++
+    // With no width options of its own, Ladle frames a story by its default names.
+    const names = s.widths || unread.has('widths') ? [] : ladleWidthNames(inv)
+    // Ladle's width picker also offers the full pane beside its options.
+    const viewports = s.widths
+      ? [...s.widths.map((w) => ({ label: w.label, width: w.width, height: 0 })), ...(s.widths.some((w) => w.width === 0) ? [] : [{ label: 'Full', width: 0, height: 0 }])]
+      : names.length > 0
+        ? [...names.map((n) => ({ label: n, width: LADLE_WIDTHS[n], height: 0 })), { label: 'Full', width: 0, height: 0 }]
+        : null
     proposed.minScripts = '0.4.0'
     proposed.stories = {
       ...proposed.stories,
       lane: 'csf',
       ids: 'ladle',
-      include: s.stories ? [].concat(s.stories) : [LADLE_DEFAULT_STORIES],
+      ...(unread.has('stories') ? {} : { include: s.stories ? [].concat(s.stories) : [LADLE_DEFAULT_STORIES] }),
       ...(s.storyOrder ? { order: s.storyOrder } : {}),
       ...(s.defaultStory ? { home: s.defaultStory } : {}),
-      ...(s.widths ? { viewports: s.widths.map((w) => ({ label: w.label, width: w.width, height: 0 })) } : {}),
+      ...(viewports ? { viewports } : {}),
       ...(port ? { port, url: `http://localhost:${port}/stories`, storyUrl: `http://localhost:${port}/stories/{slug}/{state}` } : {}),
       ...(frozen.length > 0 ? { frozen } : {}),
     }
   }
   return proposed
+}
+
+// What `config --lane csf` leaves for a hand edit, one line each: a Ladle
+// setting massimo cannot read without running the config (one written as
+// code, such as a glob list built when the config runs or a storyOrder
+// function, or one the config may take from an object it spreads in), so it
+// proposes nothing from it. When it reads none of them, from a config with
+// no object it can read, one line says so.
+const CSF_BY_HAND = {
+  stories: 'nothing is proposed from it: set stories.include by hand to the globs of the story files Ladle serves',
+  storyOrder: 'nothing is proposed from it: set stories.order by hand to id-prefix globs in the order Ladle lists the stories',
+  defaultStory: 'nothing is proposed from it: set stories.home by hand to the id the lane opens',
+  port: 'the port proposed may be one Ladle holds: check stories.port by hand',
+  previewPort: 'the port proposed may be one Ladle holds: check stories.port by hand',
+  widths: 'no viewports are proposed: set stories.viewports by hand, one per width option, labelled with its name',
+  outDir: 'convert stories cannot list the files that read its output folder: find them by hand',
+}
+export function csfNotes(inv) {
+  const ladle = inv.stories.tools.find((t) => t.tool === 'ladle')
+  const unread = ladle?.settings?.notLiteral ?? []
+  if (Object.keys(CSF_BY_HAND).every((key) => unread.includes(key))) {
+    const file = (ladle.config ?? []).find((f) => f.startsWith('.ladle/config.')) ?? "Ladle's config"
+    return [`massimo read none of Ladle's settings from ${file} without running it, so nothing is proposed from them: set stories.include, stories.order, stories.home and stories.viewports by hand, check stories.port, and find the files that read Ladle's output folder by hand.`]
+  }
+  const name = { widths: 'width options' }
+  return unread.filter((key) => CSF_BY_HAND[key]).map((key) => `massimo cannot read Ladle's ${name[key] ?? key} setting without running its config, so ${CSF_BY_HAND[key]}.`)
 }
 
 // Lists merged item by item: the proposal adds what the user's list lacks.
