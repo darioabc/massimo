@@ -425,36 +425,46 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   return out
 }
 
-// daisyUI's built-in themes, which an app picks in `@plugin "daisyui"`:
-// where their colours live and how to own them, said in place of the notes
-// below, since those colours have names and themes the sources never show.
-function daisyNote(daisy, classes) {
+// daisyUI's built-in themes, which an app picks with `@plugin "daisyui"`:
+// where their colours live and how to own them. With no colour of the app's
+// own, the note says no semantic colour comes from the app's themes; with
+// some (a `@plugin "daisyui/theme"` block), only that the built-in ones keep
+// their values in the daisyui package. `classes`, when given, adds the
+// Tailwind palette classes the code uses.
+function daisyNote(daisy, owned, classes) {
   const and = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0])
   const role = (t) => (t.default && t.prefersdark ? ' (the default, also used when the system prefers dark)' : t.default ? ' (the default)' : t.prefersdark ? ' (used when the system prefers dark)' : '')
   const picked = daisy.all ? 'every daisyUI built-in theme (themes: all)' : `daisyUI's built-in ${daisy.themes.length === 1 ? 'theme' : 'themes'} ${and(daisy.themes.map((t) => `${t.name}${role(t)}`))}`
+  const named = daisy.implicit ? `which @plugin "daisyui" turns on in ${daisy.file}, as it names no themes` : `which @plugin "daisyui" names in ${daisy.file}`
   const where = daisy.all ? 'theme/<name>.css' : and(daisy.themes.map((t) => `theme/${t.name}.css`))
   const top = (classes?.top ?? []).map((c) => c.name)
   const palette = classes?.count > 0 ? ` Apart from those, the code uses ${classes.count} Tailwind palette ${classes.count === 1 ? 'class' : 'classes'}${top.length ? ` (most used: ${and(top)})` : ''}, which extract does not turn into tokens.` : ''
-  return `No semantic colour is proposed from the app's themes: it takes its colours from ${picked}, which @plugin "daisyui" names in ${daisy.file}. Their values live in the daisyui package (${where}), not in this repo, under daisyUI's colour names: ${and(CLASS_LIBRARIES.daisyui.colors)}. To own them as tokens, copy each theme's values into semantic colour tokens when reviewing colour semantics, one theme per mode, and map daisyUI's names onto them with a @plugin "daisyui/theme" block per theme.${palette}`
+  if (owned) return `The app also takes colours from ${picked}, ${named}. Their values live in the daisyui package (${where}), not in this repo, so no token here holds them. To own them as tokens, copy each theme's values into semantic colour tokens when reviewing colour semantics, one theme per mode.${palette}`
+  return `No semantic colour is proposed from the app's themes: it takes its colours from ${picked}, ${named}. Their values live in the daisyui package (${where}), not in this repo, under daisyUI's colour names: ${and(CLASS_LIBRARIES.daisyui.colors)}. To own them as tokens, copy each theme's values into semantic colour tokens when reviewing colour semantics, one theme per mode, and map daisyUI's names onto them with a @plugin "daisyui/theme" block per theme.${palette}`
 }
 
 // What the colour proposal leaves out, and why: no semantic colour (text,
 // background, border, accent), or no theme beyond the default when the
 // default is not dark itself. Said only when the repo has colours at all:
 // tokens, or Tailwind palette classes. An app on daisyUI's built-in themes
-// gets one note on those themes instead.
+// gets a note on those themes, which answers the first (daisyUI's colours
+// are named by their job) and, when the app has more than one theme, the
+// second.
 function colorGaps(existing, colors, audit, minCount, defaultMode, daisy = null) {
   const classes = audit?.colorClasses
-  if (daisy) return [daisyNote(daisy, classes)]
   const all = [...existing, ...colors].filter((t) => t.type === 'color')
-  if (all.length === 0 && !(classes?.count > 0)) return []
+  const any = all.length > 0 || classes?.count > 0
+  if (!any && !daisy) return []
   const notes = []
   const many = (n, one, more) => `${n} ${n === 1 ? one : more}`
   const named = existing.some((t) => (t.type === 'color' || isAlias(t.value)) && describeByName(key(t.path)))
   // A colour the sources already alias to another is a semantic layer of
   // their own, whatever its name (--card: var(--gray-50)).
   const aliased = existing.some((t) => t.type === 'color' && [t.value, ...Object.values(t.modes ?? {})].some(isAlias))
-  if (!named && !aliased && !colors.some((t) => isAlias(t.value))) {
+  const noSemantic = any && !named && !aliased && !colors.some((t) => isAlias(t.value))
+  if (daisy) {
+    notes.push(daisyNote(daisy, existing.some((t) => t.type === 'color'), noSemantic ? classes : null))
+  } else if (noSemantic) {
     const top = (classes?.top ?? []).map((c) => c.name)
     const examples = top.length > 1 ? `${top.slice(0, -1).join(', ')} and ${top[top.length - 1]}` : top[0]
     const why = classes?.count > 0
@@ -462,7 +472,7 @@ function colorGaps(existing, colors, audit, minCount, defaultMode, daisy = null)
       : `the sources name no colour by its job (such as bg, text or border), and the code uses no raw colour as a background, text or border ${minCount} times or more`
     notes.push(`No semantic colour is proposed: ${why}. Add the text, background, border and accent tokens when reviewing colour semantics, each an alias of a primitive.`)
   }
-  if (defaultMode !== 'dark' && !all.some((t) => Object.keys(t.modes ?? {}).length > 0)) {
+  if (any && !daisy?.several && defaultMode !== 'dark' && !all.some((t) => Object.keys(t.modes ?? {}).length > 0)) {
     const why = classes?.dark > 0
       ? `the code switches its colours with ${many(classes.dark, 'dark: variant', 'dark: variants')} of Tailwind palette classes, which extract does not read, and the sources set no colour for a dark theme`
       : 'the sources set no colour for a dark theme'
@@ -486,13 +496,20 @@ const numberName = (n) => String(n).replace('.', '_')
 // to its parent's, any other length's to its element's), so no rem token can
 // hold it. A family's em lengths, by how each is written and by the px the
 // audit counted it at, so a scale can leave them out of its counts.
-function emLengths(audit, category) {
+function emLengths(audit, category, body = null) {
   const byValue = new Map()
   const byPx = new Map()
+  let bodyLeft = typeof body?.px === 'number'
   for (const f of audit?.findings ?? []) {
     if (f.category !== category) continue
     const written = f.kind === 'arbitrary' ? /\[(.*)\]/.exec(f.value)?.[1] : f.value
     if (!/^-?\d*\.?\d+em$/.test(written ?? '')) continue
+    // The body size in em, set by a body, html or :root rule, follows the
+    // root size as rem does: it is the body size, not an em length.
+    if (bodyLeft && f.file === body.file && Math.abs(parseFloat(written) * 16 - body.px) < 0.01) {
+      bodyLeft = false
+      continue
+    }
     byValue.set(written, (byValue.get(written) ?? 0) + 1)
     if (f.px !== undefined) byPx.set(f.px, (byPx.get(f.px) ?? 0) + 1)
   }
@@ -682,7 +699,7 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
   const onScale = haveSizes.size < 3
   // The body size: the one a body, html or :root rule sets, else the most used.
   const ruled = audit?.forExtract?.bodySize ?? null
-  const em = emLengths(audit, 'type')
+  const em = emLengths(audit, 'type', ruled)
   const typeSizes = withoutEm(audit?.typeSizes ?? [], em)
   const body = ruled?.px ?? [...typeSizes].sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16) || a.px - b.px)[0]?.px ?? 16
   // A size the body rule sets is kept even when the code repeats it nowhere else.

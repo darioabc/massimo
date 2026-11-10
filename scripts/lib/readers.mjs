@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { colorModes, parseColor } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
-import { aliasPath, isAlias, parseCssBlocks, parseCustomProperties } from './source.mjs'
+import { aliasPath, isAlias, parseCssBlocks, parseCustomProperties, stripComments } from './source.mjs'
 import { cssVarOf } from './figma.mjs'
 import { findObject, leaves, parseObjectAt } from './jsobject.mjs'
 import { natural } from './text.mjs'
@@ -366,31 +366,47 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
 
 // ── daisyUI's built-in themes ──────────────────────────────────────────────
 
-// The built-in daisyUI themes a stylesheet picks in `@plugin "daisyui" {
-// themes: … }`, as { file, all, themes: [{ name, default, prefersdark }] }.
+// The built-in daisyUI themes a stylesheet picks with `@plugin "daisyui"`,
+// as { file, all, implicit, several, themes: [{ name, default, prefersdark }] }.
 // Their colours live in the daisyui package, so no reader sees them. A name
 // that a `@plugin "daisyui/theme"` block defines is left out, since that
-// block's colours are read as tokens. `themes: all` picks every built-in
-// theme. Null when no style file picks one.
+// block's colours are read as tokens, and such a block that is the default
+// or the dark theme takes that role from the built-in one. `themes: all`
+// picks every built-in theme; a bare `@plugin "daisyui";`, or a block with
+// no themes, picks daisyUI's default ones (`implicit`). `several` is true
+// when the app has more than one theme, its own included. Null when no style
+// file picks one.
+const DAISY_DEFAULT_THEMES = 'light --default, dark --prefersdark'
 export function readDaisyThemes(root, files) {
+  const unquote = (s) => s?.trim().replace(/^['"]|['"]$/g, '')
   const defined = new Set()
+  const taken = { default: false, prefersdark: false }
   let picked = null
   for (const file of files) {
-    for (const block of parseCssBlocks(readFileSync(join(root, file), 'utf8'), file)) {
+    const text = readFileSync(join(root, file), 'utf8')
+    for (const block of parseCssBlocks(text, file)) {
       const header = block.headers[block.headers.length - 1]
-      const decl = (prop) => block.decls.find((d) => d.prop === prop)?.value.replace(/^['"]|['"]$/g, '')
-      if (/^@plugin\s+["']daisyui\/theme["']$/i.test(header) && decl('name')) defined.add(decl('name'))
-      if (!picked && /^@plugin\s+["']daisyui["']$/i.test(header) && decl('themes')) picked = { file, list: decl('themes') }
+      const decl = (prop) => unquote(block.decls.find((d) => d.prop === prop)?.value)
+      if (/^@plugin\s+["']daisyui\/theme["']$/i.test(header) && decl('name')) {
+        defined.add(decl('name'))
+        for (const role of ['default', 'prefersdark']) if (decl(role) === 'true') taken[role] = true
+      }
+      if (!picked && /^@plugin\s+["']daisyui["']$/i.test(header)) picked = { file, list: decl('themes') ?? DAISY_DEFAULT_THEMES, implicit: decl('themes') === undefined }
     }
+    if (!picked && /@plugin\s+["']daisyui["']\s*;/i.test(stripComments(text, file))) picked = { file, list: DAISY_DEFAULT_THEMES, implicit: true }
   }
   if (!picked) return null
-  if (/^all$/i.test(picked.list.trim())) return { file: picked.file, all: true, themes: [] }
-  const themes = picked.list
+  if (/^all$/i.test(picked.list.trim())) return { file: picked.file, all: true, implicit: false, several: true, themes: [] }
+  const listed = picked.list
     .split(',')
     .map((entry) => entry.trim().split(/\s+/))
-    .filter(([name]) => name && !/^false$/i.test(name) && !defined.has(name))
-    .map(([name, ...flags]) => ({ name, default: flags.includes('--default'), prefersdark: flags.includes('--prefersdark') }))
-  return themes.length > 0 ? { file: picked.file, all: false, themes } : null
+    .map(([name, ...flags]) => [unquote(name ?? ''), flags])
+    .filter(([name]) => name && !/^false$/i.test(name))
+  const themes = listed
+    .filter(([name]) => !defined.has(name))
+    .map(([name, flags]) => ({ name, default: flags.includes('--default') && !taken.default, prefersdark: flags.includes('--prefersdark') && !taken.prefersdark }))
+  const several = new Set([...listed.map(([name]) => name), ...defined]).size > 1
+  return themes.length > 0 ? { file: picked.file, all: false, implicit: picked.implicit, several, themes } : null
 }
 
 // ── A Tailwind 3 config ────────────────────────────────────────────────────

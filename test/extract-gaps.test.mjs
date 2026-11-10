@@ -119,3 +119,97 @@ test('a daisyUI theme the style files define keeps the notes as before, and them
     }
   }
 })
+
+test("a bare @plugin \"daisyui\"; or a block with no themes picks daisyUI's light and dark themes, and quoted names are read without their quotes", () => {
+  const sheets = {
+    bare: '@import "tailwindcss";\n/* @plugin "daisyui" { themes: cupcake; } */\n@plugin "daisyui";\n@theme {\n  --font-sans: Inter, sans-serif;\n}\n',
+    block: '@import "tailwindcss";\n@plugin "daisyui" {\n  logs: false;\n}\n@theme {\n  --font-sans: Inter, sans-serif;\n}\n',
+    quoted: `@import "tailwindcss";\n@plugin "daisyui" {\n  themes: "light" --default, 'dark' --prefersdark;\n}\n@theme {\n  --font-sans: Inter, sans-serif;\n}\n`,
+  }
+  for (const [kind, sheet] of Object.entries(sheets)) {
+    const r = repo(
+      { 'src/app.css': sheet, 'src/App.tsx': 'export const A = () => <div className="bg-base-100 text-slate-500 dark:text-slate-400 bg-red-500" />', 'package.json': '{"name":"acme"}' },
+      { styling: ['tailwind4', 'daisyui'], tokens: { styleFiles: ['src/app.css'] } },
+    )
+    try {
+      const out = extract(r.root)
+      assert.equal(out.status, 0, out.stderr)
+      const report = read(draft(r.root, 'report.md'))
+      const named = kind === 'quoted' ? 'which @plugin "daisyui" names in src/app.css' : 'which @plugin "daisyui" turns on in src/app.css, as it names no themes'
+      assert.ok(report.includes(`it takes its colours from daisyUI's built-in themes light (the default) and dark (used when the system prefers dark), ${named}.`), kind)
+      assert.match(report, /\(theme\/light\.css and theme\/dark\.css\)/, kind)
+      assert.doesNotMatch(report, /the code sets its colours with|No dark theme is proposed/, kind)
+    } finally {
+      r.cleanup()
+    }
+  }
+})
+
+test("a daisyUI theme of the app's own beside a built-in one: the note says only where the built-in theme's values live", () => {
+  const sheet = [
+    '@import "tailwindcss";',
+    '@plugin "daisyui" {',
+    '  themes: light --default, acme --prefersdark;',
+    '}',
+    '@plugin "daisyui/theme" {',
+    '  name: "acme";',
+    '  prefersdark: true;',
+    '  --color-base-100: #111827;',
+    '  --color-base-content: #f9fafb;',
+    '  --color-primary: #6366f1;',
+    '}',
+    '',
+  ].join('\n')
+  const r = repo(
+    { 'src/app.css': sheet, 'src/App.tsx': 'export const A = () => <div className="bg-base-100 text-slate-500 dark:text-slate-300 bg-red-500" />', 'package.json': '{"name":"acme"}' },
+    { styling: ['tailwind4', 'daisyui'], tokens: { styleFiles: ['src/app.css'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const report = read(draft(r.root, 'report.md'))
+    assert.match(report, /\| `color\.primary` \| #6366f1 \| src\/app\.css \|/)
+    assert.match(report, /The app also takes colours from daisyUI's built-in theme light \(the default\), which @plugin "daisyui" names in src\/app\.css\. Their values live in the daisyui package \(theme\/light\.css\), not in this repo, so no token here holds them\./)
+    assert.doesNotMatch(report, /No semantic colour is proposed|No dark theme is proposed/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a body size written in em is the body size, not a length in em', () => {
+  const css = [
+    'body { font-size: 0.875em; font-family: Inter, sans-serif; }',
+    '.a { font-size: 14px; }',
+    '.b { font-size: 20px; }',
+    '.c { font-size: 20px; }',
+    '.d { font-size: 0.75em; }',
+    '.e { font-size: 0.75em; }',
+  ].join('\n')
+  const r = repo({ 'src/app.css': css, 'package.json': '{"name":"acme"}' }, { tokens: { styleFiles: [] } })
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const report = read(draft(r.root, 'report.md'))
+    assert.match(report, /\| `font\.size\.base` \| 0\.875rem \| 14px used 2× in code \| the body size, set on body in src\/app\.css \|/)
+    assert.match(report, /\| Typography \| 0\.75em ×2 \| 2 \| in em, relative to the parent's font size, so a rem token cannot hold it \|/)
+    assert.doesNotMatch(report, /0\.875em/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test("a theme of the app's own that is the default takes that role from daisyUI's light theme", () => {
+  const sheet = '@import "tailwindcss";\n@plugin "daisyui";\n@plugin "daisyui/theme" {\n  name: "brand";\n  default: true;\n  --color-primary: #6366f1;\n}\n'
+  const r = repo(
+    { 'src/app.css': sheet, 'src/App.tsx': 'export const A = () => <div className="bg-primary text-slate-500 text-slate-500" />', 'package.json': '{"name":"acme"}' },
+    { styling: ['tailwind4', 'daisyui'], tokens: { styleFiles: ['src/app.css'] } },
+  )
+  try {
+    const out = extract(r.root)
+    assert.equal(out.status, 0, out.stderr)
+    const report = read(draft(r.root, 'report.md'))
+    assert.match(report, /The app also takes colours from daisyUI's built-in themes light and dark \(used when the system prefers dark\), which @plugin "daisyui" turns on in src\/app\.css, as it names no themes\./)
+  } finally {
+    r.cleanup()
+  }
+})

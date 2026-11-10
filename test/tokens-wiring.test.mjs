@@ -1,8 +1,10 @@
 // Wiring into Tailwind 4: extract reads @theme's colour wiring
 // (`--color-primary: var(--primary)`) as wiring, not as tokens, and the
 // tailwind4 output writes it again; the output never makes one of Tailwind's
-// own text-* classes set a weight or letter spacing, and keeps a token whose
-// own variable is a Tailwind theme name it has no section for.
+// own text-* classes, or a step a size token already writes, take a
+// composite's weight, letter spacing or line height, and keeps a token whose
+// own variable is a Tailwind theme name it has no section for when its value
+// suits that name.
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -182,6 +184,102 @@ test('the tailwind4 output keeps a token whose own variable is a Tailwind theme 
     // A breakpoint is read at build time, where a var() does not work, and a name outside Tailwind's theme is no utility.
     assert.doesNotMatch(tw4, /--breakpoint-xs|--flag/)
     assert.match(read(t.root, 'src', 'styles', 'tokens.generated.css'), /--animate-wiggle: wiggle 1s ease-in-out infinite;/)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test("a composite on a text step the app's own @theme defines adds nothing to it: the step keeps the sheet's size and line height", () => {
+  const r = repo(
+    {
+      'src/index.css': '@import "tailwindcss";\n@theme {\n  --font-sans: Inter, sans-serif;\n  --text-display: 3rem;\n  --text-tiny: 0.625rem;\n  --text-tiny--line-height: 1.2;\n}\n',
+      'src/App.tsx': [
+        'export const A = () => <h1 className="text-display">x</h1>',
+        'export const B = () => <div><b className="font-bold text-2xl">a</b><i className="font-bold text-3xl">b</i><p className="text-tiny">c</p><p className="text-tiny">d</p><p className="text-display">e</p></div>',
+      ].join('\n'),
+      'package.json': '{"name":"acme"}',
+    },
+    {
+      styling: ['tailwind4'],
+      tokens: {
+        styleFiles: ['src/index.css'],
+        source: 'design-system/tokens/draft/tokens.resolver.json',
+        outputs: [{ format: 'css', path: 'src/tokens.css' }, { format: 'tailwind4', path: 'src/tokens.theme.css' }],
+      },
+    },
+  )
+  try {
+    const out = tokens(r.root, 'extract')
+    assert.equal(out.status, 0, out.stderr)
+    // The draft has composites on both steps, with a weight and line height assumed.
+    const base = readJson(draft(r.root, 'base.tokens.json'))
+    assert.equal(base.typography.display.$value.fontSize, '{text.display}')
+    assert.equal(base.typography.tiny.$value.fontSize, '{text.tiny}')
+    const build = tokens(r.root, 'build')
+    assert.equal(build.status, 0, build.stderr)
+    const theme = read(r.root, 'src', 'tokens.theme.css')
+    assert.match(theme, /--text-display: var\(--text-display\);/)
+    assert.doesNotMatch(theme, /--text-(?:display|tiny)--(?:font-weight|letter-spacing)|--text-display--line-height|var\(--typography-/)
+    // The sheet's own line height is written once, and no composite's comes after it.
+    assert.deepEqual(theme.match(/--text-tiny--line-height: [^;]+;/g), ['--text-tiny--line-height: var(--text-tiny--line-height);'])
+  } finally {
+    r.cleanup()
+  }
+})
+
+test("a source's own line height for one of Tailwind's steps stays, and a step no size token writes keeps every part", () => {
+  const t = withTokens({
+    font: {
+      sans: { $type: 'fontFamily', $value: ['Inter', 'sans-serif'] },
+      size: { $type: 'dimension', lg: { $value: { value: 1.125, unit: 'rem' } }, '13': { $value: { value: 0.8125, unit: 'rem' } } },
+    },
+    text: { 'lg--line-height': { $type: 'number', $value: 1.5 } },
+    typography: {
+      $type: 'typography',
+      // Tailwind's own line height for text-lg, which the source's 1.5 overrides.
+      lg: { $value: { fontFamily: '{font.sans}', fontSize: '{font.size.lg}', fontWeight: 400, lineHeight: 1.5556, letterSpacing: { value: 0, unit: 'px' } } },
+      // A size named by its px: text-13 is the size token's.
+      '13': { $value: { fontFamily: '{font.sans}', fontSize: '{font.size.13}', fontWeight: 500, lineHeight: 1.4, letterSpacing: { value: 0, unit: 'px' } } },
+      caption: { $value: { fontFamily: '{font.sans}', fontSize: '{font.size.13}', fontWeight: 500, lineHeight: 1.4, letterSpacing: { value: 0, unit: 'px' } } },
+    },
+  })
+  try {
+    const r = run('tokens', t, ['build'])
+    assert.equal(r.status, 0, r.stderr)
+    const tw4 = read(t.root, 'src', 'styles', 'tokens.tailwind.css')
+    assert.deepEqual(tw4.match(/--text-lg--line-height: [^;]+;/g), ['--text-lg--line-height: var(--text-lg--line-height);'])
+    assert.doesNotMatch(tw4, /--text-13--|--text-13: var\(--typography/)
+    for (const part of ['line-height', 'letter-spacing', 'font-weight']) assert.match(tw4, new RegExp(`--text-caption--${part}: var\\(--typography-caption-${part}\\);`))
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('the tailwind4 output takes a token by its theme name only when its value suits the namespace', () => {
+  const t = withTokens({
+    font: {
+      sans: { $type: 'fontFamily', $value: ['Inter', 'sans-serif'] },
+      lineHeight: { $type: 'number', tight: { $value: 1.2 } },
+      letterSpacing: { $type: 'dimension', wide: { $value: { value: 0.5, unit: 'px' } } },
+    },
+    leading: { $type: 'number', snug: { $value: 1.375 } },
+    $extensions: {
+      massimo: {
+        cssOnly: {
+          'other.text-subtle': { css: 'color-mix(in oklab, #111 60%, transparent)', cssVar: '--text-subtle' },
+          'other.color-overlay': { css: 'color-mix(in oklab, var(--ink) 50%, transparent)', cssVar: '--color-overlay' },
+          'other.spacing-gutter': { css: 'clamp(1rem, 2vw, 2rem)', cssVar: '--spacing-gutter' },
+        },
+      },
+    },
+  })
+  try {
+    const r = run('tokens', t, ['build'])
+    assert.equal(r.status, 0, r.stderr)
+    const tw4 = read(t.root, 'src', 'styles', 'tokens.tailwind.css')
+    // A number or a length is no font family, and a colour is no font size.
+    assert.doesNotMatch(tw4, /--font-lineHeight|--font-letterSpacing|--text-subtle/)
+    for (const name of ['--leading-snug', '--color-overlay', '--spacing-gutter']) assert.match(tw4, new RegExp(`${name}: var\\(${name}\\);`), name)
   } finally {
     t.cleanup()
   }
