@@ -55,7 +55,7 @@ import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, refuseNewer, re
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
 import { FAMILIES, propose } from './lib/propose.mjs'
-import { fromTokensStudio, isTokensStudio, readCss, readFigmaExport, readJsonFile, readTailwindConfig, readThemeObject } from './lib/readers.mjs'
+import { fromTokensStudio, isTokensStudio, readCss, readDaisyThemes, readFigmaExport, readJsonFile, readTailwindConfig, readThemeObject } from './lib/readers.mjs'
 import { inventoryOf, sheetDeclarations, themePlacer } from './lib/sheets.mjs'
 import { escapeHtml, truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
@@ -535,7 +535,12 @@ function draftFrom(found, config) {
 function readSources(root, config) {
   const sources = []
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore)
-  if (styleFiles.length > 0) sources.push({ kind: 'css', ...readCss(root, styleFiles) })
+  // In a Tailwind 4 repo, @theme's colour wiring is the tailwind4 output's to
+  // write; daisyUI's built-in themes are named for the colour notes.
+  if (styleFiles.length > 0) {
+    const css = readCss(root, styleFiles, undefined, { skipWiring: (config.styling ?? []).includes('tailwind4') })
+    sources.push({ kind: 'css', ...css, daisyThemes: readDaisyThemes(root, styleFiles) })
+  }
   if (config.tokens.tailwindConfig) sources.push({ kind: 'tailwind', ...readTailwindConfig(root, config.tokens.tailwindConfig) })
   for (const file of expandGlobs(root, config.tokens.themeFiles ?? [], [], config.ignore)) sources.push({ kind: 'theme', ...readThemeObject(root, file) })
   for (const file of expandGlobs(root, config.tokens.importFiles ?? [], [], config.ignore)) {
@@ -575,10 +580,11 @@ function draftReport({ sources, audit, report, outliers, notes, losses, count })
     lines.push('')
   }
   if (outliers.length) {
-    // Widths and heights and sub-1ms durations have no token to replace them, so the intro says so when they are listed.
+    // Widths and heights, sub-1ms durations and em lengths have no token to replace them, so the intro says so when they are listed.
     const sizes = outliers.some((o) => o.family === 'size')
     const resets = outliers.some((o) => o.family === 'motion' && /^0?\.\d+ms$/.test(o.value))
-    const kinds = [sizes && 'a width or height (massimo proposes no size tokens yet)', resets && 'a duration under 1ms (it switches motion off)'].filter(Boolean)
+    const ems = outliers.some((o) => o.em)
+    const kinds = [sizes && 'a width or height (massimo proposes no size tokens yet)', resets && 'a duration under 1ms (it switches motion off)', ems && 'a length in em (it follows a font size)'].filter(Boolean)
     const extra = kinds.length > 0 ? ` No token replaces ${kinds.join(' or ')}, so keep those as they are.` : ''
     lines.push('## Not proposed', '', `Values the code uses that did not become tokens: used once, off the grid, off a scale the sources already define, or only ever data. Replace each with a token in the tidy phase, or keep it with a reason.${extra}`, '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
     for (const o of outliers) lines.push(`| ${FAMILY_TITLES[o.family] ?? o.family} | ${cell(o.value)} | ${o.count} | ${cell(o.note)} |`)
@@ -718,19 +724,50 @@ const TAILWIND4_PREFIX = {
   transitionTimingFunction: '--ease',
 }
 
+// Tailwind 4's own type scale: each step's line height, as Tailwind sets it.
+// Its text-* classes set no letter spacing or weight.
+const TAILWIND4_TEXT = { xs: 1 / 0.75, sm: 1.25 / 0.875, base: 1.5, lg: 1.75 / 1.125, xl: 1.75 / 1.25, '2xl': 2 / 1.5, '3xl': 2.25 / 1.875, '4xl': 2.5 / 2.25, '5xl': 1, '6xl': 1, '7xl': 1, '8xl': 1, '9xl': 1 }
+
+// Tailwind 4 theme namespaces whose variable a utility reads as written. A
+// token whose own variable sits in one and that no section above places
+// (--animate-wiggle, which a source's @theme declares) keeps its utility by
+// that name. Breakpoints and container widths are left out: Tailwind reads
+// those at build time, where a var() does not work.
+const TAILWIND4_BY_NAME = /^--(?:color|font|text|tracking|leading|radius|spacing|shadow|blur|perspective|aspect|ease|animate)-[\w-]+$/
+
+// A typography composite's line height as a number, through references.
+function lineHeightOf(model, t) {
+  let v = model.resolved(t, 'default')?.lineHeight
+  for (let hop = 0; hop < 8 && isAlias(v); hop++) {
+    const next = model.byName.get(aliasPath(v))
+    v = next ? model.resolved(next, 'default') : undefined
+  }
+  return typeof v === 'number' ? v : typeof v === 'string' && /^\d*\.?\d+$/.test(v.trim()) ? Number(v) : null
+}
+
 function buildTailwind4(model) {
   const lines = []
   for (const t of model.tokens) {
     const hit = tailwindTarget(model, t)
-    if (!hit || hit.v3only || (hit.keys.length === 0 && hit.section !== 'spacing')) continue
+    if (!hit || hit.v3only) {
+      if (TAILWIND4_BY_NAME.test(t.cssVar) && !lines.some((l) => l.startsWith(`${t.cssVar}:`))) lines.push(`${t.cssVar}: var(${t.cssVar});`)
+      continue
+    }
+    if (hit.keys.length === 0 && hit.section !== 'spacing') continue
     const name = [TAILWIND4_PREFIX[hit.section], ...hit.keys].join('-')
     if (hit.typography) {
       // Tailwind 4 reads a text size's line height, letter spacing and weight from `--text-x--<part>`.
       const parts = typographyParts(model, t).map(([, css]) => css)
       if (!parts.includes('font-size')) continue
       lines.push(`${name}: var(${t.cssVar}-font-size);`)
+      // One of Tailwind's own steps keeps rendering as Tailwind's own
+      // text-* class: its line height only when it is Tailwind's own, and no
+      // letter spacing or weight, which that class never sets.
+      const own = hit.keys.length === 1 && Object.hasOwn(TAILWIND4_TEXT, hit.keys[0]) ? TAILWIND4_TEXT[hit.keys[0]] : undefined
       for (const css of ['line-height', 'letter-spacing', 'font-weight']) {
-        if (parts.includes(css)) lines.push(`${name}--${css}: var(${t.cssVar}-${css});`)
+        if (!parts.includes(css)) continue
+        if (own !== undefined && (css !== 'line-height' || Math.abs((lineHeightOf(model, t) ?? Infinity) - own) > 0.001)) continue
+        lines.push(`${name}--${css}: var(${t.cssVar}-${css});`)
       }
       continue
     }

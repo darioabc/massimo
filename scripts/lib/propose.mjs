@@ -13,7 +13,7 @@
 
 import { parseColor, toHex, toOklab } from './color.mjs'
 import { compare } from './glob.mjs'
-import { aliasPath, cssVarFor, isAlias } from './source.mjs'
+import { CLASS_LIBRARIES, aliasPath, cssVarFor, isAlias } from './source.mjs'
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const key = (path) => path.join('.')
@@ -425,13 +425,28 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   return out
 }
 
+// daisyUI's built-in themes, which an app picks in `@plugin "daisyui"`:
+// where their colours live and how to own them, said in place of the notes
+// below, since those colours have names and themes the sources never show.
+function daisyNote(daisy, classes) {
+  const and = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0])
+  const role = (t) => (t.default && t.prefersdark ? ' (the default, also used when the system prefers dark)' : t.default ? ' (the default)' : t.prefersdark ? ' (used when the system prefers dark)' : '')
+  const picked = daisy.all ? 'every daisyUI built-in theme (themes: all)' : `daisyUI's built-in ${daisy.themes.length === 1 ? 'theme' : 'themes'} ${and(daisy.themes.map((t) => `${t.name}${role(t)}`))}`
+  const where = daisy.all ? 'theme/<name>.css' : and(daisy.themes.map((t) => `theme/${t.name}.css`))
+  const top = (classes?.top ?? []).map((c) => c.name)
+  const palette = classes?.count > 0 ? ` Apart from those, the code uses ${classes.count} Tailwind palette ${classes.count === 1 ? 'class' : 'classes'}${top.length ? ` (most used: ${and(top)})` : ''}, which extract does not turn into tokens.` : ''
+  return `No semantic colour is proposed from the app's themes: it takes its colours from ${picked}, which @plugin "daisyui" names in ${daisy.file}. Their values live in the daisyui package (${where}), not in this repo, under daisyUI's colour names: ${and(CLASS_LIBRARIES.daisyui.colors)}. To own them as tokens, copy each theme's values into semantic colour tokens when reviewing colour semantics, one theme per mode, and map daisyUI's names onto them with a @plugin "daisyui/theme" block per theme.${palette}`
+}
+
 // What the colour proposal leaves out, and why: no semantic colour (text,
 // background, border, accent), or no theme beyond the default when the
 // default is not dark itself. Said only when the repo has colours at all:
-// tokens, or Tailwind palette classes.
-function colorGaps(existing, colors, audit, minCount, defaultMode) {
-  const all = [...existing, ...colors].filter((t) => t.type === 'color')
+// tokens, or Tailwind palette classes. An app on daisyUI's built-in themes
+// gets one note on those themes instead.
+function colorGaps(existing, colors, audit, minCount, defaultMode, daisy = null) {
   const classes = audit?.colorClasses
+  if (daisy) return [daisyNote(daisy, classes)]
+  const all = [...existing, ...colors].filter((t) => t.type === 'color')
   if (all.length === 0 && !(classes?.count > 0)) return []
   const notes = []
   const many = (n, one, more) => `${n} ${n === 1 ? one : more}`
@@ -467,6 +482,33 @@ const existingPx = (tokens, groups) => new Set(tokens.filter((t) => groups.inclu
 // A number as a token name: a dot is not allowed in one, so 0.5 is 0_5.
 const numberName = (n) => String(n).replace('.', '_')
 
+// A length the code writes in em is relative to a font size (a font size's
+// to its parent's, any other length's to its element's), so no rem token can
+// hold it. A family's em lengths, by how each is written and by the px the
+// audit counted it at, so a scale can leave them out of its counts.
+function emLengths(audit, category) {
+  const byValue = new Map()
+  const byPx = new Map()
+  for (const f of audit?.findings ?? []) {
+    if (f.category !== category) continue
+    const written = f.kind === 'arbitrary' ? /\[(.*)\]/.exec(f.value)?.[1] : f.value
+    if (!/^-?\d*\.?\d+em$/.test(written ?? '')) continue
+    byValue.set(written, (byValue.get(written) ?? 0) + 1)
+    if (f.px !== undefined) byPx.set(f.px, (byPx.get(f.px) ?? 0) + 1)
+  }
+  return { byValue, byPx }
+}
+// A count by px (a histogram, the type sizes) less the em lengths at each px.
+const withoutEm = (list, em) => list.map((s) => ({ ...s, count: s.count - (em.byPx.get(s.px) ?? 0) })).filter((s) => s.count > 0)
+// The em lengths of a family, under Not proposed in one row, most used first.
+function emOutliers(em, family, outliers) {
+  if (em.byValue.size === 0) return
+  const list = [...em.byValue].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
+  const shown = list.slice(0, 8).map(([value, n]) => (n > 1 ? `${value} ×${n}` : value)).join(', ')
+  const note = `in em, relative to the ${family === 'typography' ? "parent's" : "element's"} font size, so a rem token cannot hold ${list.length === 1 ? 'it' : 'them'}`
+  outliers.push({ family, value: list.length > 8 ? `${shown}, +${list.length - 8} more` : shown, count: list.reduce((n, [, c]) => n + c, 0), note, em: true })
+}
+
 // Tailwind's own classes of a family the audit counted (`rounded-lg`, a
 // spacing step), as one report row: Tailwind's scale needs no new tokens.
 function tailwindClassRow(audit, family, from, note) {
@@ -477,7 +519,8 @@ function tailwindClassRow(audit, family, from, note) {
 }
 
 function proposeSpacing(existing, audit, report, outliers, minCount, tailwind) {
-  const histogram = audit?.spacing?.histogram ?? []
+  const em = emLengths(audit, 'spacing')
+  const histogram = withoutEm(audit?.spacing?.histogram ?? [], em)
   const have = existingPx(existing, ['spacing', 'space'])
   const weighted = histogram.reduce((n, s) => n + s.count, 0)
   const on = (base) => histogram.filter((s) => s.px % base === 0).reduce((n, s) => n + s.count, 0)
@@ -499,6 +542,7 @@ function proposeSpacing(existing, audit, report, outliers, minCount, tailwind) {
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
     report.push({ family: 'spacing', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note: `on the ${base}px grid` })
   }
+  emOutliers(em, 'spacing', outliers)
   const classes = tailwind && tailwindClassRow(audit, 'spacing', 'Tailwind spacing classes (p-, m-, gap- and the like), by step', "Tailwind's own spacing scale; give it tokens if the design should own it")
   if (classes) report.push(classes)
   return out
@@ -517,9 +561,11 @@ const TAILWIND_RADIUS = {
 // any other radius is named by its size, a name Tailwind's scale never uses.
 function proposeRadius(existing, audit, report, outliers, minCount, tailwind) {
   const have = existingPx(existing, ['radius', 'radii', 'rounded'])
+  const em = emLengths(audit, 'radius')
   const counts = new Map()
   for (const f of audit?.findings ?? []) if (f.category === 'radius' && f.px !== undefined) counts.set(f.px, (counts.get(f.px) ?? 0) + 1)
-  const values = [...counts.entries()].filter(([px]) => px > 0 && !have.has(px)).sort((a, b) => a[0] - b[0])
+  for (const [px, n] of em.byPx) counts.set(px, counts.get(px) - n)
+  const values = [...counts.entries()].filter(([px, n]) => px > 0 && n > 0 && !have.has(px)).sort((a, b) => a[0] - b[0])
   const names = ['sm', 'md', 'lg', 'xl', '2xl', '3xl']
   const scale = tailwind ? TAILWIND_RADIUS[tailwind] : null
   // A name a source already gives a radius (by its path or its CSS variable)
@@ -546,6 +592,7 @@ function proposeRadius(existing, audit, report, outliers, minCount, tailwind) {
     out.push({ path: ['radius', name], type: 'dimension', value: full ? '9999px' : rem(px), modes: {}, description: '', source: 'audit' })
     report.push({ family: 'radius', token: `radius.${name}`, value: full ? '9999px' : rem(px), from: `${px}px used ${count}× in code`, note })
   }
+  emOutliers(em, 'radius', outliers)
   const classes = scale && tailwindClassRow(audit, 'radius', 'Tailwind classes', "Tailwind's own radii; give them tokens if the design should own them")
   if (classes) report.push(classes)
   return out
@@ -635,13 +682,16 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
   const onScale = haveSizes.size < 3
   // The body size: the one a body, html or :root rule sets, else the most used.
   const ruled = audit?.forExtract?.bodySize ?? null
-  const body = ruled?.px ?? [...(audit?.typeSizes ?? [])].sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16) || a.px - b.px)[0]?.px ?? 16
+  const em = emLengths(audit, 'type')
+  const typeSizes = withoutEm(audit?.typeSizes ?? [], em)
+  const body = ruled?.px ?? [...typeSizes].sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16) || a.px - b.px)[0]?.px ?? 16
   // A size the body rule sets is kept even when the code repeats it nowhere else.
   const kept = (s) => s.count >= minCount || s.px === ruled?.px
-  const sizes = (audit?.typeSizes ?? []).filter((s) => kept(s) && !haveSizes.has(s.px) && onScale).sort((a, b) => a.px - b.px)
-  for (const s of (audit?.typeSizes ?? []).filter((s) => !haveSizes.has(s.px) && (!kept(s) || !onScale))) {
+  const sizes = typeSizes.filter((s) => kept(s) && !haveSizes.has(s.px) && onScale).sort((a, b) => a.px - b.px)
+  for (const s of typeSizes.filter((s) => !haveSizes.has(s.px) && (!kept(s) || !onScale))) {
     outliers.push({ family: 'typography', value: `${s.px}px`, count: s.count, note: onScale ? 'a font size used once' : 'not on the existing type scale' })
   }
+  emOutliers(em, 'typography', outliers)
   const below = sizes.filter((s) => s.px < body).reverse()
   const above = sizes.filter((s) => s.px > body)
   // A Tailwind repo already names its sizes: keep Tailwind's names, and name
@@ -851,7 +901,8 @@ export function propose({ sources, audit, fromCss, minCount = 2, styling = [], d
     report.push({ family, token: key(t.path), value: isObject(t.value) || Array.isArray(t.value) ? JSON.stringify(t.value) : String(t.value), from: t.source, note: '' })
   }
   const colors = proposeColors(existing, audit, report, outliers, minCount)
-  notes.push(...colorGaps(existing, colors, audit, minCount, defaultMode))
+  const daisy = sources.map((s) => s.daisyThemes).find(Boolean) ?? null
+  notes.push(...colorGaps(existing, colors, audit, minCount, defaultMode, daisy))
   const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
   const tailwind = (styling ?? []).some((s) => /^tailwind/.test(s))
   // The Tailwind version, for the scales whose names changed in Tailwind 4.

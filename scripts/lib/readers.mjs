@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { colorModes, parseColor } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
-import { aliasPath, isAlias, parseCustomProperties } from './source.mjs'
+import { aliasPath, isAlias, parseCssBlocks, parseCustomProperties } from './source.mjs'
 import { cssVarOf } from './figma.mjs'
 import { findObject, leaves, parseObjectAt } from './jsobject.mjs'
 import { natural } from './text.mjs'
@@ -92,9 +92,13 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // way to a value the dark theme sets itself; two light-dark() values from
 // two places keep the first dark side, with the note. `cascade` makes every
 // later value replace the earlier one, for the mirror, which has already
-// chosen one selector per theme.
-export function readCss(root, files, parse = parseCustomProperties, { cascade = false } = {}) {
+// chosen one selector per theme. `skipWiring` leaves out Tailwind 4's
+// wiring of the colours, for a repo the tailwind4 output wires instead (see
+// below).
+export function readCss(root, files, parse = parseCustomProperties, { cascade = false, skipWiring = false } = {}) {
   const entries = new Map()
+  // Properties set anywhere outside an @theme block.
+  const outsideTheme = new Set()
   // Where each mode's value of a property was set, and the values left out
   // because another place's value was kept, by the two places.
   const setBy = new Map()
@@ -113,6 +117,7 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
   for (const file of files) {
     for (const p of parse(readFileSync(join(root, file), 'utf8'), file)) {
       if (p.name.startsWith('--tw-')) continue
+      if (p.scope !== 'theme') outsideTheme.add(p.name)
       if (p.scope === 'conditional') {
         const e = onlyUnder.get(p.name) ?? { default: undefined, modes: {}, source: file, condition: p.condition }
         if (p.condition === e.condition) {
@@ -202,9 +207,49 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
     const m = VAR.exec(v) ?? WRAPPED.exec(v)
     return m ? (m[2] ? channelsOf(m[2], 'default') !== null : colorish(m[1], depth + 1)) : false
   }
+  // A colour in every theme that a token can hold as one (a colour, its
+  // channels, or a var() of one), not CSS such as color-mix() that only the
+  // CSS outputs carry.
+  const plainColor = (name, depth = 0) => {
+    const e = entries.get(name)
+    if (!e || depth > 8) return false
+    return [e.default, ...Object.values(e.modes)].filter((v) => v !== undefined).every((v) => {
+      if (channelColor(v) || parseColor(v)) return true
+      const m = VAR.exec(v) ?? WRAPPED.exec(v)
+      return m ? (m[2] ? channelsOf(m[2], 'default') !== null : plainColor(m[1], depth + 1)) : false
+    })
+  }
+  // Tailwind 4's wiring of a colour: `--color-primary: var(--primary)` set
+  // only in @theme, for every theme, where --primary holds a colour. With
+  // `skipWiring` it is no token of its own: the colour keeps its own
+  // variable and its name, color.primary, the tailwind4 output writes the
+  // line again from it, and a var() of the wiring reads as a reference to
+  // the colour. The line stays a token when the colour would be named
+  // otherwise: its name starts like a colour prefix (--color-c-text), or
+  // another property takes that name (--c-primary).
+  const wiredTo = new Map()
+  if (skipWiring) {
+    for (const [name, e] of entries) {
+      const bare = /^--color-([\w-]+)$/.exec(name)?.[1]
+      if (!bare || /^(?:color|colour|clr|c)(?:-|$)/.test(bare) || outsideTheme.has(name) || Object.keys(e.modes).length > 0) continue
+      if (['c', 'clr', 'colour'].some((p) => entries.has(`--${p}-${bare}`))) continue
+      const target = `--${bare}`
+      if (VAR.exec(String(e.default ?? '').trim())?.[1] === target && plainColor(target)) wiredTo.set(name, target)
+    }
+    const byFile = new Map()
+    for (const name of wiredTo.keys()) byFile.set(entries.get(name).source, [...(byFile.get(entries.get(name).source) ?? []), name])
+    for (const [file, names] of byFile) {
+      const first = names.sort(natural)[0]
+      const line = `${first}: var(${wiredTo.get(first)})`
+      notes.push(names.length === 1
+        ? `${file} maps one colour in @theme to the variable that holds it, ${line}. That line is Tailwind's wiring, not a token of its own: the colour keeps its own variable, and the tailwind4 output writes the wiring again`
+        : `${file} maps ${names.length} colours in @theme to the variables that hold them, such as ${line}. Those lines are Tailwind's wiring, not tokens of their own: each colour keeps its own variable, and the tailwind4 output writes the wiring again`)
+    }
+  }
   // Stems that two type suffixes share (`--h1-size` and `--h1-leading`).
   const stems = new Map()
   for (const name of entries.keys()) {
+    if (wiredTo.has(name)) continue
     const bare = name.slice(2)
     for (const [re, group] of SUFFIX_GROUPS) {
       if (!re.test(bare)) continue
@@ -214,7 +259,7 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
   }
   const idOf = new Map()
   const taken = new Set()
-  for (const name of [...entries.keys()].sort(natural)) {
+  for (const name of [...entries.keys()].filter((n) => !wiredTo.has(n)).sort(natural)) {
     const bare = name.slice(2)
     let path
     if (colorish(name)) {
@@ -233,11 +278,12 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
     taken.add(path.join('.'))
     idOf.set(name, path)
   }
+  const idFor = (name) => idOf.get(name) ?? idOf.get(wiredTo.get(name))
   const aliasOf = (value) => {
     const m = VAR.exec(value)
-    if (m && idOf.get(m[1])) return `{${idOf.get(m[1]).join('.')}}`
+    if (m && idFor(m[1])) return `{${idFor(m[1]).join('.')}}`
     const w = WRAPPED.exec(value)
-    if (w && !w[3] && idOf.get(w[2]) && channelsOf(w[2], 'default') !== null) return `{${idOf.get(w[2]).join('.')}}`
+    if (w && !w[3] && idFor(w[2]) && channelsOf(w[2], 'default') !== null) return `{${idFor(w[2]).join('.')}}`
     return value
   }
   // `rgb(var(--x) / 0.14)`: the colour it makes in a theme.
@@ -249,7 +295,7 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
   }
   const tokens = []
   const typeSteps = []
-  for (const name of [...entries.keys()].sort(natural)) {
+  for (const name of [...entries.keys()].filter((n) => !wiredTo.has(n)).sort(natural)) {
     const e = entries.get(name)
     const path = idOf.get(name)
     const first = e.default ?? Object.values(e.modes)[0]
@@ -316,6 +362,35 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
     typeSteps.push(step)
   }
   return { tokens, notes, typeSteps, count: entries.size }
+}
+
+// ── daisyUI's built-in themes ──────────────────────────────────────────────
+
+// The built-in daisyUI themes a stylesheet picks in `@plugin "daisyui" {
+// themes: … }`, as { file, all, themes: [{ name, default, prefersdark }] }.
+// Their colours live in the daisyui package, so no reader sees them. A name
+// that a `@plugin "daisyui/theme"` block defines is left out, since that
+// block's colours are read as tokens. `themes: all` picks every built-in
+// theme. Null when no style file picks one.
+export function readDaisyThemes(root, files) {
+  const defined = new Set()
+  let picked = null
+  for (const file of files) {
+    for (const block of parseCssBlocks(readFileSync(join(root, file), 'utf8'), file)) {
+      const header = block.headers[block.headers.length - 1]
+      const decl = (prop) => block.decls.find((d) => d.prop === prop)?.value.replace(/^['"]|['"]$/g, '')
+      if (/^@plugin\s+["']daisyui\/theme["']$/i.test(header) && decl('name')) defined.add(decl('name'))
+      if (!picked && /^@plugin\s+["']daisyui["']$/i.test(header) && decl('themes')) picked = { file, list: decl('themes') }
+    }
+  }
+  if (!picked) return null
+  if (/^all$/i.test(picked.list.trim())) return { file: picked.file, all: true, themes: [] }
+  const themes = picked.list
+    .split(',')
+    .map((entry) => entry.trim().split(/\s+/))
+    .filter(([name]) => name && !/^false$/i.test(name) && !defined.has(name))
+    .map(([name, ...flags]) => ({ name, default: flags.includes('--default'), prefersdark: flags.includes('--prefersdark') }))
+  return themes.length > 0 ? { file: picked.file, all: false, themes } : null
 }
 
 // ── A Tailwind 3 config ────────────────────────────────────────────────────
