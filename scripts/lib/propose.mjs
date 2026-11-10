@@ -210,13 +210,14 @@ function pairByName(t, byLast) {
 // A text colour no name pairs sits on the background of its group: text,
 // text-dim and fg-muted on bg (or background), a nested text.muted on the
 // bg beside its group. Text on something else (text-on-primary, an inverse
-// text) is left to a pair by hand.
+// text) is left to a pair by hand, and disabled text, which needs no
+// contrast, is not paired.
 const TEXT_NAME = /^(?:text|fg|foreground|ink)(?:-(?!on-)[\w-]+)?$/
 function backgroundOfGroup(t, byLast) {
   const parts = t.path.filter((p) => p !== '$root')
   const last = parts[parts.length - 1]
   const textual = TEXT_NAME.test(last) || parts.slice(1, -1).some((p) => /^(?:text|fg|foreground)$/.test(p))
-  if (!textual || /inverse|inverted|(?:^|-)on-/.test(last)) return null
+  if (!textual || /inverse|inverted|disabled|(?:^|-)on-/.test(last)) return null
   for (let n = parts.length - 1; n >= 1; n--) {
     for (const name of ['bg', 'background']) {
       for (const tail of [[], ['default'], ['DEFAULT'], ['$root']]) {
@@ -422,7 +423,10 @@ function colorGaps(existing, colors, audit, minCount, defaultMode) {
   const notes = []
   const many = (n, one, more) => `${n} ${n === 1 ? one : more}`
   const named = existing.some((t) => (t.type === 'color' || isAlias(t.value)) && describeByName(key(t.path)))
-  if (!named && !colors.some((t) => isAlias(t.value))) {
+  // A colour the sources already alias to another is a semantic layer of
+  // their own, whatever its name (--card: var(--gray-50)).
+  const aliased = existing.some((t) => t.type === 'color' && [t.value, ...Object.values(t.modes ?? {})].some(isAlias))
+  if (!named && !aliased && !colors.some((t) => isAlias(t.value))) {
     const top = (classes?.top ?? []).map((c) => c.name)
     const examples = top.length > 1 ? `${top.slice(0, -1).join(', ')} and ${top[top.length - 1]}` : top[0]
     const why = classes?.count > 0

@@ -38,7 +38,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { deltaE, parseColor, toHex } from './lib/color.mjs'
+import { colorToSrgb, deltaE, parseColor, toHex } from './lib/color.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './lib/glob.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, today, warnIfVendoredOlder } from './lib/project.mjs'
 import {
@@ -369,17 +369,35 @@ function utilityRole(utility) {
 }
 
 // An SVG presentation attribute just before the value: `fill="#ea580c"`,
-// `stroke='…'`, `stopColor={"…"}`, or an icon's `color="…"`, which its
-// currentColor fills and strokes take. Each colours the drawing, so each is
-// a fill, never a border or text.
-const SVG_ATTRIBUTE = /(?:^|\s)(?:fill|stroke|stop-color|stopColor|color)\s*=\s*(?:\{\s*)?["'`]?$/
+// `stroke='…'`, `stopColor={"…"}`, `flood-color="…"`, or an icon's
+// `color="…"`, which its currentColor fills and strokes take. Each colours
+// the drawing, so each is a fill, never a border or text.
+const SVG_ATTRIBUTE = /(?:^|\s)(?:fill|stroke|stop-color|stopColor|flood-color|floodColor|lighting-color|lightingColor|color)\s*=\s*(?:\{\s*)?["'`]?$/
 const DECLARED = /\b(?:const|let|var)\s+[\w$]+\s*=\s*(?:\{\s*)?["'`]?$/
+// A tag's start: `<` and its name, then the space before its attributes.
+const TAG_START = /<[A-Za-z][\w.:-]*\s/y
+
+// Whether an offset sits inside an open markup tag, across lines: the last
+// tag start before it comes after the last `>`. An arrow's `=>` and a `>=`
+// close nothing.
+function inOpenTag(code, offset) {
+  for (let i = offset - 1; i >= 0; i--) {
+    const c = code[i]
+    if (c === '>' && code[i - 1] !== '=' && code[i + 1] !== '=') return false
+    if (c === '<') {
+      TAG_START.lastIndex = i
+      if (TAG_START.test(code)) return true
+    }
+  }
+  return false
+}
 
 function colorRole(code, offset) {
   const lineStart = code.lastIndexOf('\n', offset) + 1
   const before = code.slice(lineStart, offset)
-  // An attribute styles the drawing; a variable of that name holds data.
-  if (SVG_ATTRIBUTE.test(before) && !DECLARED.test(before)) return 'fill'
+  // An attribute of a tag styles the drawing; a variable, class field or
+  // parameter of that name holds data.
+  if (SVG_ATTRIBUTE.test(before) && !DECLARED.test(before) && inOpenTag(code, offset)) return 'fill'
   const utility = /(?:^|[\s"'`])-?(bg|text|border(?:-[trblxyse])?|ring|outline|fill|stroke|divide|shadow|from|via|to|decoration|accent|caret|placeholder)-\[$/.exec(before)
   const prop = utility?.[1].replace(/-[trblxyse]$/, '') ?? /([A-Za-z-]+)['"]?\s*:\s*[^:;{}]*$/.exec(before)?.[1]
   if (!prop) return 'other'
@@ -709,10 +727,7 @@ function isColorPrimitive(t) {
 
 // The colour each custom property of the style files holds in each theme,
 // as the CSS reader reads it: channels (`184 58% 28%`) as their colour, and
-// `var(--x)` or `hsl(var(--x))` followed to the property they name. The
-// default theme's colours come first, then the other themes'; within each,
-// the properties that hold a colour of their own, then the ones that refer
-// to another.
+// `var(--x)` or `hsl(var(--x))` followed to the property they name.
 function readerColors(root, styleFiles) {
   let tokens
   try {
@@ -721,13 +736,31 @@ function readerColors(root, styleFiles) {
     // a sheet the reader cannot read leaves only the literal colours
     return []
   }
+  return themeColors(tokens)
+}
+
+// The colour each token holds in each theme, its references followed to
+// the token they name: a CSS colour, or a DTCG colour object. The default
+// theme's colours come first, then the other themes', each with its theme's
+// name; within each, the tokens that hold a colour of their own, then the
+// ones that refer to another.
+function themeColors(tokens) {
   const byPath = new Map(tokens.map((t) => [t.path.join('.'), t]))
-  const themes = [...new Set(tokens.flatMap((t) => Object.keys(t.modes)))]
-  const valueIn = (t, theme) => (theme === 'default' ? t.value : t.modes[theme] ?? t.value)
+  const themes = [...new Set(tokens.flatMap((t) => Object.keys(t.modes ?? {})))]
+  const valueIn = (t, theme) => (theme === 'default' ? t.value : t.modes?.[theme] ?? t.value)
   const colorOf = (value, theme, depth = 0) => {
-    if (!isAlias(value)) return typeof value === 'string' ? parseColor(value) : null
-    const target = byPath.get(aliasPath(value))
-    return target && depth < 8 ? colorOf(valueIn(target, theme), theme, depth + 1) : null
+    if (isAlias(value)) {
+      const target = byPath.get(aliasPath(value))
+      return target && depth < 8 ? colorOf(valueIn(target, theme), theme, depth + 1) : null
+    }
+    if (typeof value === 'string') return parseColor(value)
+    if (!Array.isArray(value?.components)) return null
+    try {
+      return colorToSrgb(value)
+    } catch {
+      // a colour object this module cannot convert names no colour
+      return null
+    }
   }
   const out = []
   for (const group of [['default'], themes]) {
@@ -736,7 +769,7 @@ function readerColors(root, styleFiles) {
         if (!t.cssVar || t.cssVar.startsWith('--tw-') || isAlias(t.value) !== refers) continue
         for (const theme of group) {
           const parsed = colorOf(valueIn(t, theme), theme)
-          if (parsed && parsed.a > 0) out.push({ name: t.cssVar, value: toHex(parsed), parsed })
+          if (parsed && parsed.a > 0) out.push({ name: t.cssVar, value: toHex(parsed), parsed, ...(theme === 'default' ? {} : { theme }) })
         }
       }
     }
@@ -1223,10 +1256,19 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // Then the colours the CSS reader resolves: channel triplets and var()
   // chains, after the literals so a tie keeps the literal's name.
   const listed = new Set(tokenColors.map((t) => `${t.name} ${t.value}`))
-  for (const t of readerColors(root, styleFiles)) {
-    if (!listed.has(`${t.name} ${t.value}`)) tokenColors.push(t)
-    listed.add(`${t.name} ${t.value}`)
+  const addColors = (list) => {
+    for (const t of list) {
+      if (!listed.has(`${t.name} ${t.value}`)) tokenColors.push(t)
+      listed.add(`${t.name} ${t.value}`)
+    }
   }
+  addColors(readerColors(root, styleFiles))
+  // Style files that declare no colour (their declarations now come from the
+  // token set's css output): the token set's own colours.
+  if (tokenColors.length === 0) addColors(themeColors(dtcgTokens))
+  // The theme of a nearest token's value when it is not the default's: said
+  // in latest.md, never written to latest.json.
+  const nearestThemes = new Map()
   const clusters = []
   for (const c of colors) {
     if (!c.parsed) {
@@ -1243,9 +1285,10 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
       if (cl.rep.parsed) {
         for (const t of tokenColors) {
           const d = deltaE(cl.rep.parsed, t.parsed)
-          if (!nearest || d < nearest.distance) nearest = { name: t.name, value: t.value, distance: d }
+          if (!nearest || d < nearest.distance) nearest = { name: t.name, value: t.value, distance: d, theme: t.theme }
         }
       }
+      if (nearest?.theme) nearestThemes.set(cl.rep.value, nearest.theme)
       // What the cluster's colours are used for, most-used job first.
       const roles = {}
       for (const m of cl.members) for (const [role, n] of Object.entries(m.roles)) roles[role] = (roles[role] ?? 0) + n
@@ -1331,6 +1374,9 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
       dark: ctx.colorClasses.dark,
       top: [...ctx.colorClasses.classes].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).slice(0, 3).map(([name, count]) => ({ name, count })),
     },
+    // The theme a nearest token's value is from, by cluster, when not the
+    // default's: read by latest.md, never written to latest.json.
+    nearestThemes,
   }
 }
 
@@ -1388,7 +1434,8 @@ function renderMarkdown(result, date, command) {
   if (colorClusters.length === 0) out.push('No raw colours.')
   for (const c of colorClusters.slice(0, MD_CLUSTERS)) {
     const roles = Object.entries(c.roles ?? {}).map(([role, n]) => `${role} ${n}`).join(', ')
-    const near = c.nearestToken ? ` · nearest token \`${c.nearestToken.name}\` ${c.nearestToken.value} (${c.nearestToken.distance})` : ''
+    const theme = result.nearestThemes?.get(c.representative)
+    const near = c.nearestToken ? ` · nearest token \`${c.nearestToken.name}\` ${c.nearestToken.value}${theme ? ` in the ${theme} theme` : ''} (${c.nearestToken.distance})` : ''
     const members = c.members.length > 1 ? ` · merges ${c.members.map((m) => `${m.value}×${m.count}`).join(', ')}` : ''
     out.push(`- ${c.representative} ×${c.count}${members}${near}${roles ? ` · used as ${roles}` : ''}`)
   }
@@ -1564,7 +1611,7 @@ function main() {
   const date = today()
   const auditsDir = join(projectDir, 'audits')
   mkdirSync(auditsDir, { recursive: true })
-  const { findings, kinds, warnings, colorClasses, ...summary } = result
+  const { findings, kinds, warnings, colorClasses, nearestThemes, ...summary } = result
   const json = { version: 1, generatedBy: 'massimo audit', date, ...summary, findings }
   writeFileSync(join(auditsDir, 'latest.json'), `${JSON.stringify(json, null, 2)}\n`)
   writeFileSync(join(auditsDir, 'latest.md'), renderMarkdown(result, date, scriptCommand(root, projectDir, 'audit')))

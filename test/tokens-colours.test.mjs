@@ -26,7 +26,7 @@ const draft = (root, name) => join(root, 'design-system', 'tokens', 'draft', nam
 test('extract pairs text no name pairs with the background of its group, and check reads the pairs', () => {
   const r = repo(
     {
-      'src/styles/base.css': ':root {\n  --bg: #0d0e12;\n  --text: #d8dae2;\n  --text-faint: #5c6170;\n  --text-on-accent: #0d0e12;\n  --accent: #7aa2f7;\n}\n',
+      'src/styles/base.css': ':root {\n  --bg: #0d0e12;\n  --text: #d8dae2;\n  --text-faint: #5c6170;\n  --text-disabled: #3a3d46;\n  --text-on-accent: #0d0e12;\n  --accent: #7aa2f7;\n}\n',
       'src/app.css': '.hint { color: var(--text-faint); background: var(--bg); }',
       'package.json': '{"name":"acme"}',
     },
@@ -37,8 +37,9 @@ test('extract pairs text no name pairs with the background of its group, and che
     assert.equal(out.status, 0, out.stderr)
     const base = readJson(draft(r.root, 'base.tokens.json'))
     for (const name of ['text', 'text-faint']) assert.deepEqual(base.color[name].$extensions.massimo.contrast, { on: 'color.bg', use: 'text' }, name)
-    // Text on something else is left to a pair by hand.
-    assert.equal(base.color['text-on-accent'].$extensions?.massimo?.contrast, undefined)
+    // Text on something else is left to a pair by hand, and disabled text
+    // needs no contrast at all.
+    for (const name of ['text-on-accent', 'text-disabled']) assert.equal(base.color[name].$extensions?.massimo?.contrast, undefined, name)
     assert.match(read(draft(r.root, 'report.md')), /\| `color\.text-faint` \| #5c6170 \| src\/styles\/base\.css \| contrast checked as text on color\.bg, guessed as its group's background \|/)
     // No theme beyond the default, said with the reason.
     assert.match(out.stderr, /note: No dark theme is proposed: the sources set no colour for a dark theme\. If the app has one theme only, nothing is missing; if that theme is dark, set tokens\.defaultMode to dark\.\n/)
@@ -81,6 +82,26 @@ test('a repo coloured with Tailwind palette classes: extract says it proposes no
     const check = tokens(r.root, 'check', '--source', draft(r.root, 'tokens.resolver.json'))
     assert.equal(check.status, 0, check.stderr)
     assert.match(check.stdout, /up to date \(\d+ tokens, 0 stale, no contrast pairs checked\)/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('a colour the sources alias to another is their own semantic layer, so extract does not ask for one', () => {
+  const r = repo(
+    {
+      'src/styles/base.css': ':root {\n  --blue-500: #3b82f6;\n  --gray-900: #111827;\n  --gray-50: #f9fafb;\n  --card: var(--gray-50);\n  --ink-strong: var(--gray-900);\n  --action: var(--blue-500);\n}\n[data-theme="dark"] {\n  --card: var(--gray-900);\n  --ink-strong: var(--gray-50);\n}\n',
+      'src/app.css': '.x { color: var(--ink-strong); background: var(--card); }',
+      'package.json': '{"name":"acme"}',
+    },
+    { tokens: { styleFiles: ['src/styles/base.css'] } },
+  )
+  try {
+    const out = tokens(r.root, 'extract')
+    assert.equal(out.status, 0, out.stderr)
+    assert.equal(readJson(draft(r.root, 'base.tokens.json')).color.card.$value, '{color.gray-50}')
+    assert.ok(!out.stderr.includes('No semantic colour'), out.stderr)
+    assert.ok(!out.stderr.includes('No dark theme'), out.stderr)
   } finally {
     r.cleanup()
   }
