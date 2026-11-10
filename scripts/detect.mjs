@@ -266,10 +266,11 @@ function tokenSources(projectDir) {
 
 // The tsconfig paths as config aliases: `@/*` to a folder, and an exact key
 // such as `@scope/ui` to the file or folder it names. tsconfig.base.json is
-// where a monorepo keeps the paths its packages share.
+// where a monorepo keeps the paths its packages share; it is read first, so
+// a key the files that extend it also map takes their target.
 function aliases() {
   const out = {}
-  for (const name of ['tsconfig.json', 'jsconfig.json', 'tsconfig.app.json', 'tsconfig.base.json']) {
+  for (const name of ['tsconfig.base.json', 'tsconfig.json', 'jsconfig.json', 'tsconfig.app.json']) {
     let cfg
     try {
       cfg = readJson(join(root, name), null)

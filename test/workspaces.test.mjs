@@ -48,6 +48,10 @@ test('workspaceGlobs: package.json lists, a packages object, and pnpm-workspace.
     [{ 'package.json': {}, 'pnpm-workspace.yaml': PNPM['pnpm-workspace.yaml'] }, ['packages/*', 'apps/site']],
     [{ 'package.json': {}, 'pnpm-workspace.yaml': "# the workspace\npackages:\n- packages/*\n- 'tools/*'\ncatalog:\n  react: ^18\n" }, ['packages/*', 'tools/*']],
     [{ 'package.json': {}, 'pnpm-workspace.yaml': "packages: ['packages/*', \"www\"]\n" }, ['packages/*', 'www']],
+    // A flow list over several lines, a byte order mark, and a quoted key.
+    [{ 'package.json': {}, 'pnpm-workspace.yaml': "packages: [\n  'packages/*', # the libraries\n  # the apps\n  'apps/*',\n]\ncatalog: {}\n" }, ['packages/*', 'apps/*']],
+    [{ 'package.json': {}, 'pnpm-workspace.yaml': '\uFEFFpackages:\n  - packages/*\n' }, ['packages/*']],
+    [{ 'package.json': {}, 'pnpm-workspace.yaml': '"packages":\n  - packages/*\n\'onlyBuiltDependencies\':\n  - esbuild\n' }, ['packages/*']],
     // Settings alone, or the root itself, name no packages.
     [{ 'package.json': {}, 'pnpm-workspace.yaml': 'allowBuilds:\n  esbuild: true\n' }, []],
     [{ 'package.json': {}, 'pnpm-workspace.yaml': 'packages:\n  - "."\n\nallowBuilds:\n  esbuild: true\n' }, []],
@@ -116,7 +120,7 @@ test('adopt scan: a style file the config names and scan leaves out is a note, i
     const res = node('adopt', ['scan', '--root', r.root, '--project-dir', project])
     assert.equal(res.status, 0, res.stderr)
     const notes = [
-      'tokens.styleFiles names site/styles/tokens.css, which scan leaves out: it is in a folder scan does not read (another package, or an ignored folder).',
+      'tokens.styleFiles names site/styles/tokens.css, which scan leaves out: it is in another package.',
       'tokens.styleFiles names src/styles/gone.css, which scan leaves out: there is no such file.',
       'tokens.styleFiles names src/styles/plain.css, which scan leaves out: it declares no custom property.',
     ]
@@ -126,6 +130,50 @@ test('adopt scan: a style file the config names and scan leaves out is a note, i
     assert.deepEqual(inv.notes, notes)
     const md = readFileSync(join(project, 'adopt', 'inventory.md'), 'utf8')
     for (const n of notes) assert.ok(md.includes(`Note: ${n}`), n)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('adopt scan: a glob or ./ entry in tokens.styleFiles adds every file it matches, and an entry that adds none says why', (t) => {
+  if (!hasGit()) return t.skip('git is not installed')
+  const r = repo({
+    'package.json': { name: 'acme' },
+    '.gitignore': 'src/styles/generated.css\n',
+    'src/styles/theme.css': THEME,
+    'src/styles/extra.css': THEME,
+    'src/styles/generated.css': THEME,
+    'src/plain/a.css': 'body { margin: 0 }\n',
+    'dist/tokens.css': THEME,
+    'massimo.config.json': {
+      version: 1,
+      tokens: { styleFiles: ['src/styles/*.css', './src/styles/theme.css', 'src/styles/generated.css', 'dist/tokens.css', 'src/plain/*.css', 'src/missing/*.css'] },
+    },
+  })
+  const project = join(r.root, 'ds')
+  try {
+    assert.equal(git(r.root, 'init', '-q').status, 0)
+    const res = node('adopt', ['scan', '--root', r.root, '--project-dir', project])
+    assert.equal(res.status, 0, res.stderr)
+    const inv = JSON.parse(readFileSync(join(project, 'adopt', 'inventory.json'), 'utf8'))
+    assert.deepEqual(inv.own.styleFiles, ['src/styles/extra.css', 'src/styles/theme.css'])
+    assert.deepEqual(inv.notes, [
+      'tokens.styleFiles names dist/tokens.css, which scan leaves out: it is in a folder the config ignores.',
+      'tokens.styleFiles names src/missing/*.css, which scan leaves out: no file matches it.',
+      'tokens.styleFiles names src/plain/*.css, which scan leaves out: no file it matches declares a custom property.',
+      'tokens.styleFiles names src/styles/generated.css, which scan leaves out: git ignores it.',
+    ])
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('adopt scan before init: a style file detect suggests and scan leaves out is said as detect\'s', () => {
+  const r = repo({ 'package.json': { name: 'acme', devDependencies: { vite: '5', tailwindcss: '4' } }, 'src/app.css': '@import "tailwindcss";\n' })
+  try {
+    const res = node('adopt', ['scan', '--json', '--root', r.root])
+    assert.equal(res.status, 0, res.stderr)
+    assert.deepEqual(JSON.parse(res.stdout).notes, ['detect suggests src/app.css, which scan leaves out: it declares no custom property.'])
   } finally {
     r.cleanup()
   }
@@ -221,6 +269,24 @@ test('tsconfig.base.json paths: exact keys resolve in the graph and detect sugge
   }
 })
 
+test('tsconfig.json paths win over tsconfig.base.json for the same key, in detect as in the graph', () => {
+  const r = repo({
+    'package.json': { name: 'acme' },
+    'tsconfig.base.json': '{ "compilerOptions": { "paths": { "@acme/ui": ["./packages/ui/dist/index.ts"], "@base/*": ["./base/*"] } } }',
+    'tsconfig.json': '{ "extends": "./tsconfig.base.json", "compilerOptions": { "paths": { "@acme/ui": ["./packages/ui/src/index.ts"] } } }',
+    'packages/ui/src/index.ts': '',
+    'packages/ui/dist/index.ts': '',
+  })
+  try {
+    assert.deepEqual(createResolver(r.root, {})('app.ts', '@acme/ui'), { file: 'packages/ui/src/index.ts' })
+    const out = JSON.parse(node('detect', ['--root', r.root]).stdout)
+    assert.equal(out.aliases['@acme/ui'], 'packages/ui/src/index.ts')
+    assert.equal(out.aliases['@base/'], 'base/')
+  } finally {
+    r.cleanup()
+  }
+})
+
 test('createResolver: a workspace package resolves to its source by exports, fields and index files', () => {
   const r = repo({
     'package.json': { name: 'acme', workspaces: ['packages/*', 'tools/**'] },
@@ -281,5 +347,33 @@ test('graph: an import of a workspace package is an edge to the component, not a
     assert.deepEqual(nodes.Card.packages, ['clsx'])
   } finally {
     r.cleanup()
+  }
+})
+
+test('a workspace package whose exports name a build git ignores resolves to its source, built or not', (t) => {
+  if (!hasGit()) return t.skip('git is not installed')
+  const files = {
+    'package.json': { name: 'acme', private: true, workspaces: ['packages/*'] },
+    '.gitignore': 'lib/\n',
+    'packages/text/package.json': { name: '@acme/text', main: './lib/index.js', exports: { '.': { import: './lib/index.js' } }, source: './src/index.ts' },
+    'packages/text/src/index.ts': "export { Text } from './Text'\n",
+    'packages/text/src/Text.tsx': 'export const Text = () => null\n',
+    'packages/ui/package.json': { name: '@acme/ui', main: './src/index.ts' },
+    'packages/ui/src/Card.tsx': "import { Text } from '@acme/text'\nexport const Card = () => <Text />\n",
+    'massimo.config.json': { version: 1, components: { include: ['packages/*/src/**/*.tsx'] }, consumers: ['packages/*/src/**/*.{ts,tsx}'] },
+  }
+  for (const built of [false, true]) {
+    const r = repo(built ? { ...files, 'packages/text/lib/index.js': 'exports.Text = () => null\n' } : files)
+    try {
+      assert.equal(git(r.root, 'init', '-q').status, 0)
+      assert.deepEqual(createResolver(r.root, {})('packages/ui/src/Card.tsx', '@acme/text'), { file: 'packages/text/src/index.ts' }, built ? 'built' : 'unbuilt')
+      const project = join(r.root, 'ds')
+      const res = node('graph', ['--root', r.root, '--project-dir', project])
+      assert.equal(res.status, 0, res.stderr)
+      const text = JSON.parse(readFileSync(join(project, 'graph.json'), 'utf8')).nodes.find((n) => n.name === 'Text')
+      assert.deepEqual(text.composedBy, { components: ['packages/ui/src/Card.tsx'] }, built ? 'built' : 'unbuilt')
+    } finally {
+      r.cleanup()
+    }
   }
 })

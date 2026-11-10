@@ -264,18 +264,24 @@ export function workspaceGlobs(root) {
 }
 
 // The items of the top-level `packages:` list in pnpm-workspace.yaml, block
-// (`- packages/*`) or flow (`[packages/*, www]`), quoted or not.
+// (`- packages/*`) or flow (`[packages/*, www]`, on one line or over
+// several), quoted or not, under a plain or quoted key.
 function yamlPackages(text) {
-  const lines = text.split(/\r?\n/)
-  const at = lines.findIndex((line) => /^packages[ \t]*:/.test(line))
+  const key = /^(['"]?)packages\1[ \t]*:/
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/)
+  const at = lines.findIndex((line) => key.test(line))
   if (at === -1) return []
   const unquote = (item) => {
     const s = item.trim()
     const quoted = /^(['"])(.*?)\1[ \t]*(?:#.*)?$/.exec(s)
     return quoted ? quoted[2] : s.replace(/[ \t]+#.*$/, '').trim()
   }
-  const rest = lines[at].replace(/^packages[ \t]*:/, '').replace(/[ \t]+#.*$/, '').trim()
-  if (rest.startsWith('[')) return rest.replace(/^\[|\][ \t]*$/g, '').split(',').map(unquote).filter(Boolean)
+  const bare = (line) => line.replace(/(?:^|[ \t]+)#.*$/, '').trim()
+  let rest = bare(lines[at].replace(key, ''))
+  if (rest.startsWith('[')) {
+    for (let i = at + 1; !rest.endsWith(']') && i < lines.length; i++) rest = `${rest} ${bare(lines[i])}`.trim()
+    return rest.replace(/^\[|\]$/g, '').split(',').map(unquote).filter(Boolean)
+  }
   const items = []
   for (const line of lines.slice(at + 1)) {
     if (/^[ \t]*(?:#.*)?$/.test(line)) continue

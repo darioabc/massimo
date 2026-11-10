@@ -7,6 +7,7 @@
 // and Astro files, and it must run with zero dependencies. It aims for the
 // right answer on real-world source, not for a full grammar.
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { compare, globToRegExp } from './glob.mjs'
@@ -381,6 +382,23 @@ function globDirs(root, glob) {
 
 const workspaceCache = new Map()
 
+// The files git tracks or would add under `root` (it leaves out what it
+// ignores), as a set of root-relative paths; null outside a git checkout or
+// when git lists nothing.
+function gitFiles(root) {
+  try {
+    const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    }).toString()
+    const list = out.split('\0').filter(Boolean)
+    return list.length ? new Set(list) : null
+  } catch {
+    return null
+  }
+}
+
 // The packages of a workspace root: each folder its workspace globs match
 // that holds a package.json with a name, as { name, dir, pkg } sorted by
 // folder, the first folder winning a name two share. Read once per root.
@@ -446,15 +464,17 @@ export function createResolver(root, config = {}) {
   }
   const toRel = (abs) => relative(root, abs).split(sep).join('/')
 
-  const tryPath = (base) => {
-    if (isFile(base)) return base
+  // The file a path names, with the usual extensions and index files tried,
+  // as `has` (a file on disk, by default) finds them.
+  const tryPath = (base, has = isFile) => {
+    if (has(base)) return base
     const ext = /\.[a-z]+$/i.exec(base)?.[0]
     for (const swap of TS_SWAP[ext] ?? []) {
       const candidate = base.slice(0, -ext.length) + swap
-      if (isFile(candidate)) return candidate
+      if (has(candidate)) return candidate
     }
-    for (const e of RESOLVE_EXTS) if (isFile(base + e)) return base + e
-    for (const e of RESOLVE_EXTS) if (isFile(join(base, `index${e}`))) return join(base, `index${e}`)
+    for (const e of RESOLVE_EXTS) if (has(base + e)) return base + e
+    for (const e of RESOLVE_EXTS) if (has(join(base, `index${e}`))) return join(base, `index${e}`)
     return null
   }
 
@@ -495,15 +515,22 @@ export function createResolver(root, config = {}) {
 
   // A bare specifier naming a workspace package resolves to that package's
   // source in the repo: its exports, then source, module and main, then
-  // src/index and index, the first that is a file outside an ignored folder
-  // and not a declaration file. A subpath takes its own exports entry, else
-  // the package folder and the subpath.
+  // src/index and index, the first that is a file the repo has (git tracks
+  // it or would add it, so a local build git ignores is passed over), outside
+  // an ignored folder and not a declaration file. Outside git, a file on disk
+  // counts. A subpath takes its own exports entry, else the package folder
+  // and the subpath.
   const members = new Map(workspacePackages(root).map((m) => [m.name, m]))
   const skipped = new Set(['node_modules', ...(config.ignore ?? [])])
   const usable = (abs) => {
     if (!abs || /\.d\.[cm]?ts$/.test(abs)) return null
     const path = toRel(abs)
     return path.startsWith('../') || path.split('/').some((seg) => skipped.has(seg)) ? null : path
+  }
+  let repoSet
+  const inRepo = (abs) => {
+    if (repoSet === undefined) repoSet = gitFiles(root)
+    return isFile(abs) && (!repoSet || repoSet.has(toRel(abs)))
   }
   const memberHits = new Map()
   const workspaceFile = (spec) => {
@@ -521,7 +548,7 @@ export function createResolver(root, config = {}) {
         ]
     let hit = null
     for (const candidate of candidates) {
-      hit = usable(tryPath(candidate))
+      hit = usable(tryPath(candidate, inRepo))
       if (hit) break
     }
     memberHits.set(spec, hit)

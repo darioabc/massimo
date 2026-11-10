@@ -153,7 +153,7 @@ function scan() {
     const detected = detect()
     const pkg = readJson(join(root, 'package.json'), {}) ?? {}
     const effective = exists ? config : deepMerge(structuredClone(DEFAULTS), detected.suggestedConfig ?? {})
-    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective), auditKinds: ALL_KINDS })
+    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective), auditKinds: ALL_KINDS, configured: exists })
   } catch (e) {
     fail(e.message)
   }
