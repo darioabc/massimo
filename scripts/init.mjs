@@ -434,7 +434,7 @@ function eslintWarnings() {
     if (eslintIgnored(eslintIgnores(text, config), `${folder}/scripts/init.mjs`)) continue
     const why = [...(dependency ? ['eslint is a dependency'] : []), ...(scripts.length > 0 ? [`${scripts.length === 1 ? 'the script' : 'the scripts'} ${scripts.join(', ')} ${scripts.length === 1 ? 'runs' : 'run'} it`] : [])].join(' and ')
     const shown = rel(rootDir, path)
-    out.push(`this repo lints with ESLint (${why}) and ${shown} does not ignore ${folder}/, so a lint would flag the vendored scripts, which keep massimo's own style; add { ignores: ["${folder}/**"] } to the configs ${shown} exports`)
+    out.push(`this repo lints with ESLint (${why}) and ${shown} does not ignore ${folder}/, so a lint would flag the vendored scripts, which keep massimo's own style; add { ignores: ["${folder}/**"] } as its own entry in ${shown}`)
   }
   return out
 }

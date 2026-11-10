@@ -193,7 +193,7 @@ test('a project in a package whose own script CI runs: the warning names the too
 
 // What the ESLint warning says, by the reason, the config file and the folder.
 const eslintSays = (why, config = 'eslint.config.mjs', folder = 'ds') =>
-  `this repo lints with ESLint (${why}) and ${config} does not ignore ${folder}/, so a lint would flag the vendored scripts, which keep massimo's own style; add { ignores: ["${folder}/**"] } to the configs ${config} exports`
+  `this repo lints with ESLint (${why}) and ${config} does not ignore ${folder}/, so a lint would flag the vendored scripts, which keep massimo's own style; add { ignores: ["${folder}/**"] } as its own entry in ${config}`
 const eslintWarnings = (out) => out.warnings.filter((w) => /ESLint/.test(w))
 
 test('init names the ignore to add when the repo lints with ESLint and its flat config leaves the project folder in, and writes nothing about it', () => {

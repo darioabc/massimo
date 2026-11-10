@@ -478,7 +478,8 @@ const ext = extByFramework[framework] ?? '{tsx,jsx}'
 const topDirs = withNuxtFolders(dirs.slice(0, 3).map((d) => d.dir), nuxtComponentFolders(root, files, framework))
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
 // A Nuxt app's story lane sits in its source folder, where `~` points: app/
-// in Nuxt 4's layout. One whose source folder is the root reads as before.
+// in Nuxt 4's layout. One whose source folder is the root gets the stories
+// exclude any other app gets.
 const nuxtSrc = nuxtSrcDir(root, files, framework)
 const nuxtStories = nuxtSrc ? `${nuxtSrc}/stories/**` : null
 

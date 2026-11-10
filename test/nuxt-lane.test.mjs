@@ -80,6 +80,7 @@ test('the Nuxt recipe places the lane and its stories by Nuxt\'s srcDir, app/ in
   assert.match(section('Where the files go'), /Nuxt 3: the root/)
   assert.match(section('Files'), /^<srcDir>\/stories\/StoriesIndex\.vue/m)
   assert.match(section('Files'), /^<srcDir>\/components\/\*\*\/<Name>\.story\.vue/m)
+  assert.match(section('Files'), /^<layer srcDir>\/components\/\*\*\/<Name>\.story\.vue/m)
   // The story pages and the config read the app's and each local layer's components.
   assert.match(section('Story pages'), /'~\/components\/\*\*\/\*\.story\.vue'/)
   assert.match(section('Story pages'), /'~~\/layers\/\*\/app\/components\/\*\*\/\*\.story\.vue'/)
@@ -95,6 +96,12 @@ test('the Nuxt recipe\'s story build writes its own build and output folders, ne
   assert.match(config, /nitro: \{\n {4}\/\/ …existing nitro options…\n {4}\.\.\.\(stories \? \{ output: \{ dir: '\.output-stories' \} \} : \{\}\),\n {2}\}/)
   assert.match(config, /Merge with any existing `nitro` and `hooks`/)
   assert.match(section('Config'), /Add `\.nuxt-stories` and `\.output-stories` to `\.gitignore`/)
+  // The story build's folders hold bundled CSS the audit would read.
+  assert.match(section('Config'), /add `\.nuxt-stories\/\*\*` and `\.output-stories\/\*\*` to `audit\.exclude`/)
+  // Nuxt links dist only when it is missing, so a story build's link stays until it is deleted.
+  assert.match(config, /links `dist` to the public folder it wrote, but only when `dist` is missing/)
+  assert.match(config, /Delete it \(`rm dist`, it is a symlink\) before the app's own build or deploy/)
+  assert.doesNotMatch(config, /build again/)
 })
 
 test('the Nuxt recipe says what global route middleware and i18n do to the story routes, and how Tailwind 4 reads them', () => {
@@ -104,14 +111,19 @@ test('the Nuxt recipe says what global route middleware and i18n do to the story
   assert.match(section('Story pages'), /definePageMeta\(\{ stories: true \}\)/)
   assert.match(routes, /`@nuxtjs\/i18n`/)
   assert.match(routes, /`prefix` strategy/)
-  assert.match(routes, /`meta: \{ i18n: false \}`/)
+  // Route meta wins over the default customRoutes mode only from version 10.5.
+  assert.match(routes, /From version 10\.5 \(or in earlier 10\.x with `customRoutes: 'meta'`\), `meta: \{ i18n: false \}`/)
   assert.match(routes, /`stories\.url` and `stories\.storyUrl`/)
   const tailwind = section('Tailwind')
   assert.match(tailwind, /Tailwind 4 through `@tailwindcss\/vite`/)
+  // Tailwind scans from Vite's root, which Nuxt sets to srcDir, so a local layer needs an @source.
+  assert.match(tailwind, /from Vite's root, which Nuxt sets to `srcDir`/)
+  assert.match(tailwind, /A local layer's story files sit outside `srcDir`, so it reads them only through an `@source` that covers the layer/)
   assert.match(tailwind, /Tailwind 4 through `@nuxtjs\/tailwindcss` 7/)
 })
 
 test('the stories skill leaves the lane folder out of the audit when no exclude covers it', () => {
   const skill = read(SCRIPTS, '..', 'skills', 'stories', 'SKILL.md')
   assert.match(skill, /when no glob in `audit\.exclude` covers the lane's folder yet/)
+  assert.match(skill, /Do the same for each folder the story build writes that the config's `ignore` does not skip \(Nuxt's `\.nuxt-stories\/` and `\.output-stories\/`\)/)
 })

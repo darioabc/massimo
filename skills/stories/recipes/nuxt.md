@@ -15,12 +15,12 @@ So in Nuxt 4's layout the lane is `app/stories/` and a story sits in `app/compon
 ## Files
 
 ```text
-nuxt.config.ts                            the pages:extend hook + build and output folder switch
-<srcDir>/stories/StoriesIndex.vue         index page (outside pages/)
-<srcDir>/stories/StoryPage.vue            one story by slug
-<srcDir>/stories/StoryState.vue           labelled frame for one state
-<srcDir>/components/**/<Name>.story.vue   one story per component, next to the component
-<layer>/components/**/<Name>.story.vue    the same for a local layer, in its source folder
+nuxt.config.ts                                  the pages:extend hook + build and output folder switch
+<srcDir>/stories/StoriesIndex.vue               index page (outside pages/)
+<srcDir>/stories/StoryPage.vue                  one story by slug
+<srcDir>/stories/StoryState.vue                 labelled frame for one state
+<srcDir>/components/**/<Name>.story.vue         one story per component, next to the component
+<layer srcDir>/components/**/<Name>.story.vue   the same for a local layer, in its source folder
 ```
 
 ## nuxt.config.ts
@@ -47,7 +47,7 @@ export default defineNuxtConfig({
 })
 ```
 
-Merge with any existing `nitro` and `hooks`: a second key of the same name replaces the first, with all its options. `buildDir` moves `.nuxt` and Nitro's `output.dir` moves `.output`, so a story build leaves alone the folder the app's deploy ships. `nuxt generate` may also point a `dist` link at the public folder it wrote, so run the app's own build again before anything ships `dist`.
+Merge with any existing `nitro` and `hooks`: a second key of the same name replaces the first, with all its options. `buildDir` moves `.nuxt` and Nitro's `output.dir` moves `.output`, so a story build leaves alone the folder the app's deploy ships. `nuxt generate` also links `dist` to the public folder it wrote, but only when `dist` is missing, and it leaves a link that is there alone. So a story build in a checkout with no `dist` points `dist` at `.output-stories/public`, and the app's own build keeps that link. Delete it (`rm dist`, it is a symlink) before the app's own build or deploy.
 
 ## Story pages
 
@@ -56,13 +56,13 @@ Merge with any existing `nitro` and `hooks`: a second key of the same name repla
 ## Routes the app changes
 
 - **Global route middleware** (a `.global` file in `middleware/`, the app's or a layer's) runs on the story routes too. One that redirects, a sign-in check say, sends `/stories` elsewhere, and the lane's shots show that page instead. With the user's OK, have it return first on a story route: `if (to.meta.stories) return`. No other route sets that key, so the app is unchanged.
-- **`@nuxtjs/i18n`** localizes the routes the hook adds as it does the app's. With the `prefix` strategy every route gets a locale prefix, so the lane opens at `/en/stories`, one per locale. In version 10, `meta: { i18n: false }` on each route the hook pushes leaves it as written. Otherwise set `stories.url` and `stories.storyUrl` to the prefixed URLs, and link from the index to a story with the module's `useLocalePath()`.
+- **`@nuxtjs/i18n`** localizes the routes the hook adds as it does the app's. With the `prefix` strategy every route gets a locale prefix, so the lane opens at `/en/stories`, one per locale. From version 10.5 (or in earlier 10.x with `customRoutes: 'meta'`), `meta: { i18n: false }` on each route the hook pushes leaves it as written. Otherwise set `stories.url` and `stories.storyUrl` to the prefixed URLs, and link from the index to a story with the module's `useLocalePath()`.
 
 ## Tailwind
 
 The lane runs the app's own Vite and CSS setup. The app's CSS reaches the story pages as it reaches every page, through `css` in `nuxt.config` or the file a module adds, so the story pages import no CSS and the Tailwind setup stays as it is:
 
-- Tailwind 4 through `@tailwindcss/vite` in `vite.plugins`: Tailwind scans the project for classes and skips what `.gitignore` lists, so it reads the lane folder and the story files, and not `.nuxt-stories` or `.output-stories` once they are ignored. If the app's CSS narrows the scan (`@import "tailwindcss" source(...)` or `@source not`) so that it leaves either out, add an `@source` line for it.
+- Tailwind 4 through `@tailwindcss/vite` in `vite.plugins`: Tailwind scans for classes from Vite's root, which Nuxt sets to `srcDir`, and skips what `.gitignore` lists. It reads the lane and the app's own stories. A local layer's story files sit outside `srcDir`, so it reads them only through an `@source` that covers the layer: add one, relative to the sheet that imports Tailwind, when the app's CSS has none or only a narrower one. If the app's CSS narrows the scan (`@import "tailwindcss" source(...)` or `@source not`) so that it leaves the lane out, add an `@source` line for it too.
 - Tailwind 4 through `@nuxtjs/tailwindcss` 7: the module adds the same `@tailwindcss/vite` plugin, so the same holds. Keep the module's settings as they are.
 - Tailwind 3 through `@nuxtjs/tailwindcss` 6: the module's `content` globs cover Nuxt's own folders (components, layouts, pages and a few more) but not `stories/`, so add `<srcDir>/stories/**/*.vue` to `content` in the Tailwind config.
 
@@ -88,7 +88,7 @@ The lane runs the app's own Vite and CSS setup. The app's CSS reaches the story 
 
 `include` holds one glob per source folder's `components/`, from the folder that holds `massimo.config.json`: the app's, then the local layers'. The globs above are Nuxt 4's layout. In Nuxt 3's they are `components/**/*.story.vue` and `layers/*/components/**/*.story.vue`. Leave out the layer glob in an app with no local layers.
 
-The lane's own pages are not drift: `audit.exclude` holds `<srcDir>/stories/**` (`app/stories/**` in Nuxt 4's layout, `stories/**` in Nuxt 3's). detect suggests it for a new project; add it to a config written before the lane.
+The lane's own pages are not drift: `audit.exclude` holds `<srcDir>/stories/**` (`app/stories/**` in Nuxt 4's layout, `stories/**` in Nuxt 3's). detect suggests it for a new project; add it when `audit.exclude` does not have it (a config from an older massimo). The story build's folders hold its bundled CSS and JS, which the audit reads too, so add `.nuxt-stories/**` and `.output-stories/**` to `audit.exclude` as well.
 
 Add `.nuxt-stories` and `.output-stories` to `.gitignore`.
 
