@@ -41,7 +41,16 @@ export function mergeSources(sources) {
   const varOf = (t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))
   for (const kind of order) {
     for (const src of sources.filter((s) => s.kind === kind)) {
-      for (const t of src.tokens) {
+      // A token name cannot hold a dot, so a key such as a spacing step's 0.5
+      // is named 0_5; a CSS variable the source gave keeps its name, and a
+      // reference to the dotted name follows the token.
+      const dotted = new Map()
+      for (const read of src.tokens) {
+        const t = read.path.some((p) => String(p).includes('.')) ? { ...read, path: read.path.map((p) => String(p).replace(/\./g, '_')) } : read
+        if (t !== read) {
+          dotted.set(read.source, [...(dotted.get(read.source) ?? []), `${key(read.path)} as ${key(t.path)}`])
+          renamed.set(key(read.path), key(t.path))
+        }
         const k = key(t.path)
         const same = seen.get(k) ?? byCssVar.get(varOf(t))
         if (same) {
@@ -60,6 +69,10 @@ export function mergeSources(sources) {
         tokens.push(copy)
       }
       notes.push(...(src.notes ?? []))
+      for (const [file, names] of dotted) {
+        const shown = `${names.slice(0, 6).join(', ')}${names.length > 6 ? `, +${names.length - 6} more` : ''}`
+        notes.push(`${file}: a token name cannot hold a dot, so ${names.length === 1 ? 'one name was' : `${names.length} names were`} written with _ instead: ${shown}`)
+      }
     }
   }
   // A token whose name another source uses as a group (--c-accent read as
@@ -451,6 +464,10 @@ function proposeRadius(existing, audit, report, outliers, minCount, tailwind) {
   const values = [...counts.entries()].filter(([px]) => px > 0 && !have.has(px)).sort((a, b) => a[0] - b[0])
   const names = ['sm', 'md', 'lg', 'xl', '2xl', '3xl']
   const scale = tailwind ? TAILWIND_RADIUS[tailwind] : null
+  // A name a source already gives a radius (by its path or its CSS variable)
+  // is never proposed again; that radius is named by its size instead.
+  const owned = new Set(existing.flatMap((t) => [key(t.path), t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))]))
+  const free = (name) => !owned.has(`radius.${name}`) && !owned.has(cssVarFor(['radius', name]))
   const out = []
   let i = 0
   for (const [px, count] of values) {
@@ -459,8 +476,15 @@ function proposeRadius(existing, audit, report, outliers, minCount, tailwind) {
       continue
     }
     const full = px >= 999
-    const name = full ? 'full' : scale ? scale[px] ?? numberName(px) : names[i++] ?? numberName(px)
-    const note = !scale ? '' : full || scale[px] ? `Tailwind's rounded-${name}` : tailwind === 'tailwind3' && px === 4 ? "Tailwind's rounded, named by its size" : "off Tailwind's scale, named by its size"
+    const wanted = full ? 'full' : scale ? scale[px] ?? numberName(px) : names[i++] ?? numberName(px)
+    const name = [wanted, numberName(px)].find(free)
+    if (name === undefined) {
+      outliers.push({ family: 'radius', value: `${px}px`, count, note: `the sources already use the names radius.${wanted} and radius.${numberName(px)}` })
+      continue
+    }
+    const note = name !== wanted
+      ? `the sources already define radius.${wanted}, so named by its size`
+      : !scale ? '' : full || scale[px] ? `Tailwind's rounded-${name}` : tailwind === 'tailwind3' && px === 4 ? "Tailwind's rounded, named by its size" : "off Tailwind's scale, named by its size"
     out.push({ path: ['radius', name], type: 'dimension', value: full ? '9999px' : rem(px), modes: {}, description: '', source: 'audit' })
     report.push({ family: 'radius', token: `radius.${name}`, value: full ? '9999px' : rem(px), from: `${px}px used ${count}× in code`, note })
   }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { read, readJson, run, scratch } from './helpers.mjs'
@@ -154,6 +154,13 @@ test('a component an Astro config wires in by a quoted relative path is used by 
     assert.equal(nodes.find((n) => n.name === 'Icon').usage, 2)
     assert.equal(nodes.find((n) => n.name === 'Other').usage, 0)
     assert.match(read(t.project, 'graph.md'), /^- Hero: no-story · used by 1$/m)
+    // A config in a nested app wires in a path relative to its own folder.
+    mkdirSync(join(t.root, 'src', 'site'))
+    writeFileSync(join(t.root, 'src', 'site', 'astro.config.ts'), "export default { components: { Other: '../components/ui/Other.tsx' } }\n")
+    assert.equal(run('graph', t).status, 0)
+    const other = readJson(t.project, 'graph.json').nodes.find((n) => n.name === 'Other')
+    assert.equal(other.usage, 1)
+    assert.deepEqual(Object.values(other.composedBy).flat(), ['src/site/astro.config.ts'])
   } finally {
     t.cleanup()
   }

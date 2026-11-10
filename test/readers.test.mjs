@@ -158,6 +158,21 @@ test('a theme module: a theme call with a selector before its object, every expo
     assert.equal(c['other.primary'].value, '#2255ff')
     assert.ok(colors.notes.includes('colors.ts: read themeLight; themeDark, accentColor are other objects, which were not read'), colors.notes.join('\n'))
 
+    // An object exported under another name is never the theme: breakpoints get their note, anything else is named.
+    writeFileSync(join(tmp, 'screens.ts'), "export const breakpoints = { sm: '640px', md: '768px' }\nexport const colors = { brand: '#ff0000' }\n")
+    const screens = readThemeObject(tmp, 'screens.ts')
+    assert.deepEqual(screens.tokens.map((x) => [x.path.join('.'), x.value]), [['color.brand', '#ff0000']])
+    assert.deepEqual(screens.notes, ['screens.ts: breakpoints are breakpoints, which massimo does not read as tokens'])
+    writeFileSync(join(tmp, 'setup.ts'), "export const config = { prefix: 'acme', cssVarRoot: ':root' }\nexport const colors = { brand: '#ff0000' }\n")
+    const setup = readThemeObject(tmp, 'setup.ts')
+    assert.deepEqual(setup.tokens.map((x) => [x.path.join('.'), x.value]), [['color.brand', '#ff0000']])
+    assert.deepEqual(setup.notes, ['setup.ts: read the exports named like theme keys; config is another object, which was not read'])
+    writeFileSync(join(tmp, 'options.ts'), "export const config = { prefix: 'acme' }\n")
+    assert.deepEqual(readThemeObject(tmp, 'options.ts'), { tokens: [], notes: ['options.ts: no theme object found to read; config is not named like a theme or a part of one, so it was not read'] })
+    // A selector in backticks, with nothing interpolated, is a leading argument like a quoted one.
+    writeFileSync(join(tmp, 'global.css.ts'), "createGlobalTheme(`:root`, vars, { color: { brand: '#ff8800' } })\n")
+    assert.equal(byPath(readThemeObject(tmp, 'global.css.ts').tokens)['color.brand'].value, '#ff8800')
+
     // A contract's strings are CSS variable names; the theme beside it holds the values.
     writeFileSync(join(tmp, 'contract.css.ts'), "export const vars = createGlobalThemeContract({ color: { brand: 'color-brand' } })\n")
     assert.deepEqual(readThemeObject(tmp, 'contract.css.ts'), { tokens: [], notes: ['contract.css.ts: a theme contract names CSS variables, not values, so it was not read'] })

@@ -54,8 +54,8 @@ const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?(?![\w$])(\s*(?:<(?:[^<
 // A string literal with no `${}`, its text in group 2.
 const PLAIN_STRING = /(['"`])((?:\\.|(?!\1)[^\\\n$]|\$(?!\{))*)\1/g
 const EDGE_KINDS = ['mdx', 'glob']
-// Framework configs at the project's root that wire components in by path.
-const FRAMEWORK_CONFIG = /^astro\.config\.[cm]?[jt]s$/
+// Framework configs, at any depth, that wire components in by path.
+const FRAMEWORK_CONFIG = /(?:^|\/)astro\.config\.[cm]?[jt]s$/
 const TOKEN_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'other']
 
 const MAX_COMPONENT_LIST = 40

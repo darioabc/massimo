@@ -444,25 +444,32 @@ function blankContracts(code, file) {
   return out
 }
 
-// The selector of the rule a declaration at `offset` sits in, or ''.
-function selectorAt(code, offset) {
+// What opens each block a declaration at `offset` sits in, innermost first:
+// the rule's selector, then any @media or @layer around it. A backtick ends
+// the walk, so a CSS template in a JS file is read on its own.
+function blocksAt(code, offset) {
+  const out = []
   let depth = 0
-  for (let i = offset - 1; i >= 0; i--) {
+  for (let i = offset - 1; i >= 0 && code[i] !== '`'; i--) {
     if (code[i] === '}') depth++
     else if (code[i] === '{' && depth-- === 0) {
+      depth = 0
       let start = i - 1
       while (start >= 0 && !'{};>`'.includes(code[start])) start--
-      return code.slice(start + 1, i).trim()
+      out.push(code.slice(start + 1, i).trim())
     }
   }
-  return ''
+  return out
 }
 
 // The font size a body, html or :root rule sets, the body's first: the size
-// running text takes. Read from the first such rule.
+// running text takes. Read from the first such rule that applies on every
+// screen: one inside @media, @supports or @container does not.
 const BODY_SELECTORS = ['body', 'html', ':root']
 function noteBodySize(ctx, file, code, offset, value) {
-  const parts = selectorAt(code, offset).split(',').map((s) => s.trim())
+  const [selector = '', ...around] = blocksAt(code, offset)
+  if (around.some((p) => /^@(?:media|supports|container)\b/i.test(p))) return
+  const parts = selector.split(',').map((s) => s.trim())
   const rank = BODY_SELECTORS.findIndex((s) => parts.includes(s))
   if (rank === -1) return
   const t = [...stripVarsAndUrls(value).matchAll(LENGTH_TOKEN)][0]

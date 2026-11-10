@@ -390,6 +390,7 @@ test('a Tailwind repo: a radius takes Tailwind\'s name only at Tailwind\'s size,
     // Widths: the repeated one with its reason, the one used once with the rest.
     assert.match(report, /\| Size \| 80rem \| 2 \| a width or height; massimo proposes no size tokens yet \|/)
     assert.match(report, /\| Size \| 37px \| 1 \| widths and heights used once each \|/)
+    assert.match(report, /No token replaces a width or height \(massimo proposes no size tokens yet\), so keep those as they are\./)
   } finally {
     r.cleanup()
   }
@@ -397,6 +398,25 @@ test('a Tailwind repo: a radius takes Tailwind\'s name only at Tailwind\'s size,
   const audit = { findings: [2, 2, 4, 4].map((px) => ({ category: 'radius', px })) }
   const { report } = propose({ sources: [], audit, fromCss: () => ({}), styling: ['tailwind3'] })
   assert.deepEqual(report.filter((x) => x.family === 'radius').map((x) => [x.token, x.note]), [['radius.sm', "Tailwind's rounded-sm"], ['radius.4', "Tailwind's rounded, named by its size"]])
+  // A name the sources already give a radius is not proposed again: the radius is named by its size.
+  const own = repo(
+    {
+      'src/index.css': '@import "tailwindcss";\n@theme { --radius-sm: 0.5rem; }\n',
+      'src/Tag.tsx': 'export const Tag = () => <i className="rounded-[4px] rounded-[4px]" />\n',
+      'package.json': '{"name":"acme"}',
+    },
+    { styling: ['tailwind4'], tokens: { styleFiles: ['src/index.css'] } },
+  )
+  try {
+    const out = extract(own.root)
+    assert.equal(out.status, 0, out.stderr)
+    const base = readJson(draft(own.root, 'base.tokens.json'))
+    assert.deepEqual(base.radius.sm.$value, { value: 0.5, unit: 'rem' })
+    assert.deepEqual(base.radius['4'].$value, { value: 0.25, unit: 'rem' })
+    assert.match(read(draft(own.root, 'report.md')), /\| `radius\.4` \| 0\.25rem \| 4px used 2× in code \| the sources already define radius\.sm, so named by its size \|/)
+  } finally {
+    own.cleanup()
+  }
 })
 
 test('the body size is the one the body rule sets, else the most used', () => {
@@ -416,6 +436,19 @@ test('the body size is the one the body rule sets, else the most used', () => {
     assert.match(read(draft(r.root, 'report.md')), /\| `font\.size\.base` \| 0\.8125rem \| 13px used 1× in code \| the body size, set on body in src\/base\.css \|/)
   } finally {
     r.cleanup()
+  }
+  // A body rule inside @media sets the size on some screens only, so the plain body rule after it wins.
+  const media = repo(
+    { 'src/a.css': '@media (max-width: 600px) { body { font-size: 14px } }\nbody { font-size: 16px }\n.a { font-size: 12px } .b { font-size: 12px }\n', 'package.json': '{"name":"acme"}' },
+    { tokens: { styleFiles: [] } },
+  )
+  try {
+    const out = extract(media.root)
+    assert.equal(out.status, 0, out.stderr)
+    assert.deepEqual(readJson(draft(media.root, 'base.tokens.json')).font.size.base.$value, { value: 1, unit: 'rem' })
+    assert.match(read(draft(media.root, 'report.md')), /\| `font\.size\.base` \| 1rem \| 16px used 1× in code \| the body size, set on body in src\/a\.css \|/)
+  } finally {
+    media.cleanup()
   }
   const audit = { typeSizes: [{ px: 12, count: 5 }, { px: 15, count: 2 }] }
   const { report } = propose({ sources: [], audit, fromCss: () => ({}) })
@@ -439,10 +472,27 @@ test('every draft name passes the check: a 0.01ms reset is no duration step', ()
     const base = readJson(draft(r.root, 'base.tokens.json'))
     assert.deepEqual(Object.keys(base.duration).filter((k) => !k.startsWith('$')), ['fast', 'normal', 'slow'])
     assert.match(read(draft(r.root, 'report.md')), /\| Motion \| 0\.01ms \| 2 \| under 1ms, which turns motion off rather than timing it \|/)
+    assert.match(read(draft(r.root, 'report.md')), /No token replaces a duration under 1ms \(it switches motion off\), so keep those as they are\./)
     const check = spawnSync(process.execPath, [join(SCRIPTS, 'tokens.mjs'), 'check', '--root', r.root, '--source', draft(r.root, 'tokens.resolver.json')], { encoding: 'utf8' })
     assert.equal(check.status, 0, check.stderr)
   } finally {
     r.cleanup()
+  }
+  // A theme's spacing step 0.5 is written 0_5, and a note names it.
+  const steps = repo(
+    { 'src/theme.ts': "export const theme = { space: { 0.5: '2px', 1: '4px', '1.5': '6px', 2: '8px' } }\n", 'package.json': '{"name":"acme"}' },
+    { tokens: { styleFiles: [], themeFiles: ['src/theme.ts'] } },
+  )
+  try {
+    const out = extract(steps.root)
+    assert.equal(out.status, 0, out.stderr)
+    assert.match(out.stderr, /note: src\/theme\.ts: a token name cannot hold a dot, so 2 names were written with _ instead: spacing\.0\.5 as spacing\.0_5, spacing\.1\.5 as spacing\.1_5/)
+    const base = readJson(draft(steps.root, 'base.tokens.json'))
+    assert.deepEqual(Object.keys(base.spacing).filter((k) => !k.startsWith('$')).sort(), ['0_5', '1', '1_5', '2'])
+    const check = spawnSync(process.execPath, [join(SCRIPTS, 'tokens.mjs'), 'check', '--root', steps.root, '--source', draft(steps.root, 'tokens.resolver.json')], { encoding: 'utf8' })
+    assert.equal(check.status, 0, check.stderr)
+  } finally {
+    steps.cleanup()
   }
 })
 

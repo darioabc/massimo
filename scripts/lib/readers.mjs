@@ -425,7 +425,7 @@ const THEME_KEYS = [
 // Where a theme object starts, most telling first. A theme call may take up
 // to two arguments before its object: `createGlobalTheme(':root', vars, {…})`.
 const THEME_STARTS = [
-  /(?<![\w$])(?:createTheme|extendTheme|createStitches|defineConfig|defineTokens|createGlobalTheme)\s*\(\s*(?:(?:[\w.]+|'[^'\n]*'|"[^"\n]*")\s*,\s*){0,2}/g,
+  /(?<![\w$])(?:createTheme|extendTheme|createStitches|defineConfig|defineTokens|createGlobalTheme)\s*\(\s*(?:(?:[\w.]+|'[^'\n]*'|"[^"\n]*"|`[^`$\n]*`)\s*,\s*){0,2}/g,
   /export\s+const\s+(?:theme|tokens)\w*(?:\s*:\s*[\w.<>]+)?\s*=\s*/g,
   /(?<![\w$])const\s+(?:theme|tokens)\w*(?:\s*:\s*[\w.<>]+)?\s*=\s*/g,
   /export\s+default\s*/g,
@@ -434,13 +434,16 @@ const THEME_STARTS = [
 // Every object a module exports by name, `export const colors = {…}`.
 const EXPORTED_OBJECT = /export\s+const\s+([A-Za-z_$][\w$]*)(?:\s*:\s*[\w.<>[\]]+)?\s*=\s*(?=\{)/g
 const THEME_CONTRACT = /(?<![\w$.])create(?:Global)?ThemeContract\s*\(/
+// Theme keys and exports that hold breakpoints, which are not tokens.
+const BREAKPOINT_KEYS = /^(breakpoints|screens|media|mq)$/i
 
 // Every theme-like object in a module, in the order THEME_STARTS ranks them,
-// then the objects it exports by name, each once: { at, label, name?, obj }.
+// then the other objects it exports by name, each once:
+// { at, label, name?, obj, exported }, where `exported` marks the second kind.
 function themeObjects(src) {
   const out = []
   const seen = new Set()
-  const take = (m, label, name) => {
+  const take = (m, label, name, exported = false) => {
     const rest = src.slice(m.index + m[0].length)
     const lead = /^[\s(]*/.exec(rest)[0]
     const at = m.index + m[0].length + lead.length
@@ -448,7 +451,7 @@ function themeObjects(src) {
     const obj = parseObjectAt(src, at)
     if (!obj) return
     seen.add(at)
-    out.push({ at, label, name, obj })
+    out.push({ at, label, name, obj, exported })
   }
   for (const re of THEME_STARTS) {
     for (const m of src.matchAll(re)) {
@@ -457,7 +460,7 @@ function themeObjects(src) {
       take(m, call ? `${call[1]}(${call[2] ? `${call[2]}, ` : ''}{…})` : name ?? (/^module/.test(m[0]) ? 'module.exports' : 'the default export'), name)
     }
   }
-  for (const m of src.matchAll(EXPORTED_OBJECT)) take(m, m[1], m[1])
+  for (const m of src.matchAll(EXPORTED_OBJECT)) take(m, m[1], m[1], true)
   return out
 }
 
@@ -473,26 +476,35 @@ export function readThemeObject(root, file) {
   const found = themeObjects(src)
   if (found.length === 0) return { tokens: [], notes: notes.length > 0 ? notes : [`${file}: no theme object found to read`] }
   const isSection = (o) => Boolean(o.name) && THEME_KEYS.some(([re]) => re.test(o.name))
+  const isBreakpoints = (o) => Boolean(o.name) && BREAKPOINT_KEYS.test(o.name)
   const computed = (v) => Boolean(v) && typeof v === 'object' && ('expr' in v || 'spread' in v)
-  const main = found.find((o) => !isSection(o)) ?? null
+  // The theme is a theme call, a theme… or tokens… object or the default
+  // export; an object exported under any other name never is.
+  const main = found.find((o) => !o.exported && !isSection(o)) ?? null
   const obj = main?.obj ?? {}
   const root_ = isObject(obj.theme) ? obj.theme : isObject(obj.tokens) ? obj.tokens : obj
   // An export named like a theme key is that part of the theme, unless the
-  // theme sets the key itself; any other object is named, not read.
+  // theme sets the key itself; an export named breakpoints joins it too, so
+  // the breakpoints note names it. Any other object is named, not read.
   const parts = { ...root_ }
   const skipped = []
+  let sections = 0
   for (const o of found) {
     if (o === main) continue
-    if (isSection(o) && (root_[o.name] === undefined || computed(root_[o.name]))) parts[o.name] = o.obj
-    else skipped.push(o.label)
+    if ((isSection(o) || (o.exported && isBreakpoints(o))) && (root_[o.name] === undefined || computed(root_[o.name]))) {
+      parts[o.name] = o.obj
+      if (isSection(o)) sections++
+    } else skipped.push(o.label)
   }
   for (const s of root_.__spreads ?? []) notes.push(`${file}: the theme spreads ${s}, which was left out`)
-  if (skipped.length > 0) {
+  if (skipped.length > 0 && (main || sections > 0)) {
     notes.push(`${file}: read ${main ? main.label : 'the exports named like theme keys'}; ${skipped.join(', ')} ${skipped.length === 1 ? 'is another object, which was' : 'are other objects, which were'} not read`)
+  } else if (skipped.length > 0) {
+    notes.push(`${file}: no theme object found to read; ${skipped.join(', ')} ${skipped.length === 1 ? 'is not named like a theme or a part of one, so it was' : 'are not named like a theme or a part of one, so they were'} not read`)
   }
   const tokens = []
   for (const [key, section] of Object.entries(parts)) {
-    if (/^(breakpoints|screens|media|mq)$/i.test(key)) {
+    if (BREAKPOINT_KEYS.test(key)) {
       notes.push(`${file}: ${key} are breakpoints, which massimo does not read as tokens`)
       continue
     }

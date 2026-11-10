@@ -21,7 +21,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
    - the five most-used components (they are the system's real primitives, whatever the folders say);
    - the story queue's top five (most-used without a story);
    - anything surprising: duplicate names, near-duplicate components (`Button`, `Btn`, `PrimaryButton`), components nothing imports.
-   Near-duplicates and dead components go into `STATUS.md` → Open questions for the tidy phase; do not fix them here. Before calling a component dead, check whether a framework config names it by path: the graph counts a quoted relative path in `astro.config.*` (an integration's component overrides, say) as a use, but not other configs, plugin options or a path built at runtime.
+   Near-duplicates and dead components go into `STATUS.md` → Open questions for the tidy phase; do not fix them here. Before calling a component dead, check whether a framework config names it by path: the graph counts a quoted relative path in an `astro.config.*` anywhere in the repo (an integration's component overrides, say) as a use, but not other configs, plugin options or a path built at runtime.
 7. **Wire the script.** `package.json` should have `ds:graph` (init adds it). The `--check` mode joins CI in the guard phase.
 8. **End.** `state.mjs set graph done --note "<N> components, <S> with stories"`. Next step: stories.
 
