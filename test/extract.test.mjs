@@ -220,8 +220,10 @@ test('a Tailwind repo keeps Tailwind names, line heights and curves; text on a -
     assert.deepEqual(base.ease.standard.$value, [0, 0, 0.2, 1])
     assert.equal(base.color['pill-solid-content'].$extensions.massimo.contrast.on, 'color.pill-solid-bg')
     assert.equal(base.color['pill-solid-content'].$description, 'Text and icons on pill-solid')
-    // color.neutral is the theme's token, so the code's greys go in gray.
-    assert.equal(base.color.gray['950'].$value.hex, '#000000')
+    // color.neutral is the theme's token, so the code's greys go in gray, off
+    // Tailwind's steps: Tailwind 4's gray-950 is not #000000.
+    assert.equal(base.color.gray['995'].$value.hex, '#000000')
+    assert.equal(base.color.gray['950'], undefined)
     assert.equal(base.color.neutral.$value.hex, '#333333')
     // A bare 0 outside a length group is a number: 0px would break where it is a flag.
     assert.equal(base.other.noise.$value, 0)

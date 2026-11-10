@@ -12,7 +12,7 @@
 import { parseColor, toHex } from './color.mjs'
 import { compare, compileGlobs } from './glob.mjs'
 import { PREFIX_GROUPS, SUFFIX_GROUPS, channelColor } from './readers.mjs'
-import { atRuleKind, classifyMember, scanSource, selectorMembers } from './source.mjs'
+import { DECLARED_PROPERTY, atRuleKind, classifyMember, interpolationEnd, scanSource, selectorMembers } from './source.mjs'
 
 const clean = (s) => s.replace(/\s+/g, ' ').trim()
 
@@ -110,7 +110,7 @@ export function cssRules(css, file = 'x.css') {
     const colon = stmt.indexOf(':')
     if (colon === -1) return
     const prop = stmt.slice(0, colon).trim()
-    if (!/^[-\w]+$/.test(prop)) return
+    if (!DECLARED_PROPERTY.test(prop)) return
     const lead = leading(boundary, at)
     const trail = css[end] === ';' ? trailing(end) : null
     const opens = lead && (lead.rule || (lead.first && trail))
@@ -127,6 +127,13 @@ export function cssRules(css, file = 'x.css') {
         i++
       }
       for (let k = from; k <= Math.min(i, text.length - 1); k++) take(text[k], k)
+      continue
+    }
+    // A Sass interpolation (`#{toRem(2)}`) is part of the text it sits in.
+    if (c === '#' && text[i + 1] === '{') {
+      const end = interpolationEnd(text, i)
+      for (let k = i; k <= end; k++) take(text[k], k)
+      i = end
       continue
     }
     if (c === '(') paren++

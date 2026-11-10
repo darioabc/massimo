@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { colorModes, parseColor } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
-import { aliasPath, isAlias, parseCssBlocks, parseCustomProperties, stripComments } from './source.mjs'
+import { aliasPath, atRuleKind, classifyMember, interpolationEnd, isAlias, parseCssBlocks, parseCustomProperties, selectorMembers, stripComments } from './source.mjs'
 import { cssVarOf } from './figma.mjs'
 import { findObject, leaves, parseObjectAt } from './jsobject.mjs'
 import { natural } from './text.mjs'
@@ -71,6 +71,113 @@ const WRAPPED = /^(rgba?|hsla?)\(\s*var\(\s*(--[\w-]+)\s*\)\s*(?:\/\s*(\d*\.?\d+
 const VAR = /^var\(\s*(--[\w-]+)\s*\)$/
 const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|rem))\s*\)$/
 
+// Sass functions that turn pixels into rem, by name without dashes or
+// underscores: toRem(12), px-to-rem(12), rem-calc(12).
+const REM_FUNCTIONS = new Set(['torem', 'rem', 'pxtorem', 'px2rem', 'remcalc', 'calcrem', 'converttorem'])
+const REM_CALL = /^([A-Za-z][\w-]*)\(\s*(-?\d*\.?\d+)(?:px)?\s*(?:,\s*(\d*\.?\d+)(?:px)?\s*)?\)$/
+
+// A value with Sass interpolation (`#{toRem(2)}`) as plain CSS, where every
+// interpolation holds what can be read without running Sass: a literal (a
+// number, a length, a colour, a quoted string) or a rem conversion of a
+// number, at 16px a rem unless the call gives its own base. `{ value, rem }`,
+// `rem` being 'assumed' when a call with no base of its own was read at
+// 16px a rem; null when any part needs Sass.
+export function sassValue(value) {
+  let out = ''
+  let rem = false
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] !== '#' || value[i + 1] !== '{') {
+      out += value[i]
+      continue
+    }
+    const end = interpolationEnd(value, i)
+    if (value[end] !== '}') return null
+    const inner = value.slice(i + 2, end).trim()
+    i = end
+    const quoted = /^(['"])(.*)\1$/.exec(inner)
+    if (quoted) out += quoted[2]
+    else if (/^-?\d*\.?\d+(?:px|rem|em|%|ms|s|deg|vh|vw)?$/.test(inner) || parseColor(inner)) out += inner
+    else {
+      const call = REM_CALL.exec(inner)
+      if (!call || !REM_FUNCTIONS.has(call[1].replace(/[-_]/g, '').toLowerCase())) return null
+      const base = call[3] === undefined ? 16 : Number(call[3])
+      if (!base) return null
+      out += `${Number((Number(call[2]) / base).toFixed(4))}rem`
+      if (call[3] === undefined) rem = 'assumed'
+    }
+  }
+  return { value: out.replace(/\s+/g, ' ').trim(), rem }
+}
+
+// The page's own colours: the background and text colour a body, html or
+// :root rule sets (the body's first), in the default theme and in the dark
+// one (a dark theme's selector, alone or on the root, or the dark
+// colour-scheme query around a root rule). A rule under any other condition,
+// or one for a part of the page, does not count. Each colour is
+// `{ value }` (a colour, or a var()) or `{ class }` (a Tailwind colour name
+// from an @apply list, such as surface-900), with the selector and file
+// that set it. Null when no rule sets one. In the default theme a plain
+// root rule wins over a light theme's selector, as in readCss.
+const PAGE_RANK = (member) => {
+  const last = member.trim().split(/[\s>+~]+/).pop()
+  return /^body\b/i.test(last) ? 0 : /^:root\b/i.test(last) ? 2 : 1
+}
+const TEXT_NOT_COLOR = /^(?:xs|sm|base|lg|[2-9]?xl|left|center|right|justify|start|end|ellipsis|clip|wrap|nowrap|balance|pretty|opacity-.+)$/
+const BG_NOT_COLOR = /^(?:auto|cover|contain|center|top|bottom|left|right|left-.+|right-.+|fixed|local|scroll|none|repeat|no-repeat|repeat-.+|clip-.+|origin-.+|gradient-.+|opacity-.+|blend-.+)$/
+function pageColors(root, files) {
+  const page = {}
+  const set = (mode, part, colour, rank, selector, file) => {
+    const at = (page[mode] ??= {})
+    if (at[part] && at[part].rank < rank) return
+    at[part] = { ...colour, rank, selector, file }
+  }
+  for (const file of files) {
+    for (const block of parseCssBlocks(readFileSync(join(root, file), 'utf8'), file)) {
+      const around = block.headers.slice(0, -1).filter((h) => h.startsWith('@')).map(atRuleKind)
+      if (around.some((r) => r.kind === 'condition')) continue
+      const scheme = around.map((r) => r.mode).filter(Boolean).pop() ?? null
+      const selectors = block.headers.filter((h) => !h.startsWith('@'))
+      if (selectors.length === 0 || block.headers[block.headers.length - 1].startsWith('@')) continue
+      let members = selectorMembers(selectors[0])
+      for (const h of selectors.slice(1)) members = selectorMembers(h).flatMap((m) => members.map((p) => (m.includes('&') ? m.replace(/&/g, p) : `${p} ${m}`)))
+      for (const member of members) {
+        const c = classifyMember(member)
+        const mode = c.scope === 'root' ? scheme ?? 'default' : c.scope === 'selector' && ['default', 'dark'].includes(c.mode) ? c.mode : null
+        if (!mode) continue
+        // In the default theme a body, html or :root rule is the page, and a
+        // light theme's selector (.light, .light body) comes after it.
+        const rank = PAGE_RANK(member) + (mode === 'default' && c.scope !== 'root' ? 3 : 0)
+        for (const { prop, value } of block.decls) {
+          if (prop === '@apply') {
+            // bg-* and text-* colour classes, and their dark: variants; any
+            // other variant (hover:, md:) or an opacity modifier is not the page.
+            for (const raw of value.split(/\s+/)) {
+              const m = /^(?:(dark):)?!?(bg|text)-(.+?)!?$/.exec(raw)
+              if (!m || m[3].includes('/') || (m[2] === 'text' ? TEXT_NOT_COLOR : BG_NOT_COLOR).test(m[3])) continue
+              const arbitrary = /^\[(?:color:)?([^:\]]+)\]$/.exec(m[3])?.[1]
+              if (m[3].startsWith('[') && !arbitrary) continue
+              const colour = arbitrary ? { value: arbitrary.replace(/_/g, ' ') } : { class: m[3] }
+              if (colour.value && !parseColor(colour.value) && !VAR.test(colour.value)) continue
+              set(m[1] ? 'dark' : mode, m[2] === 'bg' ? 'background' : 'color', colour, rank, member, file)
+            }
+            continue
+          }
+          if (!['background', 'background-color', 'color'].includes(prop)) continue
+          const v = value.trim()
+          if (!(parseColor(v)?.a > 0) && !VAR.test(v)) continue
+          set(mode, prop === 'color' ? 'color' : 'background', { value: v }, rank, member, file)
+        }
+      }
+    }
+  }
+  for (const mode of Object.values(page)) for (const part of Object.values(mode)) delete part.rank
+  return Object.keys(page).length > 0 ? page : null
+}
+
+// The custom properties of one style file, those whose name holds Sass
+// interpolation (`--#{$prefix}radius`) too.
+const styleProperties = (css, file) => parseCustomProperties(css, file, { interpolated: true })
+
 // Every custom property the style files declare outside a component's own
 // selector, by name, with its value per theme. A light-dark() value splits
 // into its two themes. `rgb(var(--x))` over a channel triplet is a
@@ -78,8 +185,10 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // theme, its exact CSS kept. A fluid clamp() size takes its largest value,
 // its CSS kept too. Stems with a size and a line height, weight or tracking
 // (`--h1-size`, `--h1-leading`) come back as type steps. `parse` reads one
-// file's properties; the token mirror passes one that places each selector
-// by the config's theme selectors instead of by the names themes usually have.
+// file's properties, by default with the ones whose name holds Sass
+// interpolation, which are named in a note; the token mirror passes one that
+// places each selector by the config's theme selectors instead of by the
+// names themes usually have.
 //
 // Two places that set one property for the same mode with different values
 // (a dark :root and its :root[data-theme='light'] override, which both read
@@ -95,7 +204,7 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // chosen one selector per theme. `skipWiring` leaves out Tailwind 4's
 // wiring of the colours, for a repo the tailwind4 output wires instead (see
 // below).
-export function readCss(root, files, parse = parseCustomProperties, { cascade = false, skipWiring = false } = {}) {
+export function readCss(root, files, parse = styleProperties, { cascade = false, skipWiring = false } = {}) {
   const entries = new Map()
   // Properties set anywhere outside an @theme block.
   const outsideTheme = new Set()
@@ -114,8 +223,27 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
   // property set only under a condition takes that value, with a note.
   const elsewhere = new Map()
   const onlyUnder = new Map()
+  // Values written with Sass interpolation, by file: the ones read as plain
+  // CSS (and whether a rem conversion was assumed), and the ones left out.
+  const sass = new Map()
   for (const file of files) {
-    for (const p of parse(readFileSync(join(root, file), 'utf8'), file)) {
+    for (const declared of parse(readFileSync(join(root, file), 'utf8'), file)) {
+      let p = declared
+      // A name or a value with Sass interpolation. A value is read when it
+      // can be; a name only Sass can tell. The mirror (`cascade`) keeps the
+      // author's text, which only Sass turns into CSS, so it leaves out
+      // every such declaration.
+      if (p.name.includes('#{') || p.value.includes('#{')) {
+        const s = sass.get(file) ?? { read: [], left: [] }
+        sass.set(file, s)
+        const read = cascade || p.name.includes('#{') ? null : sassValue(p.value)
+        if (!read) {
+          if (!s.left.some((x) => x.name === p.name)) s.left.push({ name: p.name, raw: p.value })
+          continue
+        }
+        if (read.rem === 'assumed' && !s.read.some((x) => x.name === p.name)) s.read.push({ name: p.name, raw: p.value, value: read.value })
+        p = { ...p, value: read.value }
+      }
       if (p.name.startsWith('--tw-')) continue
       if (p.scope !== 'theme') outsideTheme.add(p.name)
       if (p.scope === 'conditional') {
@@ -168,6 +296,17 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
     }
   }
   const notes = []
+  for (const [file, { read, left }] of sass) {
+    const few = (list, show) => `${list.slice(0, 3).map(show).join(', ')}${list.length > 3 ? ` and ${list.length - 3} more` : ''}`
+    if (read.length > 0) {
+      const [first] = read
+      notes.push(`${file}: read ${read.length === 1 ? 'one value' : `${read.length} values`} written with a Sass rem conversion as rem at 16px a rem, ${read.length === 1 ? '' : 'such as '}${first.name}: ${first.raw} as ${first.value}; if the function's base is not 16px, correct ${read.length === 1 ? 'that token' : 'those tokens'}`)
+    }
+    if (left.length > 0) {
+      const then = cascade ? 'the mirror keeps only what plain CSS can hold' : `add ${left.length === 1 ? 'its value' : 'their values'} by hand`
+      notes.push(`${file}: ${few(left, (x) => `${x.name} (${x.raw})`)} ${left.length === 1 ? 'holds' : 'hold'} Sass interpolation that needs Sass to evaluate, so ${left.length === 1 ? 'it was' : 'they were'} left out; ${then}`)
+    }
+  }
   for (const { mode, kept, left, names } of clashes.values()) {
     const list = [...names].sort(natural)
     const named = list.length === 1 ? `${list[0]} is` : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]} are`
@@ -361,7 +500,12 @@ export function readCss(root, files, parse = parseCustomProperties, { cascade = 
     else if (tr && /^-?\d*\.?\d+(px|rem)$/.test(String(tr.value))) step.letterSpacing = tr.value
     typeSteps.push(step)
   }
-  return { tokens, notes, typeSteps, count: entries.size }
+  // The page's own background and text colour, for extract's semantic
+  // colours, and whether a file is one of the style files read, for its
+  // note on a body rule elsewhere (a function, which JSON leaves out).
+  const page = parse === styleProperties ? pageColors(root, files) : null
+  const reads = (file) => files.includes(file)
+  return { tokens, notes, typeSteps, count: entries.size, ...(page ? { page } : {}), reads }
 }
 
 // ── daisyUI's built-in themes ──────────────────────────────────────────────
@@ -445,7 +589,12 @@ export const TAILWIND_CONFIG_STARTS = [/export\s+default\s*(?:defineConfig\(\s*|
 
 // The theme a Tailwind 3 config sets (both `theme` and `theme.extend`), read
 // as text. Spreads of Tailwind's own defaults and anything computed are
-// skipped and named in the notes; nothing in the file is run.
+// skipped and named in the notes; nothing in the file is run. A section
+// that is a name from elsewhere (`colors: brandColors`, often imported from
+// another module) or that spreads one is named too, with the module it is
+// imported from when the file says. `partial` lists the token groups some of
+// whose values were left out that way, and `extendOnly` the groups only
+// theme.extend sets, which add to Tailwind's own scale instead of replacing it.
 export function readTailwindConfig(root, file) {
   const src = readFileSync(join(root, file), 'utf8')
   const config = findObject(src, TAILWIND_CONFIG_STARTS)
@@ -454,36 +603,66 @@ export function readTailwindConfig(root, file) {
   const theme = isObject(config.theme) ? config.theme : {}
   const tokens = []
   const typeSteps = []
-  for (const layer of [theme, isObject(theme.extend) ? theme.extend : {}]) {
+  const partial = new Set()
+  const inTheme = new Set()
+  const inExtend = new Set()
+  // `name`, or `name from './module'` when an import names where it comes from.
+  const named = (expr) => {
+    const id = /^[A-Za-z_$][\w$]*/.exec(expr)?.[0]
+    const from = id && new RegExp(`import\\s*(?:\\{[^}]*\\b${id.replace(/\$/g, '\\$')}\\b[^}]*\\}|${id.replace(/\$/g, '\\$')}\\b)[^;'"]*from\\s*['"]([^'"]+)['"]`).exec(src)?.[1]
+    return from ? `${expr} from ${from}` : expr
+  }
+  // Spreads at any depth of a section, as [path after the section, spread].
+  const spreadsIn = (obj, path = []) => [
+    ...(obj.__spreads ?? []).map((s) => [path, s]),
+    ...Object.entries(obj).filter(([, v]) => isObject(v) && !('expr' in v) && !('spread' in v)).flatMap(([k, v]) => spreadsIn(v, [...path, k])),
+  ]
+  const extend = isObject(theme.extend) ? theme.extend : {}
+  for (const [layer, where] of [[theme, 'theme'], [extend, 'theme.extend']]) {
+    for (const s of layer.__spreads ?? []) notes.push(`${file}: ${where} spreads ${named(s)}, which was left out`)
     for (const [section, [group, type]] of Object.entries(TAILWIND_SECTIONS)) {
       const values = layer[section]
       if (values === undefined) continue
-      if (!isObject(values)) {
-        notes.push(`${file}: theme.${section} is ${values?.expr ? `computed (${values.expr})` : 'not an object'}, so it was skipped`)
+      ;(layer === theme ? inTheme : inExtend).add(group)
+      if (!isObject(values) || 'expr' in values || 'spread' in values) {
+        notes.push(`${file}: ${where}.${section} is ${values?.expr ? `${named(values.expr)}, which is not read here` : 'not an object'}, so it was skipped`)
+        partial.add(group)
         continue
+      }
+      for (const [path, s] of spreadsIn(values)) {
+        notes.push(`${file}: ${where}.${[section, ...path].join('.')} spreads ${named(s)}, which was left out`)
+        partial.add(group)
       }
       for (const [path, v] of leaves(values)) {
         const at = [group, ...path.map((p) => (p === 'DEFAULT' ? '$root' : p))]
         if (v && typeof v === 'object' && ('expr' in v || 'spread' in v)) {
-          notes.push(`${file}: theme.${section}.${path.join('.')} is computed (${v.expr ?? v.spread}), so it was skipped`)
+          notes.push(`${file}: ${where}.${section}.${path.join('.')} is computed (${named(v.expr ?? v.spread)}), so it was skipped`)
+          partial.add(group)
           continue
         }
         if (section === 'fontFamily') {
           const list = (Array.isArray(v) ? v : [v]).filter((x) => typeof x === 'string')
           const skipped = (Array.isArray(v) ? v : []).filter((x) => typeof x !== 'string')
-          if (skipped.length) notes.push(`${file}: theme.${section}.${path.join('.')} spreads ${skipped.map((x) => x.spread ?? x.expr).join(', ')}, which was left out`)
+          if (skipped.length) notes.push(`${file}: ${where}.${section}.${path.join('.')} spreads ${skipped.map((x) => x.spread ?? x.expr).join(', ')}, which was left out`)
           if (list.length) tokens.push(token(at, { type, value: list, source: file }))
           continue
         }
         if (section === 'fontSize' && Array.isArray(v)) {
-          // [size, lineHeight] or [size, { lineHeight, letterSpacing, fontWeight }]: a type step.
+          // [size, lineHeight] or [size, { lineHeight, letterSpacing, fontWeight }]:
+          // a type step, its line height as written ('20px', '1.25', 'normal').
           const [size, extra] = v
+          if (cssValue(size) === null) {
+            notes.push(`${file}: ${where}.${section}.${path.join('.')} is computed (${size?.expr ?? size?.spread ?? 'not a size'}), so it was skipped`)
+            partial.add(group)
+            continue
+          }
+          const parts = isObject(extra) && !('expr' in extra) && !('spread' in extra) ? extra : typeof extra === 'string' || typeof extra === 'number' ? { lineHeight: String(extra) } : {}
           tokens.push(token(at, { type, value: cssValue(size), source: file }))
-          typeSteps.push({ path: at, size: cssValue(size), ...(isObject(extra) ? extra : typeof extra === 'string' ? { lineHeight: extra } : {}) })
+          typeSteps.push({ path: at, size: cssValue(size), ...parts })
           continue
         }
         if (Array.isArray(v)) {
-          notes.push(`${file}: theme.${section}.${path.join('.')} is a list, so it was skipped`)
+          notes.push(`${file}: ${where}.${section}.${path.join('.')} is a list, so it was skipped`)
           continue
         }
         const value = cssValue(v)
@@ -492,7 +671,7 @@ export function readTailwindConfig(root, file) {
       }
     }
   }
-  return { tokens, notes, typeSteps }
+  return { tokens, notes, typeSteps, partial: [...partial], extendOnly: [...inExtend].filter((g) => !inTheme.has(g)) }
 }
 
 // ── A JS or TS theme object (CSS-in-JS) ────────────────────────────────────
