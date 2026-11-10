@@ -133,9 +133,17 @@ function assess(asset, inv, config = {}) {
         if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which stay in the file and apply at run time; convert stories lists them for a hand pass.`)
         break
       }
-      lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay in ${t.tool}; the graph credits them by file name. Moving them to the native lane is a later step.`)
+      // Ladle can still move onto the csf lane; any other tool the team
+      // keeps goes on serving its stories, and nothing moves.
+      if (t.tool === 'ladle') {
+        lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay in ${t.tool}; the graph credits them by file name. Moving them to the native lane is a later step.`)
+        if (t.notReadable > 0) lines.push(`${plural(t.notReadable, 'file has', 'files have')} something not statically readable, listed in the inventory.`)
+        if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which a move to the native lane turns into states by hand.`)
+        break
+      }
+      lines.push(`Its ${plural(t.stories, 'story', 'stories')} in ${plural(t.files, 'file')} stay in ${t.tool}, which keeps serving them; the graph credits them by file name${t.tool === 'storybook' ? ", and stories.mjs storybook gives each story's id and URL by Storybook's own rule" : ''}.`)
       if (t.notReadable > 0) lines.push(`${plural(t.notReadable, 'file has', 'files have')} something not statically readable, listed in the inventory.`)
-      if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which a move to the native lane turns into states by hand.`)
+      if (t.withArgs > 0) lines.push(`${plural(t.withArgs, 'file uses', 'files use')} args or argTypes, which ${t.tool} applies when it runs; massimo names those stories by their exports.`)
       break
     }
     case 'styles':
@@ -422,6 +430,11 @@ export function markClass(ledger, cls, state, { batch = null, force = false, dat
   }
   const cuts = from < CUT_OVER && to >= CUT_OVER
   if (cuts && (typeof batch !== 'string' || !batch)) throw new Error('cut-over needs --batch <id>, the id the batch commit carries in its trailer')
+  // A class whose every asset is kept has nothing to retire: it ends at
+  // cut-over. An asset the scan no longer finds still counts by its decision.
+  if (state === 'retired' && !force && !c.assets.some((a) => a.decision !== 'keep')) {
+    throw new Error(`nothing in ${cls} is marked retire or convert, so it ends at cut-over: a kept asset is never retired`)
+  }
   // The batch an asset or the class carries at `next`, coming from `was`.
   const batchAt = (next, was, kept) => (next < CUT_OVER ? null : was < CUT_OVER ? batch : kept)
   c.state = state
@@ -499,8 +512,12 @@ const ladleWidthNames = (inv) =>
 // that neither Ladle's port nor its preview port holds, the frozen design
 // targets in `frozen`, and the minScripts those keys need. A Ladle setting
 // massimo cannot read without running the config is not guessed: no key is
-// proposed from it (csfNotes says which to set by hand).
-export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen = [] } = {}) {
+// proposed from it (csfNotes says which to set by hand). With `storybook`
+// (what storybookKeys reads from the repo) and a Storybook the repo keeps,
+// with no gated lane and no csf lane, also its stories keys: the globs of
+// its stories entries, and the command, port, url and storyUrl of the script
+// that serves it.
+export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen = [], storybook = null } = {}) {
   const proposed = { version: 1 }
   const graph = {}
   const extra = inv.headers.keys.filter((k) => !k.builtin && k.files > 0)
@@ -524,6 +541,8 @@ export function proposeConfig(inv, config = {}, { lane: laneKind = null, frozen 
     }
     proposed.audit = { exclude: [`${lane.dir}/**`] }
   }
+  const keepsStorybook = !lane && laneKind !== 'csf' && (config?.stories?.lane ?? 'native') === 'native' && inv.stories.tools.some((t) => t.tool === 'storybook')
+  if (keepsStorybook && storybook && Object.keys(storybook.keys).length > 0) proposed.stories = { ...storybook.keys }
   const ladle = laneKind === 'csf' ? inv.stories.tools.find((t) => t.tool === 'ladle') : null
   if (ladle) {
     const s = ladle.settings ?? {}

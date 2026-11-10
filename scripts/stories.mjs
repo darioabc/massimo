@@ -1,12 +1,27 @@
 #!/usr/bin/env node
 // The csf story lane from the command line: what the registry holds, whether
-// the lane is sound, and whether the lane's CSS leaked into the app's.
+// the lane is sound, and whether the lane's CSS leaked into the app's. Beside
+// a Storybook the repo keeps, on any lane: each story's id and URL.
 //
 //   stories.mjs index            files, slugs and states per root
 //   stories.mjs index --json     the registry itself (format 1), for tools
 //   stories.mjs --check          exit 1 when the lane has a fault; writes nothing
 //   stories.mjs leak --app <dir> --lane <dir> [--probe <class>] [--before <dir>]
 //                                compare the CSS of an app build and a lane build
+//   stories.mjs storybook [<file>...] [--json | --routes] [--against <index.json or url>]
+//                                Storybook's id and URL for each story, by its rule
+//
+// storybook reads .storybook/main (or the folder the storybook dev script
+// names with -c) and each story file as text, never running either. A
+// <file> is a story file Storybook serves, or a component whose stories
+// graph.json lists; with none, every story file. A story's URL is
+// stories.storyUrl with {id} for the id, else Storybook's iframe URL on
+// stories.url or the dev script's port. --against compares the ids with
+// Storybook's own index (a saved index.json, or the URL of a running
+// Storybook) and exits 1 on any difference, which with no <file> includes a
+// story from a file massimo did not list; a story file massimo cannot read
+// also exits 1. --routes prints { "<id>": "<path>" } for shoot.mjs --sweep
+// --routes.
 //
 // --check fails on registry problems, a frozen design target that changed,
 // the graph's csf lane problems (except a node with no story), a base CSS
@@ -38,8 +53,9 @@ import { compare, compileGlobs, walk } from './lib/glob.mjs'
 import { cssClasses, cssLayoutProblems, ownClasses, sourceWords, storyOnly } from './lib/lane-css.mjs'
 import { frozenProblems } from './lib/convert.mjs'
 import { laneRegistry } from './lib/lane.mjs'
-import { fail, loadConfig, parseArgs, warnIfVendoredOlder } from './lib/project.mjs'
+import { fail, loadConfig, parseArgs, readJson, warnIfVendoredOlder } from './lib/project.mjs'
 import { createResolver, isStoryFile, isTestFile } from './lib/source.mjs'
+import { storybookDev, storybookIndex } from './lib/storybook.mjs'
 import { laneRepoFiles, typesLine } from './lib/vite-stories.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -334,14 +350,124 @@ export function leakReport({ root, config, files = repoFiles(root, config), app,
   return { ok: leaked.length === 0 && lost.length === 0, lines }
 }
 
+// ── A kept Storybook ────────────────────────────────────────────────────────
+
+// Storybook's ids and URLs for the story files `names` asks for: a story file
+// Storybook serves, or a component whose stories graph.json lists (only those
+// Storybook serves); with no names, every story file it serves. Returns
+// { main, files: [{ file, title, stories: [{ export, name, id, url }],
+// problems, own }], unknown }, where `own` marks a component's own story
+// file (its name beside the component's, listed first), `unknown` lists the
+// names that are neither, and null means the repo has no Storybook main
+// config.
+export function storybookStories({ root, config, projectDir, names = [], files = walk(root, { ignore: config.ignore }) }) {
+  const dev = storybookDev(readJson(join(root, 'package.json'), {})?.scripts ?? {})
+  const index = storybookIndex(root, files, { configDir: dev?.configDir ?? '.storybook' })
+  if (!index) return null
+  const storyUrl = String(config.stories.storyUrl ?? '')
+  const template = storyUrl.includes('{id}') ? storyUrl : `${String(config.stories.url ?? `http://localhost:${dev?.port ?? 6006}`).replace(/\/+$/, '')}/iframe.html?id={id}&viewMode=story`
+  const byFile = new Map(index.files.map((f) => [f.file, f]))
+  let graph = null
+  const nodeStories = (name) => {
+    graph ??= readJson(join(projectDir, 'graph.json'), null) ?? { nodes: [] }
+    const node = (graph.nodes ?? []).find((n) => n.file === name)
+    return node ? (node.stories ?? []).filter((f) => byFile.has(f)) : null
+  }
+  const wanted = new Set()
+  const own = new Set()
+  const unknown = []
+  const stem = (f) => f.replace(/\.(?:stories|story)\.[^./]+$/, '').replace(/\.[^./]+$/, '')
+  for (const name of names) {
+    const asked = name.replace(/^\.\//, '')
+    if (byFile.has(asked)) wanted.add(asked)
+    else {
+      const stories = nodeStories(asked)
+      if (!stories) unknown.push(name)
+      for (const f of stories ?? []) {
+        wanted.add(f)
+        if (stem(f) === stem(asked)) own.add(f)
+      }
+    }
+  }
+  const chosen = names.length === 0 ? index.files : index.files.filter((f) => wanted.has(f.file)).sort((a, b) => own.has(b.file) - own.has(a.file))
+  return {
+    main: index.main,
+    files: chosen.map((f) => ({ ...f, stories: f.stories.map((st) => ({ ...st, url: template.split('{id}').join(st.id) })), ...(own.has(f.file) ? { own: true } : {}) })),
+    unknown,
+  }
+}
+
+// The ids massimo names beside Storybook's own index (`entries`, or the
+// `stories` of an older index), for the files listed: { missing, extra },
+// `missing` the ids Storybook does not have, `extra` the stories Storybook
+// has for those files that massimo does not name; with `every`, the stories
+// of any file, so a story file massimo did not list shows too. A docs entry
+// is no story, and neither is a story's test, which has its own entry.
+export function compareStorybookIndex(listed, index, { every = false } = {}) {
+  const theirs = Object.values(index?.entries ?? index?.stories ?? {}).filter((e) => e && (e.type ?? 'story') === 'story' && (e.subtype ?? 'story') === 'story')
+  const files = new Set(listed.map((f) => f.file))
+  const ours = new Map(listed.flatMap((f) => f.stories.map((st) => [st.id, f.file])))
+  const known = new Set(theirs.map((e) => e.id))
+  const missing = [...ours].filter(([id]) => !known.has(id)).map(([id, file]) => ({ id, file }))
+  const extra = theirs
+    .filter((e) => (every || files.has(String(e.importPath ?? '').replace(/^\.\//, ''))) && !ours.has(e.id))
+    .map((e) => ({ id: e.id, file: String(e.importPath).replace(/^\.\//, '') }))
+  const order = (a, b) => compare(a.file, b.file) || compare(a.id, b.id)
+  return { missing: missing.sort(order), extra: extra.sort(order) }
+}
+
+async function storybookCommand({ root, config, projectDir, names, flags }) {
+  const found = storybookStories({ root, config, projectDir, names })
+  if (!found) fail('stories.mjs storybook reads a Storybook config (.storybook/main.*, or the folder the storybook dev script names with -c), and there is none here')
+  if (found.unknown.length > 0) fail(`${found.unknown.join(', ')}: neither a story file Storybook serves nor a component in graph.json (run graph.mjs if it is new)`)
+  const problems = found.files.filter((f) => f.problems.length > 0)
+  let compared = null
+  if (typeof flags.against === 'string') {
+    const from = flags.against
+    let index
+    if (/^https?:\/\//.test(from)) {
+      const url = /\.json(?:\?|$)/.test(from) ? from : `${from.replace(/\/+$/, '')}/index.json`
+      const r = await fetch(url).catch(() => null)
+      if (!r?.ok) fail(`${url} ${r ? `answered ${r.status}` : 'did not answer'}: is Storybook running there?`)
+      index = await r.json()
+    } else index = readJson(resolve(from), null)
+    if (!index || typeof index !== 'object') fail(`${from} is not Storybook's index.json`)
+    compared = compareStorybookIndex(found.files, index, { every: names.length === 0 })
+  }
+  if (flags.routes) {
+    const routes = Object.fromEntries(found.files.flatMap((f) => f.stories.map((st) => [st.id, `${new URL(st.url).pathname}${new URL(st.url).search}`])))
+    process.stdout.write(`${JSON.stringify(routes, null, 2)}\n`)
+  } else if (flags.json) {
+    process.stdout.write(`${JSON.stringify({ main: found.main, files: found.files, ...(compared ? compared : {}) }, null, 2)}\n`)
+  } else {
+    const lines = []
+    for (const f of found.files) {
+      lines.push(`${f.file}  ${f.title ?? '(no title read)'}${f.own ? "  (the component's own story)" : ''}`)
+      for (const st of f.stories) lines.push(`  ${st.id}  ${st.url}`)
+      for (const p of f.problems) lines.push(`  problem: ${p}`)
+    }
+    const count = found.files.reduce((n, f) => n + f.stories.length, 0)
+    lines.push(`massimo stories: ${plural(found.files.length, 'story file')}, ${plural(count, 'story', 'stories')}, by Storybook's id rule from ${found.main}`)
+    if (compared) {
+      for (const m of compared.missing) lines.push(`missing in Storybook: ${m.id} (${m.file})`)
+      for (const e of compared.extra) lines.push(`not named by massimo: ${e.id} (${e.file})`)
+      if (compared.missing.length + compared.extra.length === 0) lines.push(`ok: every id matches Storybook's index`)
+    }
+    process.stdout.write(`${lines.join('\n')}\n`)
+  }
+  if (problems.length > 0 || (compared && compared.missing.length + compared.extra.length > 0)) process.exitCode = 1
+}
+
 // ── command line ─────────────────────────────────────────────────────────────
 
 function main() {
   const { _: args, flags } = parseArgs()
   const sub = flags.check ? 'check' : args[0]
-  if (!['check', 'index', 'leak'].includes(sub)) fail('usage: stories.mjs index [--json] | --check | leak --app <dir> --lane <dir> [--probe <class>] [--before <dir>]')
+  if (!['check', 'index', 'leak', 'storybook'].includes(sub)) fail('usage: stories.mjs index [--json] | --check | leak --app <dir> --lane <dir> [--probe <class>] [--before <dir>] | storybook [<file>...] [--json | --routes] [--against <index.json or url>]')
   const { root, config, projectDir } = loadConfig(flags)
   warnIfVendoredOlder(projectDir, import.meta.url)
+  // A kept Storybook serves its own stories, whatever the lane.
+  if (sub === 'storybook') return storybookCommand({ root, config, projectDir, names: args.slice(1), flags })
   const lane = String(config.stories.lane ?? 'native')
   if (!LANES.includes(lane)) fail(`stories.lane is "${lane}", which stories.mjs does not know. Use "native", "manifest" or "csf".`)
   if (lane !== 'csf') {
@@ -387,7 +513,7 @@ function main() {
 const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''
 if (entry === fileURLToPath(import.meta.url)) {
   try {
-    main()
+    Promise.resolve(main()).catch((err) => fail(err instanceof Error ? err.message : String(err)))
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err))
   }

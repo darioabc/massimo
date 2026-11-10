@@ -360,6 +360,8 @@ test('the Ladle tool converts under the csf lane, and Ladle without it and Story
   for (const [name, config] of [['ladle', undefined], ['ladle', { stories: { lane: 'manifest' } }], ['storybook', csf]]) {
     const kept = plan(name, config)
     assert.deepEqual([kept.decision, kept.loss], ['keep', 'carried'], name)
-    assert.match(kept.lines.join('\n'), /Moving them to the native lane is a later step/)
+    // Ladle can still move onto the csf lane; a kept Storybook only stays.
+    if (name === 'ladle') assert.match(kept.lines.join('\n'), /Moving them to the native lane is a later step/)
+    else assert.match(kept.lines.join('\n'), /stay in storybook, which keeps serving them/)
   }
 })

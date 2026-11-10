@@ -113,6 +113,7 @@ import { editsSummary, idScope, isBinaryPath, mentionCoverage, toolEdits, toolPa
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
+import { storybookKeys } from './lib/storybook.mjs'
 import { truthy } from './lib/text.mjs'
 import { VERIFY_CLASSES, compareGraph, compareLane, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
 import { DEFAULT_OUT_DIR } from './lib/vite-stories.mjs'
@@ -918,9 +919,12 @@ switch (command) {
     const ledger = planLedger(inv, previous, { config, own })
     refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
     writeJson(ledgerPath(projectDir), ledger)
-    writeJson(proposedPath(projectDir), proposeConfig(inv, config))
+    // A kept Storybook's stories keys, read from the repo, when no lane takes their place.
+    const storybook = !inv.stories.lane && (config.stories?.lane ?? 'native') === 'native' && inv.stories.tools.some((t) => t.tool === 'storybook') ? storybookKeys(root, { scripts: readJson(join(root, 'package.json'), {})?.scripts ?? {}, packageManager: config.packageManager }) : null
+    writeJson(proposedPath(projectDir), proposeConfig(inv, config, { storybook }))
     syncPhase(ledger)
     process.stdout.write(statusTable(ledger))
+    for (const note of storybook?.notes ?? []) process.stdout.write(`note: ${note}\n`)
     const listed = (l, id) => (l?.classes?.stories?.assets ?? []).some((a) => a.id === id && a.state !== 'found')
     const dropped = own.filter((id) => listed(previous, id) && !listed(ledger, id))
     if (dropped.length > 0) process.stdout.write(`\n${dropped.join(', ')} left the ledger: it is massimo's own csf lane, written from the recipe, not a lane the repo had.\n`)

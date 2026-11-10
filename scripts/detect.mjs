@@ -18,6 +18,7 @@ import { nuxtComponentFolders, nuxtRootConfig, nuxtSrcDir, withNuxtFolders } fro
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
 import { TAILWIND_CONFIG_STARTS } from './lib/readers.mjs'
 import { stripComments, workspacePackages } from './lib/source.mjs'
+import { storybookKeys } from './lib/storybook.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
 helpAndExit(import.meta.url)
@@ -533,6 +534,18 @@ const stories = detectStoryTools()
 // suggested config takes nothing from it and it is nothing to adopt.
 if (stories.lane?.dir && stories.lane.dir === csfScaffold(root, existingConfig)) stories.lane.csf = true
 const lane = stories.lane?.dir && !stories.lane.csf ? stories.lane : null
+
+// A Storybook the repo keeps, when it has no gated lane of its own: the
+// stories keys from its main config and the package script that serves it,
+// which take the place of the native lane's. storyTools.storybook names the
+// main config and says what was not read. Null for any other repo.
+function keptStorybook() {
+  if (lane || !stories.tools.includes('storybook')) return null
+  const found = storybookKeys(root, { scripts: pkg.scripts ?? {}, packageManager: packageManager() })
+  if (found) stories.storybook = { main: found.main, notes: found.notes }
+  return found
+}
+const storybook = keptStorybook()
 const extByFramework = {
   'vite-vue': 'vue',
   nuxt: 'vue',
@@ -614,7 +627,7 @@ const suggestedConfig = {
         port: lane.port ?? DEFAULTS.stories.port,
         url: lane.port ? `http://localhost:${lane.port}/stories` : null,
       }
-    : { ...storiesDefaults, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
+    : { ...storiesDefaults, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`], ...storybook?.keys },
   tokens: {
     ...DEFAULTS.tokens,
     ...(dark ? { darkSelector: dark.selector, darkMedia: dark.media } : {}),

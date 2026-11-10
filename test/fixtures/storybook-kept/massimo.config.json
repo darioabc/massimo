@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "framework": "vite-vue",
+  "packageManager": "pnpm",
+  "styling": ["css"],
+  "components": {
+    "include": ["src/**/*.vue"]
+  },
+  "consumers": ["src/**/*.{ts,vue}"]
+}

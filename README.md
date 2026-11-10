@@ -74,6 +74,10 @@ Some repos already keep their own design-system data: a story lane with its own 
 
 A repo whose stories are CSF files for Ladle can go one step further, if you opt in with `adopt.mjs config --write --lane csf`. The story files stay where they are and are never copied. A Vite plugin from massimo builds a lane from them at `/stories`: one state at a time in a fixed-size iframe, a canvas per state at `/stories/<slug>/<state>`, and `/meta.json` in Ladle's own shape. Ladle ids can be kept, so old links, specs and `/?story=<id>` URLs still work. `adopt.mjs convert stories` writes a record per file, the redirect map, the list of edits the repo makes before Ladle can go, and a patch that changes only the type import of each file, plus `src/stories/legacy-story-types.d.ts` when a frozen file keeps the tool's import. Design targets you freeze are pinned by hash and checked in CI. The lane is proved against Ladle's own `meta.json`, a sweep of every state, and shots in both, and the static build can be hosted for a team. Title, coverage and banner rules are options in `stories.policy`, off until you set them. A Ladle repo that does not opt in is planned exactly as in 0.3.0.
 
+#### Keeping Storybook
+
+A team that keeps its Storybook keeps it as the story lane. `/massimo:start` sets the stories keys from it: the globs of the stories list in `.storybook/main`, the script that runs `storybook dev` and its port, and each story's address, `iframe.html?id={id}&viewMode=story`. When Storybook is all there is to adopt, start recommends skipping adopt. `node <project>/scripts/stories.mjs storybook <component>` names each of a component's stories by Storybook's own id rule, with its URL, without running Storybook; with Storybook running, `--against <url>` checks the ids against its index. New stories are CSF files beside the existing ones, and the design loop, tidy's before and after shots and the Figma mirror open stories at those URLs.
+
 ### The design loop
 
 `/massimo:ux <topic>` is for designing, any time:
