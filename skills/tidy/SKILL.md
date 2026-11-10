@@ -12,7 +12,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 ## Before starting
 
 - Tokens should exist (`tokens.json` built). Without them, only duplicate and dead component batches make sense; say so.
-- The story lane should exist, for visual checks. Without it, offer to continue with build-only checks, and say what that cannot catch.
+- The story lane should exist, for visual checks. A story tool the team keeps (Storybook, Ladle, Histoire) counts as the lane. Without either, offer to continue with build-only checks, and say what that cannot catch.
 - The working tree should be clean, so each batch's diff is only that batch. If it is not, ask the user to commit or stash their own changes first.
 
 ## Run
@@ -29,7 +29,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
    Each line: id, kind, scope (files, count), expected visual change (none / small / visible), status (todo, applied, accepted, rejected, parked). Batch size: about 20 files or one component family, so the diff stays reviewable.
 4. **Per batch:**
    1. Show the user the batch: what, where, how many, expected visual change, and two sample before/after lines. Ask to go ahead (designers decide near matches and merges; developers decide APIs and deletions).
-   2. Find the affected stories: components in the batch plus everything that composes them (graph `composedBy`), capped at the ten most-used. Screenshot them: `shoot.mjs` into `<project>/shots/tidy/<batch>/before/`.
+   2. Find the affected stories: components in the batch plus everything that composes them (graph `composedBy`), capped at the ten most-used. Screenshot them: `shoot.mjs` into `<project>/shots/tidy/<batch>/before/`. Beside a kept Storybook, `node <project>/scripts/stories.mjs storybook <component file>...` gives each story's iframe URL; start `stories.devCommand` with the user's OK, shoot each URL with `--selector '#storybook-root'`, and keep the server up for the after shots.
    3. Apply. For mechanical batches (1, 2, 3), dispatch the `tidy-worker` agent with the batch line, the exact value→token map, the file list, and the rules below; several workers in parallel only when their file lists do not overlap. Do merges (4) yourself or with one worker, since they need judgement.
    4. Build the app (and typecheck/lint if the repo has them). Fix what the batch broke.
    5. Screenshot the same stories into `after/` and diff each pair (`shoot.mjs --diff`). Show the user the changed-pixel percentages and the diff images for anything above 0.1%.
