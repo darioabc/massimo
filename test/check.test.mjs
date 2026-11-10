@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { read, run, scratch } from './helpers.mjs'
+import { SCRIPTS, read, run, scratch } from './helpers.mjs'
 
 const contexts = []
 after(() => contexts.forEach((c) => c.cleanup()))
@@ -31,7 +31,7 @@ test('a project with every phase done runs all four checks, and each one can fai
   }
   const ok = run('check', ctx)
   assert.equal(ok.status, 0, ok.stdout)
-  assert.deepEqual(lines(ok).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass audit', 'pass tokens', 'pass docs', 'massimo check:'])
+  assert.deepEqual(lines(ok).filter((l) => !/^ /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass audit', 'pass tokens', 'pass docs', 'massimo check:'])
   assert.match(ok.stdout, /^pass {2}graph {3}node \.\.\/project\/scripts\/graph\.mjs --check$/m)
   assert.match(ok.stdout, /massimo check: 4 checks passed/)
 
@@ -57,6 +57,38 @@ test('a project with every phase done runs all four checks, and each one can fai
   // A README block edited by hand is not what docs writes.
   failsAlone('docs', join(ctx.project, 'README.md'), (s) => s.replace('<!-- massimo:docs:start -->\n', '<!-- massimo:docs:start -->\nEdited by hand.\n'))
   assert.equal(run('check', ctx).status, 0)
+})
+
+test('a contrast pair below its bar passes the run and shows as a warning under the tokens line', () => {
+  const ctx = fresh('app')
+  for (const [name, args] of [['graph', []], ['tokens', ['build']], ['audit', ['--baseline']], ['docs', []]]) assert.equal(run(name, ctx, args).status, 0, name)
+  const warned = run('check', ctx)
+  assert.equal(warned.status, 0, warned.stdout)
+  assert.match(warned.stdout, /^pass {2}tokens {2}node \S+tokens\.mjs check\n {8}warn: light: color\.fg\.muted on color\.bg\.default is 4\.48:1, needs 4\.5:1\npass {2}docs /m)
+  assert.match(warned.stdout, /massimo check: 4 checks passed/)
+
+  // Once the pair passes, the tokens line stands alone.
+  const source = join(ctx.root, 'design-system', 'tokens', 'tokens.json')
+  writeFileSync(source, readFileSync(source, 'utf8').replace('"#777777"', '"#707070"'))
+  for (const [name, args] of [['tokens', ['build']], ['docs', []]]) assert.equal(run(name, ctx, args).status, 0, name)
+  const clean = run('check', ctx)
+  assert.equal(clean.status, 0, clean.stdout)
+  assert.doesNotMatch(clean.stdout, /warn/)
+  assert.match(clean.stdout, /^pass {2}tokens {2}node \S+tokens\.mjs check\npass {2}docs /m)
+})
+
+test('the guard skill and the CI template say what ds:check fails on, contrast as a warning, and run it in a package project\'s package', () => {
+  const guard = read(SCRIPTS, '..', 'skills', 'guard', 'SKILL.md')
+  const description = /^description: (.*)$/m.exec(guard)[1]
+  assert.match(description, /contrast failures are shown as warnings/)
+  assert.match(guard, /It fails on a stale graph, a raw value beyond the audit baseline, token outputs behind the token set/)
+  assert.match(guard, /A contrast pair below its bar does not fail it: the tokens line passes and shows the pair as a warning under it/)
+  assert.match(guard, /A project kept in a package \(made with `init\.mjs --root <package>`\)[^\n]*`defaults: run: working-directory:`/)
+  for (const name of ['design-system-check.yml', 'design-system-shadow.yml']) {
+    const yml = read(SCRIPTS, '..', 'templates', name)
+    assert.match(yml, /\n {4}# defaults:\n {4}# {3}run:\n {4}# {5}working-directory: <package>\n {4}steps:\n/, name)
+  }
+  assert.match(read(SCRIPTS, '..', 'templates', 'design-system-check.yml'), /A contrast pair below its\n# bar shows as a warning under the tokens line and does not fail the job\./)
 })
 
 test('a check that does not apply yet is skipped, and the project\'s own checks run after', () => {

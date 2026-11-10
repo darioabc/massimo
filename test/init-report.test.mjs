@@ -190,3 +190,65 @@ test('a project in a package whose own script CI runs: the warning names the too
     r.cleanup()
   }
 })
+
+// What the ESLint warning says, by the reason, the config file and the folder.
+const eslintSays = (why, config = 'eslint.config.mjs', folder = 'ds') =>
+  `this repo lints with ESLint (${why}) and ${config} does not ignore ${folder}/, so a lint would flag the vendored scripts, which keep massimo's own style; add { ignores: ["${folder}/**"] } to the configs ${config} exports`
+const eslintWarnings = (out) => out.warnings.filter((w) => /ESLint/.test(w))
+
+test('init names the ignore to add when the repo lints with ESLint and its flat config leaves the project folder in, and writes nothing about it', () => {
+  const pkg = (extra) => ({ 'package.json': { name: 'acme', dependencies: { astro: '5' }, ...extra } })
+  const DEP = pkg({ devDependencies: { eslint: '9' } })
+  const cases = [
+    // [extra files, what the warning says]
+    [{ ...DEP, 'eslint.config.mjs': 'export default [\n  { ignores: ["dist/**"] },\n]\n' }, [eslintSays('eslint is a dependency')]],
+    [{ ...pkg({ scripts: { lint: 'eslint .', 'lint:fix': 'eslint . --fix', test: 'vitest' } }), 'eslint.config.js': 'export default []\n' }, [eslintSays('the scripts lint, lint:fix run it', 'eslint.config.js')]],
+    [{ ...pkg({ devDependencies: { eslint: '9' }, scripts: { lint: 'pnpm exec eslint .' } }), 'eslint.config.ts': "import x from './x'\nexport default x({ ignores: ['**/.cache/**'] })\n" }, [eslintSays('eslint is a dependency and the script lint runs it', 'eslint.config.ts')]],
+    // An ignore that covers the folder, however it is written: nothing to say.
+    [{ ...DEP, 'eslint.config.mjs': 'export default [{ ignores: ["ds/**"] }]\n' }, []],
+    [{ ...DEP, 'eslint.config.mjs': "export default [{ ignores: ['./ds/'] }]\n" }, []],
+    [{ ...DEP, 'eslint.config.mjs': "import { defineConfig, globalIgnores } from 'eslint/config'\nexport default defineConfig([globalIgnores(['**/ds'])])\n" }, []],
+    [{ ...DEP, 'eslint.config.mjs': 'export default withConfig({ "ignores": ["dist", "ds"] })\n' }, []],
+    // The scripts taken back in, or the ignore commented out: the folder is left in.
+    [{ ...DEP, 'eslint.config.mjs': 'export default [{ ignores: ["ds/**", "!ds/scripts/**"] }]\n' }, [eslintSays('eslint is a dependency')]],
+    [{ ...DEP, 'eslint.config.mjs': 'export default [\n  // { ignores: ["ds/**"] },\n]\n' }, [eslintSays('eslint is a dependency')]],
+    // No flat config, or no ESLint: nothing to say.
+    [{ ...DEP, '.eslintrc': '{ "extends": "x" }\n' }, []],
+    [{ ...pkg({ scripts: { lint: 'biome lint', note: 'echo eslint-free' } }), 'eslint.config.mjs': 'export default []\n' }, []],
+  ]
+  for (const [extra, says] of cases) {
+    const r = repo({ ...APP, ...extra })
+    try {
+      const config = Object.keys(extra).find((f) => f.startsWith('eslint.config.'))
+      const before = config ? readFileSync(join(r.root, config), 'utf8') : null
+      for (const args of [['--dry-run', ...DS], DS]) assert.deepEqual(eslintWarnings(init(r.root, args)), says, JSON.stringify(extra))
+      if (config) assert.equal(readFileSync(join(r.root, config), 'utf8'), before, 'init writes nothing to the ESLint config')
+    } finally {
+      r.cleanup()
+    }
+  }
+})
+
+test('a project in a package: the ESLint warning names the flat config ESLint finds from there, and the ignore it names ends the warning', (t) => {
+  if (!hasGit()) return t.skip('git is not installed')
+  const r = repo({
+    'package.json': { name: 'acme', private: true },
+    'apps/web/package.json': { name: 'web', dependencies: { nuxt: '^4.1.0' }, devDependencies: { eslint: '9', '@nuxt/eslint': '1' }, scripts: { lint: 'eslint .' } },
+    'apps/web/nuxt.config.ts': 'export default defineNuxtConfig({})\n',
+    'apps/web/eslint.config.mjs': '// @ts-check\nimport withNuxt from "./.nuxt/eslint.config.mjs";\n\nexport default withNuxt(\n  { ignores: ["**/.temp/**"] },\n);\n',
+    'apps/web/app/components/AppButton.vue': '<template><button /></template>\n',
+  })
+  try {
+    assert.equal(git(r.root, 'init', '-q').status, 0)
+    const web = join(r.root, 'apps/web')
+    assert.deepEqual(eslintWarnings(init(web, ['--dry-run', ...DS])), [eslintSays('eslint is a dependency and the script lint runs it')])
+    writeFileSync(join(web, 'eslint.config.mjs'), 'import withNuxt from "./.nuxt/eslint.config.mjs";\n\nexport default withNuxt(\n  { ignores: ["**/.temp/**"] },\n  { ignores: ["ds/**"] },\n);\n')
+    assert.deepEqual(eslintWarnings(init(web, ['--dry-run', ...DS])), [])
+    // The top of the repo runs ESLint too, with a config of its own: the folder is read from there.
+    writeFileSync(join(r.root, 'package.json'), JSON.stringify({ name: 'acme', private: true, devDependencies: { eslint: '9' } }))
+    writeFileSync(join(r.root, 'eslint.config.js'), 'export default [{ ignores: ["dist/**"] }]\n')
+    assert.deepEqual(eslintWarnings(init(web, ['--dry-run', ...DS])), [eslintSays('eslint is a dependency', '../../eslint.config.js', 'apps/web/ds')])
+  } finally {
+    r.cleanup()
+  }
+})

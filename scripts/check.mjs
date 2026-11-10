@@ -6,7 +6,8 @@
 //   graph    graph.mjs --check, always
 //   stories  stories.mjs --check, when stories.lane is "csf"
 //   audit    audit.mjs --check, when audits/baseline.json exists
-//   tokens   tokens.mjs check, when the token set exists
+//   tokens   tokens.mjs check, when the token set exists; a contrast pair below
+//            its bar is a warning, shown under the passing line
 //   docs     docs.mjs --check, when <project>/README.md has the massimo:docs markers
 //   then each guard.extraChecks entry, { name, run }, run through a shell
 //   from the repo root
@@ -83,6 +84,8 @@ function main() {
     if (!ok) failed++
     process.stdout.write(`${ok ? 'pass' : 'fail'}  ${name}  ${check.command}\n`)
     if (!ok) for (const line of output.trimEnd().split('\n')) process.stdout.write(`      ${line}\n`)
+    // A contrast pair below its bar warns and passes, so it shows under the passing line.
+    else if (check.script === 'tokens') for (const line of output.split('\n').filter((l) => /^ {2}warn: /.test(l))) process.stdout.write(`      ${line}\n`)
   }
   const where = rel(root, projectDir) || '.'
   process.stdout.write(failed > 0 ? `massimo check: ${failed} of ${ran} checks failed (${where})\n` : `massimo check: ${ran} ${ran === 1 ? 'check' : 'checks'} passed (${where})\n`)
