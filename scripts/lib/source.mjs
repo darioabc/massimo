@@ -574,6 +574,14 @@ export function createResolver(root, config = {}) {
     return baseUrls.length > 0 ? toRel(resolve(baseUrls[0], spec)) : null
   }
 
+  // Whether a specifier goes through one of the config's aliases or a
+  // tsconfig paths pattern, whether or not a file is there.
+  resolveImport.aliased = (rawSpec) => {
+    const spec = rawSpec.replace(/(?!^)[?#].*$/, '')
+    if (aliases.some(({ key }) => spec === key || (spec.startsWith(key) && (key.endsWith('/') || spec[key.length] === '/')))) return true
+    return patterns.some((p) => (p.star ? spec.startsWith(p.prefix) && spec.endsWith(p.suffix) && spec.length >= p.prefix.length + p.suffix.length : spec === p.prefix))
+  }
+
   return resolveImport
 
   function resolveImport(fromFile, rawSpec) {
@@ -622,6 +630,8 @@ export function createResolver(root, config = {}) {
     const member = workspaceFile(spec)
     if (member) return { file: member }
     if (aliased && !installed(spec)) return { unresolved: rawSpec }
+    // `@/` and `~/` are never package names, only aliases nothing here maps.
+    if (/^[@~]\//.test(spec)) return { unresolved: rawSpec }
     return { pkg: packageName(spec) }
   }
 }
@@ -711,9 +721,38 @@ export function extractRules(source, extraKeys = []) {
 
 // ── CSS custom properties ───────────────────────────────────────────────────
 
+// Where a Sass interpolation that opens at `i` (`#{`) closes: the offset of
+// its matching `}`, past any braces and strings inside it, or the end of
+// the text when it never closes.
+export function interpolationEnd(text, i) {
+  let depth = 0
+  for (let k = i + 1; k < text.length; k++) {
+    const c = text[k]
+    if (c === '"' || c === "'") {
+      k++
+      while (k < text.length && text[k] !== c) {
+        if (text[k] === '\\') k++
+        k++
+      }
+    } else if (c === '{') {
+      depth++
+    } else if (c === '}' && --depth === 0) {
+      return k
+    }
+  }
+  return text.length - 1
+}
+
+// A declaration's property: letters, digits, `_` and `-`, with Sass
+// interpolation in it (`--#{$prefix}radius`) as written.
+export const DECLARED_PROPERTY = /^(?:[-\w]|#\{[^{}]*\})+$/
+
 // Walk CSS and return every block that holds declarations, as
 // `{ headers, decls: [{ prop, value }] }`; `headers` is the chain of selectors
-// and at-rule preludes from the outermost block in. Comments are ignored.
+// and at-rule preludes from the outermost block in. Comments are ignored. A
+// Sass interpolation (`#{toRem(2)}`) stays in the text it sits in, a value
+// or a selector, as written. Tailwind's `@apply` list is a declaration of
+// its own, `{ prop: '@apply', value: <the classes> }`.
 export function parseCssBlocks(css, file = 'x.css') {
   const text = stripComments(css, file)
   const blocks = []
@@ -727,10 +766,14 @@ export function parseCssBlocks(css, file = 'x.css') {
     const stmt = buf.trim()
     buf = ''
     if (!top || !stmt) return
+    if (/^@apply\s/i.test(stmt)) {
+      top.decls.push({ prop: '@apply', value: clean(stmt.slice(6)).replace(/\s*!important$/i, '') })
+      return
+    }
     const colon = stmt.indexOf(':')
     if (colon === -1) return
     const prop = stmt.slice(0, colon).trim()
-    if (!/^[-\w]+$/.test(prop)) return
+    if (!DECLARED_PROPERTY.test(prop)) return
     const value = clean(stmt.slice(colon + 1)).replace(/\s*!important$/i, '')
     top.decls.push({ prop, value })
   }
@@ -745,6 +788,12 @@ export function parseCssBlocks(css, file = 'x.css') {
         i++
       }
       buf += text.slice(start, i + 1)
+      continue
+    }
+    if (c === '#' && text[i + 1] === '{') {
+      const end = interpolationEnd(text, i)
+      buf += text.slice(i, end + 1)
+      i = end
       continue
     }
     if (c === '(') paren++
@@ -916,13 +965,15 @@ function classifyBlock(block) {
 }
 
 // Every custom property declared in a stylesheet:
-// `{ name, value, mode, scope, selector }`, in source order.
-export function parseCustomProperties(css, file = 'x.css') {
+// `{ name, value, mode, scope, selector }`, in source order. A name with
+// Sass interpolation (`--#{$prefix}radius`) is no name a var() can read, so
+// it is left out unless `interpolated` asks for it.
+export function parseCustomProperties(css, file = 'x.css', { interpolated = false } = {}) {
   const out = []
   for (const block of parseCssBlocks(css, file)) {
     const ctx = classifyBlock(block)
     for (const { prop, value } of block.decls) {
-      if (prop.startsWith('--')) out.push({ name: prop, value, ...ctx })
+      if (prop.startsWith('--') && (interpolated || !prop.includes('#{'))) out.push({ name: prop, value, ...ctx })
     }
   }
   return out

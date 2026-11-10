@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { read, readJson, run, scratch } from './helpers.mjs'
@@ -126,6 +126,44 @@ test('--check: byte comparison, never writes', () => {
   assert.equal(run('graph', ctx, ['--check']).status, 1)
   assert.equal(run('graph', ctx).status, 0)
   assert.equal(run('graph', ctx, ['--check']).status, 0)
+})
+
+test('a component an Astro config wires in by a quoted relative path is used by that config', () => {
+  const t = scratch()
+  try {
+    writeFileSync(join(t.root, 'astro.config.mjs'), [
+      "import docs from '@acme/docs'",
+      'export default {',
+      '  integrations: [docs({',
+      "    customCss: ['./src/styles/theme.css'],",
+      '    components: {',
+      "      // Icon: './src/components/Icon.tsx',",
+      "      Hero: './src/components/Hero.astro',",
+      '    },',
+      '  })],',
+      "  vite: { alias: { other: 'src/components/ui/Other.tsx' } },",
+      '}',
+      '',
+    ].join('\n'))
+    assert.equal(run('graph', t).status, 0)
+    const nodes = readJson(t.project, 'graph.json').nodes
+    const hero = nodes.find((n) => n.name === 'Hero')
+    assert.equal(hero.usage, 1)
+    assert.deepEqual(hero.composedBy, { root: ['astro.config.mjs'] })
+    // A commented-out path and a path that is not relative wire nothing in.
+    assert.equal(nodes.find((n) => n.name === 'Icon').usage, 2)
+    assert.equal(nodes.find((n) => n.name === 'Other').usage, 0)
+    assert.match(read(t.project, 'graph.md'), /^- Hero: no-story · used by 1$/m)
+    // A config in a nested app wires in a path relative to its own folder.
+    mkdirSync(join(t.root, 'src', 'site'))
+    writeFileSync(join(t.root, 'src', 'site', 'astro.config.ts'), "export default { components: { Other: '../components/ui/Other.tsx' } }\n")
+    assert.equal(run('graph', t).status, 0)
+    const other = readJson(t.project, 'graph.json').nodes.find((n) => n.name === 'Other')
+    assert.equal(other.usage, 1)
+    assert.deepEqual(Object.values(other.composedBy).flat(), ['src/site/astro.config.ts'])
+  } finally {
+    t.cleanup()
+  }
 })
 
 test('--check names missing files', () => {

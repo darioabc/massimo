@@ -87,6 +87,7 @@ import {
   STATES,
   acceptDifference,
   changeLines,
+  csfNotes,
   inventoryPath,
   ledgerPath,
   ledgerPhase,
@@ -112,8 +113,10 @@ import { editsSummary, idScope, isBinaryPath, mentionCoverage, toolEdits, toolPa
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
 import { readManifest } from './lib/stories-read.mjs'
+import { storybookKeys } from './lib/storybook.mjs'
 import { truthy } from './lib/text.mjs'
 import { VERIFY_CLASSES, compareGraph, compareLane, compareTokens, readRepoGraph, readTokenInventory, settle, shotDifference, storyPairs, storyRoutes, textTable } from './lib/verify.mjs'
+import { DEFAULT_OUT_DIR } from './lib/vite-stories.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
 helpAndExit(import.meta.url)
@@ -663,7 +666,7 @@ function toolEditsFor(ledger, inv, ids = undefined) {
     const tool = inv.stories.tools.find((t) => `tool:${t.tool}` === a.id)
     if (!tool) return []
     const consumers = inv.assets.find((x) => x.id === a.id)?.consumers ?? []
-    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`], lane: recipeFiles(root) })
+    return toolEdits({ consumers, packages: toolPackages(tool.tool, pkg), registry, tool, frozen: config.stories.frozen, historical: (ledger.historical ?? []).map((h) => h.path), read: (f) => readText(root, f), files, oracleIds, skip: [`${projectRel}/`], lane: recipeFiles(root), laneOutDir: config.stories.outDir ?? DEFAULT_OUT_DIR })
   })
   return edits.sort((x, y) => compare(x.file, y.file) || x.line - y.line)
 }
@@ -916,9 +919,12 @@ switch (command) {
     const ledger = planLedger(inv, previous, { config, own })
     refuseNewerFile(proposedPath(projectDir), 'config', 'version', 'adopt/config.proposed.json')
     writeJson(ledgerPath(projectDir), ledger)
-    writeJson(proposedPath(projectDir), proposeConfig(inv, config))
+    // A kept Storybook's stories keys, read from the repo, when no lane takes their place.
+    const storybook = !inv.stories.lane && (config.stories?.lane ?? 'native') === 'native' && inv.stories.tools.some((t) => t.tool === 'storybook') ? storybookKeys(root, { scripts: readJson(join(root, 'package.json'), {})?.scripts ?? {}, packageManager: config.packageManager }) : null
+    writeJson(proposedPath(projectDir), proposeConfig(inv, config, { storybook }))
     syncPhase(ledger)
     process.stdout.write(statusTable(ledger))
+    for (const note of storybook?.notes ?? []) process.stdout.write(`note: ${note}\n`)
     const listed = (l, id) => (l?.classes?.stories?.assets ?? []).some((a) => a.id === id && a.state !== 'found')
     const dropped = own.filter((id) => listed(previous, id) && !listed(ledger, id))
     if (dropped.length > 0) process.stdout.write(`\n${dropped.join(', ')} left the ledger: it is massimo's own csf lane, written from the recipe, not a lane the repo had.\n`)
@@ -930,12 +936,14 @@ switch (command) {
     needInit('config')
     const current = readJson(configPath, {}) ?? {}
     let proposed
+    let notes = []
     if (flags.lane !== undefined) {
       // The opt-in: the csf lane, from the saved inventory and Ladle's own settings.
       if (flags.lane !== 'csf') fail('usage: adopt.mjs config [--write] [--lane csf]; csf is the only lane --lane takes')
       const inv = readRepoInventory(csfScaffold(root, config))
       if (!inv.stories.tools.some((t) => t.tool === 'ladle')) fail('--lane csf converts a Ladle repo, and scan finds no Ladle here')
       proposed = proposeConfig(inv, config, { lane: 'csf' })
+      notes = csfNotes(inv)
     } else {
       if (!existsSync(proposedPath(projectDir))) fail(`no ${shown('config.proposed.json')} yet: run ${scriptCommand(root, projectDir, 'adopt', 'plan')} first`)
       proposed = readJson(proposedPath(projectDir), {})
@@ -945,6 +953,7 @@ switch (command) {
     const changes = raiseMinScripts(merged, found)
     const lines = changeLines(changes)
     process.stdout.write(lines.length ? `${lines.join('\n')}\n` : 'massimo.config.json already holds everything proposed\n')
+    for (const note of notes) process.stdout.write(`note: ${note}\n`)
     if (truthy(flags.write)) {
       const text = existsSync(configPath) ? readFileSync(configPath, 'utf8') : ''
       const indent = text.match(/^[ \t]+(?=")/m)?.[0] ?? '  '

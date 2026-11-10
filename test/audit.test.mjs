@@ -199,3 +199,24 @@ test('inventory and colour roles: counted for the token proposals, never baselin
     t.cleanup()
   }
 })
+
+test('arbitrary values: a variant with a group or peer name is no value, the utility after it is', () => {
+  const t = scratch()
+  try {
+    writeFileSync(join(t.root, 'src', 'named.tsx'), [
+      'export const A = () => (',
+      '  <div',
+      '    className="peer-data-[size=sm]/menu-button:top-1 group-has-[[data-orientation=horizontal]]/field:text-balance group-[.is-open]/item:block"',
+      '  />',
+      ')',
+      'export const B = () => <div className="group-data-[variant=outline]/field-group:-mb-2 group-hover/row:p-[3px] peer-checked/toggle:bg-[#0a0a0a]/50 group-data-[collapsible=icon]:hidden" />',
+      '',
+    ].join('\n'))
+    const r = run('audit', t)
+    assert.equal(r.status, 0, r.stderr)
+    const named = readJson(t.project, 'audits', 'latest.json').findings.filter((f) => f.kind === 'arbitrary' && f.file === 'src/named.tsx')
+    assert.deepEqual(named.map((f) => `${f.line} ${f.value}:${f.sub}`), ['6 bg-[#0a0a0a]:color', '6 p-[3px]:length'])
+  } finally {
+    t.cleanup()
+  }
+})

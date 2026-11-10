@@ -164,6 +164,33 @@ test('with the palette kind on, a token named like a Tailwind colour makes the c
   assert.ok(!keys(audit(ctx), 'tailwind-palette').includes('src/components/Alert.astro: text-red-600'))
 })
 
+test('with the palette kind on, a Tailwind 4 app whose colours come from daisyUI counts palette classes too', () => {
+  // No colour of the repo's own: no --color-* property, no token set and no
+  // Tailwind config. daisyUI's built-in themes name the colours.
+  const ctx = fresh('app')
+  writeFileSync(join(ctx.root, 'src', 'styles', 'app.css'), '@import "tailwindcss";\n@plugin "daisyui" {\n  themes: light --default;\n}\n')
+  writeFileSync(join(ctx.root, 'src', 'components', 'Version.vue'), '<template>\n  <p class="text-base-content bg-base-100 text-rose-500">v1</p>\n</template>\n')
+  patch(ctx, (c) => {
+    c.styling = ['tailwind4', 'daisyui']
+    c.tokens = { ...c.tokens, source: 'design-system/tokens/none.json', styleFiles: ['src/styles/app.css'], outputs: [] }
+  })
+  // By default the kind waits for colours of the repo's own, as before.
+  const off = audit(ctx)
+  assert.equal(off.skipped['tailwind-palette'], 'no colour tokens of its own')
+  assert.deepEqual(keys(off, 'tailwind-palette'), [])
+  // Turned on, it counts Tailwind's palette and leaves daisyUI's names alone.
+  patch(ctx, (c) => (c.audit.kinds = { 'tailwind-palette': true }))
+  const on = audit(ctx)
+  assert.equal(on.skipped['tailwind-palette'], undefined)
+  assert.deepEqual(keys(on, 'tailwind-palette').sort(), ['src/components/Version.vue: text-rose-500', 'src/raw.tsx: bg-slate-50', 'src/raw.tsx: text-red-600'])
+  // With no class library either, the kind finds no colours to hold the
+  // palette against, and says that it was turned on.
+  patch(ctx, (c) => (c.styling = ['tailwind4']))
+  const bare = audit(ctx)
+  assert.equal(bare.skipped['tailwind-palette'], "turned on in audit.kinds, but found no colours of the repo's own")
+  assert.match(read(ctx.project, 'audits', 'latest.md'), /- tailwind-palette: skipped \(turned on in audit\.kinds, but found no colours of the repo's own\)\n/)
+})
+
 test('a header definition is local to its file, and the scale replaces Tailwind screens in config order', () => {
   const ctx = fresh()
   writeFileSync(join(ctx.root, 'src', 'components', 'Other.astro'), '---\n// ds:group Primitives / Actions\n---\n<div style="gap: var(--card-gap)" class="sm:flex" />\n')
@@ -260,6 +287,11 @@ test('primitives limited to colour: a colour role is no primitive, by its collec
       neutral: { 500: { $value: srgb([0.47, 0.47, 0.47]) } },
       line: { $value: srgb([0, 0, 0], 0.12), $extensions: { massimo: { collection: 'Semantic' } } },
       scrim: { $value: srgb([0, 0, 0], 0.5), $extensions: { massimo: { css: 'rgb(var(--ink) / 0.5)' } } },
+      text: { $value: '{color.neutral.500}' },
+      // Aliases of the line and the scrim, so that every literal colour has
+      // an alias to read instead and only the setting tells them apart.
+      divider: { $value: '{color.line}' },
+      overlay: { $value: '{color.scrim}' },
     },
   })
   contexts.push(ctx)

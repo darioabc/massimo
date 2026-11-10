@@ -55,8 +55,9 @@ import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, refuseNewer, re
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
 import { FAMILIES, propose } from './lib/propose.mjs'
-import { fromTokensStudio, isTokensStudio, readCss, readFigmaExport, readJsonFile, readTailwindConfig, readThemeObject } from './lib/readers.mjs'
+import { channelColor, fromTokensStudio, isTokensStudio, readCss, readDaisyThemes, readFigmaExport, readJsonFile, readTailwindConfig, readThemeObject } from './lib/readers.mjs'
 import { inventoryOf, sheetDeclarations, themePlacer } from './lib/sheets.mjs'
+import { TAILWIND3_LINE_HEIGHTS } from './lib/tailwind3.mjs'
 import { escapeHtml, truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -93,9 +94,10 @@ function inferType(value, group = '') {
 
 // ── Values to CSS and to Figma ──────────────────────────────────────────────
 
-// A family name as CSS: bare when it is one identifier, quoted (and escaped) otherwise.
+// A family name as CSS: bare when it is one identifier, a var() or env() that
+// holds the name, or already quoted; quoted (and escaped) otherwise.
 const quoteFamily = (name) => {
-  if (/^[\w-]+$/.test(name) || GENERIC_FAMILY.test(name) || /^(["']).*\1$/.test(name)) return name
+  if (/^[\w-]+$/.test(name) || GENERIC_FAMILY.test(name) || /^(["']).*\1$/.test(name) || /^(?:var|env)\(.*\)$/i.test(name)) return name
   return `"${name.replace(/["\\]/g, (c) => `\\${c}`)}"`
 }
 
@@ -378,10 +380,12 @@ function buildModel(tokens, config, problems = [], options = {}) {
     }
     if (t.on && !byName.has(t.on)) report(t.name, `"on" points at ${t.on}, which is not a token`)
     if (!ok) continue
-    // A reference and its target must agree on the type.
+    // A reference and its target must agree on the type. A CSS-only target
+    // has no type to agree with, whether the reference's type is its own or
+    // its group's.
     const next = target(t, 'default')
     const own = t.type ?? (t.strict && !next ? t.groupType : null)
-    if (t.strict && next && t.type && typeOf(next) && typeOf(next) !== t.type) {
+    if (t.strict && next && t.type && !next.cssOnly && typeOf(next) && typeOf(next) !== t.type) {
       report(t.name, `is a ${t.type} but points at ${next.name}, a ${typeOf(next)}`)
       continue
     }
@@ -535,7 +539,12 @@ function draftFrom(found, config) {
 function readSources(root, config) {
   const sources = []
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore)
-  if (styleFiles.length > 0) sources.push({ kind: 'css', ...readCss(root, styleFiles) })
+  // In a Tailwind 4 repo, @theme's colour wiring is the tailwind4 output's to
+  // write; daisyUI's built-in themes are named for the colour notes.
+  if (styleFiles.length > 0) {
+    const css = readCss(root, styleFiles, undefined, { skipWiring: (config.styling ?? []).includes('tailwind4') })
+    sources.push({ kind: 'css', ...css, daisyThemes: readDaisyThemes(root, styleFiles) })
+  }
   if (config.tokens.tailwindConfig) sources.push({ kind: 'tailwind', ...readTailwindConfig(root, config.tokens.tailwindConfig) })
   for (const file of expandGlobs(root, config.tokens.themeFiles ?? [], [], config.ignore)) sources.push({ kind: 'theme', ...readThemeObject(root, file) })
   for (const file of expandGlobs(root, config.tokens.importFiles ?? [], [], config.ignore)) {
@@ -556,9 +565,53 @@ function readSources(root, config) {
   return { sources, styleFiles }
 }
 
+// The parts a Tailwind config's own text step sets beside its size
+// ([size, line-height], or [size, { lineHeight, letterSpacing, fontWeight }]),
+// each as a token next to the step's size token under the name a Tailwind 4
+// sheet gives it (text.heading--line-height), as written. The tailwind
+// outputs write a step's own parts from these, so its text-* class renders as
+// the config made it. A part a source already defines is left as it is.
+// Outside Tailwind 4, a step of Tailwind's own type scale that the config
+// writes as a size alone (`xs: '0.7rem'`) replaces Tailwind's
+// [size, { lineHeight }] pair, so its class sets no line height: its line
+// height is kept as `initial`, the value a Tailwind 4 sheet gives a part to
+// drop Tailwind's own, and the tailwind3 output writes that step bare.
+const STEP_PARTS = [['lineHeight', 'line-height', 'line height'], ['letterSpacing', 'letter-spacing', 'letter spacing'], ['fontWeight', 'font-weight', 'weight']]
+function textStepParts(sources, proposal, file, styling) {
+  const have = new Set(proposal.tokens.map((t) => t.path.join('.')))
+  const parts = new Map()
+  const add = (path, value, note) => {
+    if (!have.has(path.join('.'))) parts.set(path.join('.'), { path, type: null, value, modes: {}, description: '', source: file, note })
+  }
+  const configs = sources.filter((s) => s.kind === 'tailwind')
+  for (const step of configs.flatMap((s) => s.typeSteps ?? [])) {
+    const name = step.path.at(-1)
+    if (name === '$root' || !have.has(step.path.join('.'))) continue
+    for (const [key, css, words] of STEP_PARTS) {
+      const v = step[key]
+      if (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '')) continue
+      add([...step.path.slice(0, -1), `${name}--${css}`], String(v).trim(), `the ${words} the config gives text-${name}`)
+    }
+  }
+  if (!styling.includes('tailwind4')) {
+    for (const s of configs) {
+      const paired = new Set((s.typeSteps ?? []).map((step) => step.path.join('.')))
+      for (const t of s.tokens ?? []) {
+        const [group, name, ...rest] = t.path
+        if (group !== 'text' || rest.length > 0 || !Object.hasOwn(TAILWIND3_LINE_HEIGHTS, name) || paired.has(t.path.join('.')) || !have.has(t.path.join('.'))) continue
+        add(['text', `${name}--line-height`], 'initial', `the config writes text-${name} as a size alone, so Tailwind 3 sets no line height for it`)
+      }
+    }
+  }
+  return [...parts.values()].map(({ note, ...t }) => {
+    proposal.report.push({ family: 'typography', token: t.path.join('.'), value: t.value, from: file, note })
+    return t
+  })
+}
+
 const looksLegacyDoc = (doc) => JSON.stringify(doc).includes('"massimo":{"modes"') || /"\$value":\s*"#/.test(JSON.stringify(doc))
 
-const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', other: 'Other' }
+const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', size: 'Size', other: 'Other' }
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
 // The draft's report: what each token is and where it came from, family by
@@ -575,7 +628,13 @@ function draftReport({ sources, audit, report, outliers, notes, losses, count })
     lines.push('')
   }
   if (outliers.length) {
-    lines.push('## Not proposed', '', 'Values the code uses that did not become tokens: used once, off the grid, off a scale the sources already define, or only ever data. Replace each with a token in the tidy phase, or keep it with a reason.', '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
+    // Widths and heights, sub-1ms durations and em lengths have no token to replace them, so the intro says so when they are listed.
+    const sizes = outliers.some((o) => o.family === 'size')
+    const resets = outliers.some((o) => o.family === 'motion' && /^0?\.\d+ms$/.test(o.value))
+    const ems = outliers.some((o) => o.em)
+    const kinds = [sizes && 'a width or height (massimo proposes no size tokens yet)', resets && 'a duration under 1ms (it switches motion off)', ems && 'a length in em (it follows a font size)'].filter(Boolean)
+    const extra = kinds.length > 0 ? ` No token replaces ${kinds.join(' or ')}, so keep those as they are.` : ''
+    lines.push('## Not proposed', '', `Values the code uses that did not become tokens: used once, off the grid, off a scale the sources already define, or only ever data. Replace each with a token in the tidy phase, or keep it with a reason.${extra}`, '', '| Family | Value | Uses | Note |', '|---|---|---|---|')
     for (const o of outliers) lines.push(`| ${FAMILY_TITLES[o.family] ?? o.family} | ${cell(o.value)} | ${o.count} | ${cell(o.note)} |`)
     lines.push('')
   }
@@ -614,13 +673,14 @@ const cssBlock = (selector, lines, indent = '') => [`${indent}${selector} {`, ..
 // Declarations for one mode. Linked output (var() for aliases) needs only the
 // tokens with their own value in the mode, since an alias follows its target
 // through the cascade. Literal output needs every value that differs from the
-// default, or an alias would keep its default value in that mode.
-function modeLines(model, mode, linked) {
+// default, or an alias would keep its default value in that mode. `extra`
+// gives the declarations the css output writes beside a token's own.
+function modeLines(model, mode, linked, extra = null) {
   const lines = []
   for (const t of model.tokens) {
     const decls = declarations(model, t, mode, linked)
     if (mode === 'default' || (linked && mode in t.modes)) {
-      for (const [name, text] of decls) lines.push(`${name}: ${text};`)
+      for (const [name, text] of [...decls, ...(extra?.(t, mode) ?? [])]) lines.push(`${name}: ${text};`)
     } else if (!linked) {
       const base = new Map(declarations(model, t, 'default', false))
       for (const [name, text] of decls) if (base.get(name) !== text) lines.push(`${name}: ${text};`)
@@ -644,10 +704,10 @@ function modeSelector(config, model, mode) {
 
 // Every mode after the default, each under its selector; dark also under the
 // media query when the app follows the system setting.
-function modeBlocks(model, config) {
+function modeBlocks(model, config, extra = null) {
   const out = []
   for (const mode of model.modes.slice(1)) {
-    const lines = modeLines(model, mode, true)
+    const lines = modeLines(model, mode, true, extra)
     if (lines.length === 0) continue
     out.push('', ...cssBlock(modeSelector(config, model, mode), lines))
     if (mode === 'dark' && config.tokens.darkMedia) {
@@ -657,7 +717,10 @@ function modeBlocks(model, config) {
   return out
 }
 
-function buildCss(model, config) {
+// In a Tailwind 3 project, a colour the tailwind3 output reads through its
+// channels has them declared beside its own variable (`--x-rgb: 99 102 241;`).
+function buildCss(model, config, wiring = null) {
+  const extra = wiring ? (t, mode) => wiring.channelLines(t, mode) : null
   const root = []
   let group = null
   for (const t of model.tokens) {
@@ -666,10 +729,10 @@ function buildCss(model, config) {
       if (root.length > 0) root.push('')
       root.push(`/* ${group.replace(/\*\//g, '* /')} */`)
     }
-    for (const [name, text] of declarations(model, t, 'default', true)) root.push(`${name}: ${text};`)
+    for (const [name, text] of [...declarations(model, t, 'default', true), ...(extra?.(t, 'default') ?? [])]) root.push(`${name}: ${text};`)
   }
   const out = [`/* ${HEADER} */`, '', ...cssBlock(':root', root)]
-  out.push(...modeBlocks(model, config))
+  out.push(...modeBlocks(model, config, extra))
   return `${out.join('\n')}\n`
 }
 
@@ -713,19 +776,87 @@ const TAILWIND4_PREFIX = {
   transitionTimingFunction: '--ease',
 }
 
+// Tailwind 4's own type scale: each step's line height, as Tailwind sets it.
+// Its text-* classes set no letter spacing or weight.
+const TAILWIND4_TEXT = { xs: 1 / 0.75, sm: 1.25 / 0.875, base: 1.5, lg: 1.75 / 1.125, xl: 1.75 / 1.25, '2xl': 2 / 1.5, '3xl': 2.25 / 1.875, '4xl': 2.5 / 2.25, '5xl': 1, '6xl': 1, '7xl': 1, '8xl': 1, '9xl': 1 }
+
+// Tailwind 4 theme namespaces whose variable a utility reads as written. A
+// token whose own variable sits in one and that no section above places
+// (--animate-wiggle, which a source's @theme declares) keeps its utility by
+// that name when it fits the namespace: a typed token by the types below (a
+// colour, a font family, a shadow or a curve always has a section, so those
+// namespaces take no typed token), a value with no type unless it is a colour
+// outside --color-*. Breakpoints and container widths are left out: Tailwind reads
+// those at build time, where a var() does not work.
+const TAILWIND4_BY_NAME = /^--(color|font-weight|font|text|tracking|leading|radius|spacing|shadow|blur|perspective|aspect|ease|animate)-[\w-]+$/
+const TAILWIND4_NAME_TYPES = {
+  'font-weight': ['number'],
+  text: ['dimension'],
+  tracking: ['dimension'],
+  leading: ['number', 'dimension'],
+  radius: ['dimension'],
+  spacing: ['dimension'],
+  blur: ['dimension'],
+  perspective: ['dimension'],
+  aspect: ['number'],
+}
+const COLOUR_CSS = /^(?:#[\da-f]{3,8}$|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\()/i
+
+function fitsThemeName(model, t) {
+  const namespace = TAILWIND4_BY_NAME.exec(t.cssVar)?.[1]
+  if (!namespace) return false
+  if (t.cssOnly) {
+    const css = String(t.value ?? '').trim()
+    return namespace === 'color' || !(COLOUR_CSS.test(css) || parseColor(css))
+  }
+  return (TAILWIND4_NAME_TYPES[namespace] ?? []).includes(model.typeOf(t))
+}
+
+// A typography composite's line height as a number, through references.
+function lineHeightOf(model, t) {
+  let v = model.resolved(t, 'default')?.lineHeight
+  for (let hop = 0; hop < 8 && isAlias(v); hop++) {
+    const next = model.byName.get(aliasPath(v))
+    v = next ? model.resolved(next, 'default') : undefined
+  }
+  return typeof v === 'number' ? v : typeof v === 'string' && /^\d*\.?\d+$/.test(v.trim()) ? Number(v) : null
+}
+
 function buildTailwind4(model) {
+  // The text names a token other than a composite writes: a size step
+  // (--text-display, which a source's @theme declares) or a source's own
+  // part of one (--text-tiny--line-height).
+  const sized = new Set()
+  for (const t of model.tokens) {
+    const hit = tailwindTarget(model, t)
+    if (hit && !hit.typography && hit.section === 'fontSize' && hit.keys.length > 0) sized.add([TAILWIND4_PREFIX.fontSize, ...hit.keys].join('-'))
+  }
   const lines = []
   for (const t of model.tokens) {
     const hit = tailwindTarget(model, t)
-    if (!hit || hit.v3only || (hit.keys.length === 0 && hit.section !== 'spacing')) continue
+    if (!hit || hit.v3only) {
+      if (fitsThemeName(model, t) && !lines.some((l) => l.startsWith(`${t.cssVar}:`))) lines.push(`${t.cssVar}: var(${t.cssVar});`)
+      continue
+    }
+    if (hit.keys.length === 0 && hit.section !== 'spacing') continue
     const name = [TAILWIND4_PREFIX[hit.section], ...hit.keys].join('-')
     if (hit.typography) {
       // Tailwind 4 reads a text size's line height, letter spacing and weight from `--text-x--<part>`.
       const parts = typographyParts(model, t).map(([, css]) => css)
       if (!parts.includes('font-size')) continue
+      // One of Tailwind's own steps keeps rendering as Tailwind's own
+      // text-* class: its line height only when it is Tailwind's own, and no
+      // letter spacing or weight, which that class never sets.
+      const own = hit.keys.length === 1 && Object.hasOwn(TAILWIND4_TEXT, hit.keys[0]) ? TAILWIND4_TEXT[hit.keys[0]] : undefined
+      // Any other step that a size token already writes keeps rendering as
+      // that token and the source's own parts make it: the composite adds
+      // nothing to it.
+      if (own === undefined && sized.has(name)) continue
       lines.push(`${name}: var(${t.cssVar}-font-size);`)
       for (const css of ['line-height', 'letter-spacing', 'font-weight']) {
-        if (parts.includes(css)) lines.push(`${name}--${css}: var(${t.cssVar}-${css});`)
+        if (!parts.includes(css) || sized.has(`${name}--${css}`)) continue
+        if (own !== undefined && (css !== 'line-height' || Math.abs((lineHeightOf(model, t) ?? Infinity) - own) > 0.001)) continue
+        lines.push(`${name}--${css}: var(${t.cssVar}-${css});`)
       }
       continue
     }
@@ -768,31 +899,170 @@ function objectLiteral(obj, depth = 0) {
   return `{\n${lines.join('\n')}\n${'  '.repeat(depth)}}`
 }
 
-function buildTailwind3(model) {
+// How the outputs feed Tailwind 3, or null when the project has no tailwind3
+// output or its styling names Tailwind 4. Tailwind 3 applies an opacity
+// modifier (bg-primary/50, or one in @apply) only to a colour it can parse or
+// one written with its <alpha-value> placeholder, so each colour the
+// tailwind3 output can write that way is in `colors`:
+//   - a variable that holds channels in every theme (`236 229 209`) as
+//     rgb(var(--x) / <alpha-value>), or hsl() for `210 40% 98%`;
+//   - with a css output, an opaque colour written in sRGB (hex, rgb(), hsl()
+//     or hwb()), or a reference to one, as rgb(var(--x-rgb) / <alpha-value>),
+//     and channelLines gives the css output its `--x-rgb` in each theme the
+//     colour has a value of its own.
+// A translucent colour, one outside sRGB, one with CSS of its own and one
+// whose `-rgb` name another token has stay var().
+function tailwind3Wiring(model, config) {
+  const outputs = config.tokens.outputs ?? []
+  if ((config.styling ?? []).includes('tailwind4') || !outputs.some((o) => o.format === 'tailwind3')) return null
+  const cssOutput = outputs.some((o) => o.format === 'css')
+  const taken = new Set(model.tokens.flatMap((t) => cssNames(model, t)))
+  // The exact CSS a token keeps beside its value in one mode, as declarations() reads it.
+  const exactCss = (t, mode) => (mode !== 'default' && (mode in (t.cssModes ?? {}) || mode in t.modes) ? t.cssModes?.[mode] ?? null : t.css ?? null)
+  // The channel function a token's variable holds in one mode: `rgb` or `hsl`
+  // when it is a channel triplet, or a reference with no CSS of its own to one.
+  const tripletIn = (t, mode, depth = 0) => {
+    const css = exactCss(t, mode)
+    if (css !== null) return channelColor(css.trim())?.value.slice(0, 3) ?? null
+    const next = model.target(t, mode)
+    return next && depth < 32 ? tripletIn(next, mode, depth + 1) : null
+  }
+  // An opaque colour written in sRGB (hex, rgb(), hsl() or hwb(), as a DTCG
+  // object or as CSS text) as its channels, rounded to bytes as the css
+  // output's hex is.
+  const byte = (n) => Math.round(Math.min(1, Math.max(0, n)) * 255)
+  const channelsOf = (v) => {
+    if (v && typeof v === 'object' && v.colorSpace === 'srgb' && (v.alpha ?? 1) === 1 && v.components?.every((c) => typeof c === 'number')) return v.components.map(byte).join(' ')
+    const text = v && typeof v === 'object'
+      ? (['hsl', 'hwb'].includes(v.colorSpace) && v.components?.every((c) => typeof c === 'number') ? colorCss(v) : null)
+      : typeof v === 'string' && /^(?:#|rgba?\(|hsla?\(|hwb\()/i.test(v.trim()) ? v : null
+    const c = text === null ? null : parseColor(text)
+    return c && c.a === 1 ? [c.r, c.g, c.b].map(byte).join(' ') : null
+  }
+  // A token's `--x-rgb` text in each mode it declares a value in, or null when
+  // some mode has no channels to give. A reference reads its target's.
+  const channels = new Map()
+  const channelsFor = (t, depth = 0) => {
+    if (channels.has(t.name)) return channels.get(t.name)
+    channels.set(t.name, null)
+    if (!cssOutput || depth > 32 || model.typeOf(t) !== 'color' || taken.has(`${t.cssVar}-rgb`)) return null
+    const texts = new Map()
+    for (const mode of model.modes) {
+      if (mode !== 'default' && !(mode in t.modes)) continue
+      if (exactCss(t, mode) !== null) return null
+      const next = model.target(t, mode)
+      const text = next ? (channelsFor(next, depth + 1) ? `var(${next.cssVar}-rgb)` : null) : channelsOf(model.raw(t, mode))
+      if (text === null) return null
+      texts.set(mode, text)
+    }
+    channels.set(t.name, texts)
+    return texts
+  }
+  const colors = new Map()
+  for (const t of model.tokens) {
+    if (model.typeOf(t) !== 'color') continue
+    const kinds = new Set(model.modes.map((mode) => tripletIn(t, mode)))
+    const [kind] = kinds
+    if (kinds.size === 1 && kind) colors.set(t.name, `${kind}(var(${t.cssVar}) / <alpha-value>)`)
+    else if (channelsFor(t)) colors.set(t.name, `rgb(var(${t.cssVar}-rgb) / <alpha-value>)`)
+  }
+  return {
+    colors,
+    channelLines: (t, mode) => {
+      const text = channels.get(t.name)?.get(mode)
+      return text ? [[`${t.cssVar}-rgb`, text]] : []
+    },
+  }
+}
+
+// A source's own part of a text step, under the name Tailwind 4 gives it
+// (`tiny--line-height`), and the key Tailwind 3 reads it from in the step's
+// [size, { lineHeight, letterSpacing, fontWeight }] pair.
+const TEXT_PART = /^(.+)--(line-height|letter-spacing|font-weight)$/
+const TEXT_PART_KEYS = { 'line-height': 'lineHeight', 'letter-spacing': 'letterSpacing', 'font-weight': 'fontWeight' }
+
+function buildTailwind3(model, wiring = null) {
   const theme = { colors: {}, spacing: {}, borderRadius: {}, fontFamily: {}, fontWeight: {}, fontSize: {}, boxShadow: {}, transitionTimingFunction: {}, transitionDuration: {}, zIndex: {}, opacity: {} }
+  // The text steps a token other than a composite writes: a size step
+  // (`display`, which a source defines) and a source's own parts of a step.
+  // A part that is `initial` in every theme drops that part from the step
+  // (null below), as it drops one of Tailwind 4's own.
+  const sized = new Set()
+  const sourceParts = new Map()
+  for (const t of model.tokens) {
+    const hit = tailwindTarget(model, t)
+    if (!hit || hit.typography || hit.section !== 'fontSize' || hit.keys.length === 0) continue
+    const part = TEXT_PART.exec(hit.keys.at(-1))
+    if (!part) {
+      sized.add(hit.keys.join('.'))
+      continue
+    }
+    const step = [...hit.keys.slice(0, -1), part[1]].join('.')
+    const dropped = model.modes.every((mode) => /^initial$/i.test(String(model.raw(t, mode)).trim()))
+    sourceParts.set(step, { ...sourceParts.get(step), [TEXT_PART_KEYS[part[2]]]: dropped ? null : `var(${t.cssVar})` })
+  }
+  // A step of Tailwind's own type scale. theme.extend replaces Tailwind's
+  // own [size, { lineHeight }] pair for it as a whole.
+  const own = (keys) => keys.length === 1 && Object.hasOwn(TAILWIND3_LINE_HEIGHTS, keys[0])
+  const paired = new Set()
+  let plain = 0
   for (const t of model.tokens) {
     const hit = tailwindTarget(model, t)
     if (!hit) continue
     const keys = hit.keys.length > 0 ? hit.keys : ['DEFAULT']
+    const step = keys.join('.')
     if (hit.typography) {
       // Tailwind 3 takes a font size as [size, { lineHeight, letterSpacing, fontWeight }].
       const parts = typographyParts(model, t).map(([key, css]) => [key, css])
       if (!parts.some(([key]) => key === 'fontSize')) continue
+      // One of Tailwind's own steps keeps rendering as Tailwind's own text-*
+      // class: its size with Tailwind's own line height, and no letter
+      // spacing or weight, which that class never sets.
+      if (own(keys)) {
+        setNested(theme.fontSize, keys, [`var(${t.cssVar}-font-size)`, { lineHeight: TAILWIND3_LINE_HEIGHTS[keys[0]] }])
+        paired.add(step)
+        continue
+      }
+      // Any other step that a size token already writes keeps rendering as
+      // that token and the source's own parts make it: the composite adds
+      // nothing to it.
+      if (sized.has(step)) continue
       const extra = {}
       for (const [key, css] of parts) if (['lineHeight', 'letterSpacing', 'fontWeight'].includes(key)) extra[key] = `var(${t.cssVar}-${css})`
       setNested(theme.fontSize, keys, Object.keys(extra).length > 0 ? [`var(${t.cssVar}-font-size)`, extra] : `var(${t.cssVar}-font-size)`)
       continue
     }
-    setNested(theme[hit.section], keys, `var(${t.cssVar})`)
+    // A source's part goes inside its step's pair below, and an own step's
+    // pair from its composite stays as it is.
+    if (hit.section === 'fontSize' && (TEXT_PART.test(keys.at(-1)) || paired.has(step))) continue
+    const colour = hit.section === 'colors' ? wiring?.colors.get(t.name) : undefined
+    if (hit.section === 'colors' && !colour) plain++
+    setNested(theme[hit.section], keys, colour ?? `var(${t.cssVar})`)
+  }
+  // In a Tailwind 3 project, an own step that a size token alone writes takes
+  // Tailwind's own line height too, and every step takes its source's own
+  // parts over any other; a dropped part leaves the step without it.
+  const stepAt = (step) => step.split('.').reduce((node, key) => (node && typeof node === 'object' && !Array.isArray(node) ? node[key] : undefined), theme.fontSize)
+  for (const step of new Set([...sized, ...sourceParts.keys()])) {
+    const keys = step.split('.')
+    const value = stepAt(step)
+    if (value === undefined || (value && typeof value === 'object' && !Array.isArray(value))) continue
+    const [size, options] = Array.isArray(value) ? value : [value, {}]
+    const ownLine = wiring && !Array.isArray(value) && own(keys) ? { lineHeight: TAILWIND3_LINE_HEIGHTS[keys[0]] } : {}
+    const merged = Object.fromEntries(Object.entries({ ...options, ...ownLine, ...sourceParts.get(step) }).filter(([, v]) => v !== null))
+    setNested(theme.fontSize, keys, Object.keys(merged).length > 0 ? [size, merged] : size)
   }
   for (const k of Object.keys(theme)) if (Object.keys(theme[k]).length === 0) delete theme[k]
-  return [
-    `// ${HEADER}`,
-    "// Use it as: module.exports = { theme: { extend: require('./tokens.tailwind.cjs') } }",
-    '// Colours are var() references, so opacity modifiers (bg-primary/50) need channel-form variables.',
-    `module.exports = ${objectLiteral(theme)}`,
-    '',
-  ].join('\n')
+  const notes = wiring
+    ? [
+        "// Spread it at the top of the config's theme.extend: theme: { extend: { ...require('./tokens.tailwind.cjs'), /* the config's other keys */ } }",
+        `// Colours written with <alpha-value> take opacity modifiers (bg-primary/50)${plain > 0 ? '; a colour written as var() takes none' : ''}.`,
+      ]
+    : [
+        "// Use it as: module.exports = { theme: { extend: require('./tokens.tailwind.cjs') } }",
+        '// Colours are var() references, so opacity modifiers (bg-primary/50) need channel-form variables.',
+      ]
+  return [`// ${HEADER}`, ...notes, `module.exports = ${objectLiteral(theme)}`, ''].join('\n')
 }
 
 function buildScss(model) {
@@ -1147,7 +1417,9 @@ function buildKit(model, origin, files, config) {
         ? 'No tokens yet: mockups use system defaults until the tokens phase.'
         : `Source: custom properties extracted from ${files.join(', ') || 'the style files'} (no tokens.json yet).`
   const out = [`/* ${HEADER} */`, `/* ${source} Link this file from mockups so they look like the product. */`, '']
-  out.push(...cssBlock(':root', ['color-scheme: light;', ...modeLines(model, 'default', false)]))
+  // :root carries the default theme's scheme: dark when the default mode is dark.
+  const scheme = model.defaultMode === 'dark' ? 'dark' : 'light'
+  out.push(...cssBlock(':root', [`color-scheme: ${scheme};`, ...modeLines(model, 'default', false)]))
   const dark = model.modes.includes('dark') ? modeLines(model, 'dark', false) : []
   out.push('', ...cssBlock(kitSelector(config, model, 'dark'), ['color-scheme: dark;', ...dark]))
   if (dark.length > 0 && config.tokens.darkMedia) {
@@ -1155,7 +1427,9 @@ function buildKit(model, origin, files, config) {
     out.push('', '@media (prefers-color-scheme: dark) {', ...cssBlock(`:root${optOut.map((s) => `:not(${s})`).join('')}`, ['color-scheme: dark;', ...dark], '  '), '}')
   }
   for (const mode of model.modes.filter((m) => m !== 'default' && m !== 'dark')) {
-    out.push('', ...cssBlock(kitSelector(config, model, mode), modeLines(model, mode, false)))
+    // Under a dark default, a light theme sets its own scheme back.
+    const own = scheme === 'dark' && mode === 'light' ? ['color-scheme: light;'] : []
+    out.push('', ...cssBlock(kitSelector(config, model, mode), [...own, ...modeLines(model, mode, false)]))
   }
   out.push('', '*, *::before, *::after {', '  box-sizing: border-box;', '}')
   const body = ['margin: 0;', `font-family: ${font ? `var(${font})` : 'system-ui, sans-serif'};`]
@@ -1404,15 +1678,16 @@ const warnAll = (model) => {
 // Every file `build` writes, as { path (absolute), text }. Throws on a bad token set.
 function buildOutputs(root, projectDir, config, tokens) {
   const model = modelOf(tokens, config)
+  const wiring = tailwind3Wiring(model, config)
   const out = []
   for (const output of config.tokens.outputs ?? []) {
     if (!FORMATS.includes(output.format)) {
       throw new Error(`tokens.outputs: unknown format "${output.format}". Use one of: ${FORMATS.join(', ')}.`)
     }
     const text = {
-      css: () => buildCss(model, config),
+      css: () => buildCss(model, config, wiring),
       tailwind4: () => buildTailwind4(model),
-      tailwind3: () => buildTailwind3(model),
+      tailwind3: () => buildTailwind3(model, wiring),
       scss: () => buildScss(model),
       json: () => buildJson(model),
       ts: () => buildTs(model),
@@ -1756,7 +2031,8 @@ function main() {
     // What the sources define, then the code's own values for the gaps.
     const { sources } = readSources(root, config)
     const audit = runAudit(root, config, { raw: true })
-    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling })
+    const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling, defaultMode: config.tokens.defaultMode })
+    proposal.tokens.push(...textStepParts(sources, proposal, config.tokens.tailwindConfig, config.styling ?? []))
     if (proposal.tokens.length === 0) fail('found nothing to propose: no style files, config, theme or token files, and no raw values in the code')
     const { tokens, losses, defaultMode } = draftFrom(proposal.tokens, config)
     const set = writeTokenSet({
@@ -1851,7 +2127,8 @@ function main() {
   // And with tokens.inventory or tokens.mirror on, resolved.json too.
   const listed = inventoryChecked(config) && typeof flags.source !== 'string' ? resolvedState(root, config, projectDir, shown) : null
   if (listed && !listed.current) process.stderr.write(`  behind the style files: ${shown(listed.path)}${existsSync(listed.path) ? '' : ' (missing)'}\n`)
-  const failures = contrastChecks(model).filter((c) => !c.pass)
+  const checks = contrastChecks(model)
+  const failures = checks.filter((c) => !c.pass)
   const strict = truthy(flags.strict)
   // The Figma library is a mirror, so drift is reported, never failed on.
   const mirror = tokens.origin === 'tokens' ? figmaMirror(root, projectDir, config, tokens.files) : null
@@ -1862,7 +2139,12 @@ function main() {
   for (const c of failures) {
     process.stderr.write(`  ${strict ? 'fail' : 'warn'}: ${c.mode}: ${c.token} on ${c.on} is ${c.ratio.toFixed(2)}:1, needs ${c.needs}:1${c.use}\n`)
   }
-  const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}`]
+  // How many pairs were checked when none failed, and plainly when none were.
+  const pairs = new Set(checks.map((c) => `${c.token} ${c.on}`)).size
+  const contrast = checks.length === 0
+    ? 'no contrast pairs checked'
+    : `${failures.length} contrast ${failures.length === 1 ? 'failure' : 'failures'}${failures.length === 0 ? ` in ${pairs} ${pairs === 1 ? 'pair' : 'pairs'}` : ''}`
+  const parts = [`${tokens.tokens.length} tokens`, `${stale.length} stale`, contrast]
   if (mirror) parts.push(mirror.current ? 'figma mirror current' : 'figma mirror behind')
   if (config.tokens.mirror && typeof flags.source !== 'string') parts.push(behind.length > 0 ? 'token mirror behind the style files' : 'token mirror current')
   if (listed) parts.push(listed.current ? 'resolved.json current' : 'resolved.json behind')

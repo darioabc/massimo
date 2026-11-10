@@ -11,7 +11,7 @@ The pick is made. Turn the mockup into a grounded spec and a real render, so who
 
 ## Read first
 
-From the plugin root in your prompt: `reference/method.md` (Translation, Fidelity gate) and `reference/mockups.md`. Then the repo's map: `<project>/graph.md` (components, what composes what, stories, tokens, `ds:` rules) and, if it exists, `<project>/tokens/tokens.json`. Read the story recipe the dispatch names (`skills/stories/recipes/<recipe>.md`).
+From the plugin root in your prompt: `reference/method.md` (Translation, Fidelity gate) and `reference/mockups.md`. Then the repo's map: `<project>/graph.md` (components, what composes what, stories, tokens, `ds:` rules) and, if it exists, `<project>/tokens/tokens.json`. Read the story recipe the dispatch names (`skills/stories/recipes/<recipe>.md`), or, beside a story tool the team keeps (Storybook, Ladle, Histoire), the story file it names as the format.
 
 ## Inputs
 
@@ -29,8 +29,8 @@ Never transcribe the mockup's literal values: `var(--token)` maps to that token;
 
 ## Render
 
-1. Build the story for the full picked surface in the native lane, composed from the mapped components (and minimal new ones), in the mockup's order and placement, with the mockup's real content. Name it for the topic.
-2. Start the lane if it is not running (`massimo.config.json` → `stories.devCommand`), open the story, check the console, screenshot each viewport with `<project>/scripts/shoot.mjs` (exit 3 → use your browser tool) into `<project>/shots/kept/<topic>/`. The handoff links to them, so they live in the committed `shots/kept/`; link them from the handoff with paths relative to it.
+1. Build the story for the full picked surface in the story lane (beside a kept story tool, a story file in that tool's format beside the repo's other stories: CSF for Storybook or Ladle), composed from the mapped components (and minimal new ones), in the mockup's order and placement, with the mockup's real content. Name it for the topic.
+2. Start the lane if it is not running (`massimo.config.json` → `stories.devCommand`), open the story, check the console, screenshot each viewport with `<project>/scripts/shoot.mjs` (exit 3 → use your browser tool) into `<project>/shots/kept/<topic>/`. Beside a kept Storybook, the story's URL is its iframe URL (`node <project>/scripts/stories.mjs storybook <story file>` prints it), shot with `--selector '#storybook-root'`. The handoff links to them, so they live in the committed `shots/kept/`; link them from the handoff with paths relative to it.
 3. Run the repo's typecheck and lint on the files you touched, and the lane's build if it is quick. Fix what you broke.
 4. Do not wire anything into live routes, data fetching or real consumers. EDIT-mode changes to primitives are the exception, and only as scoped above.
 

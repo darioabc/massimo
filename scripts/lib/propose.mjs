@@ -6,14 +6,15 @@
 // spacing), the proposal says it assumed it. Every value records where it
 // came from, so a reviewer can approve or change it family by family.
 //
-// propose({ sources, audit }) returns { tokens, report, outliers, notes }:
+// propose({ sources, audit, defaultMode }) returns { tokens, report, outliers, notes }:
 // tokens in the readers' shape, a report line per token
 // ({ family, token, value, from, note }), the values the code uses that did not become a
 // token, and plain notes.
 
-import { parseColor, toHex, toOklab } from './color.mjs'
+import { contrastRatio, parseColor, toHex, toOklab } from './color.mjs'
 import { compare } from './glob.mjs'
-import { aliasPath, cssVarFor, isAlias } from './source.mjs'
+import { CLASS_LIBRARIES, aliasPath, cssVarFor, isAlias } from './source.mjs'
+import { TAILWIND_COLORS, TAILWIND_STEPS } from './tailwind-colors.mjs'
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const key = (path) => path.join('.')
@@ -41,7 +42,16 @@ export function mergeSources(sources) {
   const varOf = (t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))
   for (const kind of order) {
     for (const src of sources.filter((s) => s.kind === kind)) {
-      for (const t of src.tokens) {
+      // A token name cannot hold a dot, so a key such as a spacing step's 0.5
+      // is named 0_5; a CSS variable the source gave keeps its name, and a
+      // reference to the dotted name follows the token.
+      const dotted = new Map()
+      for (const read of src.tokens) {
+        const t = read.path.some((p) => String(p).includes('.')) ? { ...read, path: read.path.map((p) => String(p).replace(/\./g, '_')) } : read
+        if (t !== read) {
+          dotted.set(read.source, [...(dotted.get(read.source) ?? []), `${key(read.path)} as ${key(t.path)}`])
+          renamed.set(key(read.path), key(t.path))
+        }
         const k = key(t.path)
         const same = seen.get(k) ?? byCssVar.get(varOf(t))
         if (same) {
@@ -60,6 +70,10 @@ export function mergeSources(sources) {
         tokens.push(copy)
       }
       notes.push(...(src.notes ?? []))
+      for (const [file, names] of dotted) {
+        const shown = `${names.slice(0, 6).join(', ')}${names.length > 6 ? `, +${names.length - 6} more` : ''}`
+        notes.push(`${file}: a token name cannot hold a dot, so ${names.length === 1 ? 'one name was' : `${names.length} names were`} written with _ instead: ${shown}`)
+      }
     }
   }
   // A token whose name another source uses as a group (--c-accent read as
@@ -159,9 +173,11 @@ const stepAt = (L) => {
 const ROLE_NAMES = { bg: ['bg', 'default', 'subtle', 'muted'], text: ['text', 'default', 'muted', 'subtle'], border: ['border', 'default', 'subtle', 'strong'] }
 const ROLE_WORDS = { bg: 'Background', text: 'Text', border: 'Borders and dividers' }
 
-// Drafted descriptions for names a system already uses.
+// Drafted descriptions for names a system already uses. A numbered step is
+// a ramp's, whatever its group is called (surface.900 is a primitive).
 function describeByName(name) {
   const last = name.split('.').filter((p) => p !== '$root').pop()
+  if (/^\d+$/.test(last)) return null
   const on = /^(.+)-(content|foreground|fg)$/.exec(last) ?? /^on-(.+)$/.exec(last)
   if (on) return `Text and icons on ${on[1] === 'base' ? 'base backgrounds' : on[1]}`
   if (/^(base-100|bg|background|surface|canvas|page)$/.test(last) || /(^|\.)(bg|background|surface)(\.|$)/.test(name)) return 'Background'
@@ -174,6 +190,20 @@ function describeByName(name) {
   if (/^(success|warning|info)$/.test(last)) return `${last[0].toUpperCase()}${last.slice(1)} messages`
   if (/^(muted|neutral)$/.test(last)) return 'Quiet surfaces and secondary text'
   return null
+}
+
+// Whether a source token is a colour: typed as one, or an alias whose
+// references reach a colour. A size aliased in a group named like a role
+// (Tailwind's fontSize reads into text: text.body = {text.base}) is not.
+// `byPath` holds the source tokens by path.
+function isColourToken(t, byPath) {
+  if (t.type === 'color') return true
+  for (let hop = 0, at = t; at && isAlias(at.value) && hop < 8; hop++) {
+    const to = aliasPath(at.value)
+    at = byPath.get(to) ?? byPath.get(`${to}.$root`)
+    if (at?.type === 'color' || (at && !at.type && !isAlias(at.value) && parseColor(String(at.value)))) return true
+  }
+  return false
 }
 
 // The contrast pair a name implies: `primary-content` sits on `primary`.
@@ -207,11 +237,44 @@ function pairByName(t, byLast) {
   return null
 }
 
-function proposeColors(existing, audit, report, outliers, minCount) {
+// A text colour no name pairs sits on the background of its group: text,
+// text-dim and fg-muted on bg (or background), a nested text.muted on the
+// bg beside its group. Text on something else (text-on-primary, an inverse
+// text) is left to a pair by hand, and disabled text, which needs no
+// contrast, is not paired.
+const TEXT_NAME = /^(?:text|fg|foreground|ink)(?:-(?!on-)[\w-]+)?$/
+function backgroundOfGroup(t, byLast) {
+  const parts = t.path.filter((p) => p !== '$root')
+  const last = parts[parts.length - 1]
+  const textual = TEXT_NAME.test(last) || parts.slice(1, -1).some((p) => /^(?:text|fg|foreground)$/.test(p))
+  if (!textual || /inverse|inverted|disabled|(?:^|-)on-/.test(last)) return null
+  for (let n = parts.length - 1; n >= 1; n--) {
+    for (const name of ['bg', 'background']) {
+      for (const tail of [[], ['default'], ['DEFAULT'], ['$root']]) {
+        const g = byLast.get(key([...parts.slice(0, n), name, ...tail]))
+        if (g && g !== t && g.type === 'color') return key(g.path)
+      }
+    }
+  }
+  return null
+}
+
+// `tailwind` is the Tailwind version the repo styles with, or null; `page`
+// is what the style files' body, html or :root rules paint (readCss's
+// page), and `styleFile` says whether a file is one of them; `unread` says
+// a source left colours unread, which may use any of Tailwind's names;
+// `gaps.reason`, when set, says why no semantic colour came out,
+// `gaps.partialDark` that the dark theme has only the page's own colours,
+// and `gaps.pageFile` that the body rule is in a file the page's colours
+// are not read from.
+function proposeColors(existing, audit, report, outliers, minCount, { tailwind = null, page = null, styleFile = () => false, defaultMode = 'light', gaps = {}, unread = false } = {}) {
   const out = []
   const colorTokens = existing.filter((t) => t.type === 'color' || (!t.type && !isAlias(t.value) && parseColor(String(t.value))))
-  const literal = colorTokens.map((t) => ({ t, c: parseColor(String(t.value)) })).filter((x) => x.c)
-  const near = (c) => literal.find((x) => Math.abs(x.c.a - c.a) < 0.05 && Math.hypot(...Object.values(toOklab(x.c)).map((v, i) => v - Object.values(toOklab(c))[i])) < 0.02)
+  // A fully transparent token paints nothing, so it covers no colour.
+  const literal = colorTokens.map((t) => ({ t, c: parseColor(String(t.value)) })).filter((x) => x.c && x.c.a > 0)
+  const distance = (a, b) => Math.hypot(...Object.values(toOklab(a)).map((v, i) => v - Object.values(toOklab(b))[i]))
+  // The nearest token within a just-noticeable difference and the same alpha; the first of equals.
+  const near = (c) => literal.filter((x) => Math.abs(x.c.a - c.a) < 0.05 && distance(x.c, c) < 0.02).reduce((best, x) => (best && distance(best.c, c) <= distance(x.c, c) ? best : x), null)
   // Where each colour is used most, for the descriptions.
   const fileOf = new Map()
   for (const f of audit?.findings ?? []) {
@@ -226,6 +289,22 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   }
   const mostIn = (hex) => [...(fileOf.get(hex) ?? new Map()).entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))[0]?.[0]
 
+  // Tailwind's own palette for the version the repo styles with. A step of
+  // one of its families is a name Tailwind already gives a colour, which a
+  // token wired into Tailwind would recolour, so a colour takes such a name
+  // only when it is Tailwind's value there; `paletteNames` finds those
+  // names by colour. When the config's own colours went unread, any of
+  // those names may be the repo's, so none is taken.
+  const palette = tailwind ? TAILWIND_COLORS[tailwind] ?? null : null
+  const paletteNames = new Map()
+  for (const [family, list] of Object.entries(palette ?? {})) {
+    list.forEach((v, i) => {
+      const hex = toHex(parseColor(v))
+      paletteNames.set(hex, [...(paletteNames.get(hex) ?? []), [family, String(TAILWIND_STEPS[i])]])
+    })
+  }
+  const tailwindStep = (family, step) => Boolean(palette?.[family]) && TAILWIND_STEPS.includes(Number(step))
+
   // Primitives: clusters the code uses with no token near them, in a group
   // no token already holds (DaisyUI's color.neutral is a token: its greys
   // go in gray), never at a CSS variable a token already has (a Tailwind 4
@@ -237,15 +316,87 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   const owned = new Set(existing.map((t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))))
   const groupFor = (family) => [family, ...(family === 'neutral' ? ['gray'] : []), `${family}-scale`].find((g) => !names.has(`color.${g}`))
   const used = new Map()
-  const proposed = []
+  const free = (family, s) => !(used.get(family) ?? new Set()).has(s) && !owned.has(cssVarFor(['color', family, s]))
+  // The name a new primitive takes, with a note when Tailwind's palette
+  // decided it. A solid colour that is Tailwind's own takes Tailwind's name.
+  // A translucent colour is an overlay, named by its base and opacity
+  // (black-12, white-6, blue-20); a solid one a ramp step by lightness. When
+  // the nearest standard step is taken, or is Tailwind's for another
+  // colour, the step between that its lightness gives (85, 435…) keeps the
+  // ramp in order; a repeated name gets a suffix.
+  const nameFor = (c) => {
+    if (c.a >= 1 && !unread) {
+      const hue = familyOf(c)
+      const own = (paletteNames.get(toHex(c)) ?? []).slice().sort((x, y) => Number(y[0] === hue) - Number(x[0] === hue))
+      const exact = own.find(([family, s]) => !names.has(`color.${family}`) && free(family, s))
+      if (exact) return { family: exact[0], step: exact[1], note: `Tailwind's ${exact[0]}-${exact[1]}` }
+    }
+    const family = groupFor(c.a < 1 ? 'overlay' : familyOf(c))
+    const { L } = oklch(c)
+    const open = (s) => free(family, s) && !tailwindStep(family, s)
+    if (family.startsWith('overlay')) {
+      const solid = { ...c, a: 1 }
+      const base = familyOf(solid) !== 'neutral' ? familyOf(solid) : oklch(solid).L > 0.9 ? 'white' : oklch(solid).L < 0.25 ? 'black' : 'neutral'
+      const name = `${base}-${Math.round(c.a * 100)}`
+      let step = name
+      for (let i = 2; !open(step); i++) step = `${name}-${i}`
+      return { family, step, note: '' }
+    }
+    const nearest = String(STEPS.slice().sort((x, y) => Math.abs(x[1] - L) - Math.abs(y[1] - L))[0][0])
+    const note = tailwindStep(family, nearest) ? `not Tailwind's ${family}-${nearest}, so named off Tailwind's steps` : ''
+    if (open(nearest)) return { family, step: nearest, note }
+    let n = Math.min(995, Math.max(5, Math.round(stepAt(L) / 5) * 5))
+    while (!open(String(n)) && n < 995) n += 5
+    while (!open(String(n))) n -= 5
+    return { family, step: String(n), note }
+  }
+  const addPrimitive = (c, value, from, note) => {
+    const name = nameFor(c)
+    used.set(name.family, (used.get(name.family) ?? new Set()).add(name.step))
+    const path = ['color', name.family, name.step]
+    out.push({ path, type: 'color', value, modes: {}, description: '', source: 'audit' })
+    report.push({ family: 'color', token: key(path), value, from, note: [name.note, note].filter(Boolean).join('; ') })
+    return key(path)
+  }
+
+  // The page's own colours, as the style files' body, html or :root rules
+  // set them: a source token (a var() of its variable, or an @apply class
+  // that names it), or a colour (a literal, or a class of Tailwind's own).
+  // The cluster of a colour the code uses is kept even when used once, as
+  // the body size is; a colour the code uses nowhere else is a primitive of
+  // its own.
+  const byVar = new Map(colorTokens.map((t) => [t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root')), t]))
+  const byClass = new Map(colorTokens.filter((t) => t.path[0] === 'color').map((t) => [t.path.slice(1).filter((p) => p !== '$root').join('-'), t]))
+  const clusterOf = (c) => (audit?.colorClusters ?? []).find((cl) => cl.members.some((m) => parseColor(m.value) && toHex(parseColor(m.value)) === toHex(c)))
+  const pageParts = []
+  for (const [mode, parts] of Object.entries(page ?? {})) {
+    for (const [part, p] of Object.entries(parts)) {
+      const at = { mode, part, place: `${p.selector} in ${p.file}`, where: `set on ${p.selector} in ${p.file}` }
+      const v = /^var\(\s*(--[\w-]+)\s*\)$/.exec(p.value ?? '')?.[1]
+      const token = v ? byVar.get(v) : p.class ? byClass.get(p.class) : null
+      if (token) {
+        pageParts.push({ ...at, key: key(token.path) })
+        continue
+      }
+      const shade = /^([a-z]+)-(\d+)$/.exec(p.class ?? '')
+      const raw = p.class ? (p.class === 'white' ? '#ffffff' : p.class === 'black' ? '#000000' : shade ? palette?.[shade[1]]?.[TAILWIND_STEPS.indexOf(Number(shade[2]))] : null) : v ? null : p.value
+      const c = parseColor(raw ?? '')
+      if (!c || c.a === 0) continue
+      // A class names one exact colour; a literal is covered as a cluster is.
+      const covered = p.class ? literal.find((x) => toHex(x.c) === toHex(c)) : near(c)
+      pageParts.push({ ...at, colour: c, value: /^(?:#|[a-z]+\()/i.test(raw) ? raw : toHex(c), written: p.class ? `${part === 'color' ? 'text' : 'bg'}-${p.class}` : p.value, key: covered ? key(covered.t.path) : null, cluster: covered ? null : clusterOf(c) })
+    }
+  }
+  const kept = new Set(pageParts.map((x) => x.cluster).filter(Boolean))
+
   for (const cl of audit?.colorClusters ?? []) {
     const c = parseColor(cl.representative)
     if (!c || c.a === 0) continue
-    // A colour only ever used inside a shadow belongs to the shadow token.
     const roles = Object.keys(cl.roles ?? {})
-    if (roles.length > 0 && roles.every((r) => r === 'shadow')) continue
+    // A colour only ever used inside a shadow belongs to the shadow token.
+    if (!kept.has(cl) && roles.length > 0 && roles.every((r) => r === 'shadow')) continue
     // Never set as a style anywhere: data in a script (an avatar palette, a chart's series).
-    if (roles.length > 0 && roles.every((r) => r === 'other')) {
+    if (!kept.has(cl) && roles.length > 0 && roles.every((r) => r === 'other')) {
       outliers.push({ family: 'color', value: cl.representative, count: cl.count, note: `only in data or scripts, never as a style${mostIn(cl.representative) ? `, most in ${mostIn(cl.representative)}` : ''}` })
       continue
     }
@@ -267,50 +418,24 @@ function proposeColors(existing, audit, report, outliers, minCount) {
       cl.token = key(match.t.path)
       continue
     }
-    if (cl.count < minCount) {
+    if (cl.count < minCount && !kept.has(cl)) {
       outliers.push({ family: 'color', value: cl.representative, count: cl.count, note: 'used once; use a token instead, or keep it with a reason' })
       continue
     }
-    // A translucent colour is an overlay, named by its base and opacity
-    // (black-12, white-6, blue-20); a solid one a ramp step by lightness. When
-    // the nearest standard step is taken, the step between that its lightness
-    // gives (85, 435…) keeps the ramp in order; a repeated name gets a suffix.
-    const family = groupFor(c.a < 1 ? 'overlay' : familyOf(c))
-    const { L } = oklch(c)
-    const taken = used.get(family) ?? new Set()
-    const free = (s) => !taken.has(s) && !owned.has(cssVarFor(['color', family, s]))
-    let step
-    if (family.startsWith('overlay')) {
-      const solid = { ...c, a: 1 }
-      const base = familyOf(solid) !== 'neutral' ? familyOf(solid) : oklch(solid).L > 0.9 ? 'white' : oklch(solid).L < 0.25 ? 'black' : 'neutral'
-      const name = `${base}-${Math.round(c.a * 100)}`
-      step = name
-      for (let i = 2; !free(step); i++) step = `${name}-${i}`
-    } else {
-      const nearest = String(STEPS.slice().sort((x, y) => Math.abs(x[1] - L) - Math.abs(y[1] - L))[0][0])
-      if (free(nearest)) {
-        step = nearest
-      } else {
-        let n = Math.min(995, Math.max(5, Math.round(stepAt(L) / 5) * 5))
-        while (!free(String(n)) && n < 995) n += 5
-        while (!free(String(n))) n -= 5
-        step = String(n)
-      }
-    }
-    taken.add(step)
-    used.set(family, taken)
-    const path = ['color', family, step]
-    const value = c.a < 1 ? toHex(c) : cl.representative
-    proposed.push({ path, cluster: cl })
-    out.push({ path, type: 'color', value, modes: {}, description: '', source: 'audit' })
-    cl.token = key(path)
-    report.push({ family: 'color', token: key(path), value, from: `used ${cl.count}× in code${mostIn(cl.representative) ? `, most in ${mostIn(cl.representative)}` : ''}`, note: cl.members.length > 1 ? `merges ${cl.members.map((m) => m.value).join(', ')}` : '' })
+    const where = mostIn(cl.representative)
+    cl.token = addPrimitive(c, c.a < 1 ? toHex(c) : cl.representative, `used ${cl.count}× in code${where ? `, most in ${where}` : ''}`, cl.members.length > 1 ? `merges ${cl.members.map((m) => m.value).join(', ')}` : '')
+  }
+  for (const p of pageParts) {
+    if (p.key) continue
+    p.key = p.cluster?.token ?? pageParts.find((x) => x.key && x.colour && toHex(x.colour) === toHex(p.colour))?.key
+    p.key ??= addPrimitive(p.colour, p.value, `the page's ${p.part === 'color' ? 'text colour' : 'background'}, ${p.written} ${p.where}`, '')
   }
 
   // Semantics: only when the sources have no semantic layer of their own.
   const all = [...existing, ...out]
   const byLast = new Map(all.map((t) => [key(t.path), t]))
-  const hasSemantics = existing.some((t) => (t.type === 'color' || isAlias(t.value)) && describeByName(key(t.path)))
+  const sourceByPath = new Map(existing.map((t) => [key(t.path), t]))
+  const hasSemantics = existing.some((t) => isColourToken(t, sourceByPath) && describeByName(key(t.path)))
   if (hasSemantics) {
     for (const t of existing) {
       if (t.type !== 'color' && !(isAlias(t.value) && t.type === 'color')) continue
@@ -333,41 +458,128 @@ function proposeColors(existing, audit, report, outliers, minCount) {
         t.contrast = { on, use: 'text' }
         noteOn(report, key(t.path), `contrast checked as text on ${on}`)
       }
+      const bg = on || t.contrast ? null : backgroundOfGroup(t, byLast)
+      if (bg) {
+        t.contrast = { on: bg, use: 'text' }
+        noteOn(report, key(t.path), `contrast checked as text on ${bg}, guessed as its group's background`)
+      }
     }
   } else {
+    // The colour a token stands for, through its references.
+    const colourAt = (k) => {
+      for (let hop = 0, t = byLast.get(k); t && hop < 8; hop++, t = byLast.get(aliasPath(t.value))) if (!isAlias(t.value)) return parseColor(String(t.value))
+      return null
+    }
     const byRole = { bg: [], text: [], border: [] }
     for (const cl of audit?.colorClusters ?? []) {
       if (!cl.token) continue
-      for (const [role, n] of Object.entries(cl.roles ?? {})) if (byRole[role]) byRole[role].push({ cl, n })
+      for (const [role, n] of Object.entries(cl.roles ?? {})) if (byRole[role]) byRole[role].push({ cl, n, colour: parseColor(cl.representative) })
     }
     const semantic = {}
     const isNeutral = (cl) => familyOf(parseColor(cl.representative)) === 'neutral'
+    const pageAt = (mode, part) => pageParts.find((p) => p.mode === mode && p.part === part) ?? null
+    // The page's colours are read from the style files only. When none set
+    // one and the body size came from a rule in another file, a repo with
+    // colours is told so.
+    const sized = audit?.forExtract?.bodySize
+    const coloured = colorTokens.length > 0 || (audit?.colorClusters ?? []).length > 0
+    if (coloured && !page?.default && sized?.file && !styleFile(sized.file)) {
+      gaps.pageFile = `No page colour was read: extract takes the page's background and text colour from a body, html or :root rule in tokens.styleFiles, and the body size came from ${sized.selector} in ${sized.file}, which tokens.styleFiles does not list. If that rule sets the page's colours, add ${sized.file} to tokens.styleFiles and extract again.`
+    }
+    // A light default theme sits on a light background, a dark one on a dark one.
+    const light = defaultMode !== 'dark'
+    const isLight = (c) => oklch(c).L >= 0.5
     for (const [role, all] of Object.entries(byRole)) {
       const [group, ...names] = ROLE_NAMES[role]
       // Pages, text and borders are mostly neutral; a coloured background is usually the accent.
       const list = all.filter(({ n }) => n >= minCount).sort((a, b) => Number(isNeutral(b.cl)) - Number(isNeutral(a.cl)) || b.n - a.n || compare(a.cl.representative, b.cl.representative))
+      const picked = []
+      const push = (name, target, description, from, note) => {
+        const path = ['color', group, name]
+        picked.push({ target, path })
+        out.push({ path, type: 'color', value: `{${target}}`, modes: {}, description, source: 'audit' })
+        report.push({ family: 'color', token: key(path), value: `{${target}}`, from, note })
+      }
+      const pick = ({ cl, n }) => {
+        const name = names[picked.length]
+        const where = mostIn(cl.representative)
+        push(name, cl.token, `${ROLE_WORDS[role]}${name === 'default' ? '' : `, ${name}`}. Used ${n}× as ${role === 'bg' ? 'a background' : role === 'text' ? 'text' : 'a border'}${where ? `, most in ${where}` : ''}.`, `${ROLE_WORDS[role].toLowerCase()} role, ${n}× in code`, 'description drafted from usage; check it')
+      }
+      const taken = (x) => picked.some((p) => p.target === x.cl.token)
+      // The page's own background and text colour come first, as the defaults.
+      const own = role === 'border' ? null : pageAt('default', role === 'bg' ? 'background' : 'color')
+      if (own) push('default', own.key, `${ROLE_WORDS[role]}, the page's own, ${own.where}.`, `the page's ${role === 'bg' ? 'background' : 'text colour'}, ${own.where}`, 'description drafted from the style files; check it')
       if (role === 'bg') {
-        const accent = list.find(({ cl }) => !isNeutral(cl))
-        if (accent && list.some(({ cl }) => isNeutral(cl))) {
+        const accent = list.find(({ cl }) => !isNeutral(cl) && cl.token !== own?.key)
+        const withAccent = accent && (own || list.some(({ cl }) => isNeutral(cl)))
+        // With no page background and no opaque background on the default
+        // theme's side, the code's backgrounds belong to another theme: no
+        // semantic colour is proposed, and the note says why.
+        const opaque = list.filter((x) => x !== (withAccent ? accent : null) && x.colour.a >= 1)
+        if (!own && opaque.length > 0 && !opaque.some((x) => isLight(x.colour) === light)) {
+          gaps.reason = `the most used background in the code, ${opaque[0].cl.representative}, is ${light ? 'dark' : 'light'} while tokens.defaultMode is ${light ? 'light' : 'dark'}, and the style files set no page background; if the app is ${light ? 'dark' : 'light'}, set tokens.defaultMode to ${light ? 'dark' : 'light'} and extract again`
+          break
+        }
+        if (withAccent) {
           list.splice(list.indexOf(accent), 1)
           const where = mostIn(accent.cl.representative)
           const path = ['color', 'accent', 'default']
           out.push({ path, type: 'color', value: `{${accent.cl.token}}`, modes: {}, description: `Accent, for primary actions and highlights. Used ${accent.n}× as a background${where ? `, most in ${where}` : ''}.`, source: 'audit' })
           report.push({ family: 'color', token: key(path), value: `{${accent.cl.token}}`, from: `the most used coloured background, ${accent.n}× in code`, note: 'description drafted from usage; check it' })
         }
-      }
-      const picked = []
-      for (const { cl, n } of list) {
-        if (picked.some((p) => p.cl.token === cl.token) || picked.length >= names.length) continue
-        const name = names[picked.length]
-        const path = ['color', group, name]
-        const where = mostIn(cl.representative)
-        const description = `${ROLE_WORDS[role]}${name === 'default' ? '' : `, ${name}`}. Used ${n}× as ${role === 'bg' ? 'a background' : role === 'text' ? 'text' : 'a border'}${where ? `, most in ${where}` : ''}.`
-        picked.push({ cl, path })
-        out.push({ path, type: 'color', value: `{${cl.token}}`, modes: {}, description, source: 'audit' })
-        report.push({ family: 'color', token: key(path), value: `{${cl.token}}`, from: `${ROLE_WORDS[role].toLowerCase()} role, ${n}× in code`, note: 'description drafted from usage; check it' })
+        // With no page background, the default is the first opaque one on
+        // the default theme's side; the others sit on its side, or are overlays.
+        for (const x of list) {
+          if (taken(x) || picked.length >= names.length) continue
+          const base = picked[0] ? colourAt(picked[0].target) : null
+          if (base ? x.colour.a >= 1 && isLight(x.colour) !== isLight(base) : x.colour.a < 1 || isLight(x.colour) !== light) continue
+          pick(x)
+        }
+      } else if (role === 'text' && semantic.bg?.[0] && colourAt(semantic.bg[0].target)) {
+        // Text that reads on the page background: the default the most used
+        // at 4.5:1 or more, the others the most used between that and 3:1,
+        // the stronger first. Greys come first, tinted ones too (a slate, a
+        // violet grey); text the page cannot hold is text on something else.
+        const ground = colourAt(semantic.bg[0].target)
+        const ratio = (c) => contrastRatio(c, ground)
+        const grey = (x) => oklch(x.colour).C < 0.06
+        const order = (a, b) => Number(grey(b)) - Number(grey(a)) || b.n - a.n || ratio(b.colour) - ratio(a.colour) || compare(a.cl.representative, b.cl.representative)
+        const readable = list.filter((x) => ratio(x.colour) >= 3).sort(order)
+        if (!own) {
+          const body = readable.find((x) => ratio(x.colour) >= 4.5)
+          if (body) pick(body)
+        }
+        const top = picked[0] ? colourAt(picked[0].target) : null
+        const below = readable.filter((x) => !taken(x) && (!top || ratio(x.colour) < ratio(top)))
+        const greys = below.filter(grey)
+        for (const x of (greys.length > 0 ? greys : below).slice(0, names.length - picked.length).sort((a, b) => ratio(b.colour) - ratio(a.colour))) pick(x)
+      } else {
+        for (const x of list) {
+          if (taken(x) || picked.length >= names.length) continue
+          pick(x)
+        }
       }
       semantic[role] = picked
+    }
+    // The dark theme's page colours, from the style files' dark selector.
+    // They are the only dark values proposed, so a note says the other
+    // semantic colours have none yet.
+    if (light) {
+      const darkened = []
+      for (const [role, part] of [['bg', 'background'], ['text', 'color']]) {
+        const dark = pageAt('dark', part)
+        const t = semantic[role]?.[0] && out.find((x) => key(x.path) === key(semantic[role][0].path))
+        if (!dark || !t || t.value === `{${dark.key}}`) continue
+        t.modes = { dark: `{${dark.key}}` }
+        noteOn(report, key(t.path), `dark theme {${dark.key}}, the page's own, ${dark.where}`)
+        darkened.push({ token: key(t.path), place: dark.place })
+      }
+      const roles = new Set(['bg', 'text', 'border', 'accent'])
+      const rest = out.filter((t) => t.path[0] === 'color' && roles.has(t.path[1]) && Object.keys(t.modes).length === 0)
+      if (darkened.length > 0 && rest.length > 0) {
+        const both = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0])
+        gaps.partialDark = `The dark theme sets only ${both(darkened.map((d) => d.token))}, from ${both([...new Set(darkened.map((d) => d.place))])}; the other semantic colours keep their default values there, so add their dark values when reviewing colour semantics.`
+      }
     }
     const bg = semantic.bg?.[0]
     if (bg) {
@@ -385,6 +597,63 @@ function proposeColors(existing, audit, report, outliers, minCount) {
   return out
 }
 
+// daisyUI's built-in themes, which an app picks with `@plugin "daisyui"`:
+// where their colours live and how to own them. With no colour of the app's
+// own, the note says no semantic colour comes from the app's themes; with
+// some (a `@plugin "daisyui/theme"` block), only that the built-in ones keep
+// their values in the daisyui package. `classes`, when given, adds the
+// Tailwind palette classes the code uses.
+function daisyNote(daisy, owned, classes) {
+  const and = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0])
+  const role = (t) => (t.default && t.prefersdark ? ' (the default, also used when the system prefers dark)' : t.default ? ' (the default)' : t.prefersdark ? ' (used when the system prefers dark)' : '')
+  const picked = daisy.all ? 'every daisyUI built-in theme (themes: all)' : `daisyUI's built-in ${daisy.themes.length === 1 ? 'theme' : 'themes'} ${and(daisy.themes.map((t) => `${t.name}${role(t)}`))}`
+  const named = daisy.implicit ? `which @plugin "daisyui" turns on in ${daisy.file}, as it names no themes` : `which @plugin "daisyui" names in ${daisy.file}`
+  const where = daisy.all ? 'theme/<name>.css' : and(daisy.themes.map((t) => `theme/${t.name}.css`))
+  const top = (classes?.top ?? []).map((c) => c.name)
+  const palette = classes?.count > 0 ? ` Apart from those, the code uses ${classes.count} Tailwind palette ${classes.count === 1 ? 'class' : 'classes'}${top.length ? ` (most used: ${and(top)})` : ''}, which extract does not turn into tokens.` : ''
+  if (owned) return `The app also takes colours from ${picked}, ${named}. Their values live in the daisyui package (${where}), not in this repo, so no token here holds them. To own them as tokens, copy each theme's values into semantic colour tokens when reviewing colour semantics, one theme per mode.${palette}`
+  return `No semantic colour is proposed from the app's themes: it takes its colours from ${picked}, ${named}. Their values live in the daisyui package (${where}), not in this repo, under daisyUI's colour names: ${and(CLASS_LIBRARIES.daisyui.colors)}. To own them as tokens, copy each theme's values into semantic colour tokens when reviewing colour semantics, one theme per mode, and map daisyUI's names onto them with a @plugin "daisyui/theme" block per theme.${palette}`
+}
+
+// What the colour proposal leaves out, and why: no semantic colour (text,
+// background, border, accent), or no theme beyond the default when the
+// default is not dark itself. Said only when the repo has colours at all:
+// tokens, or Tailwind palette classes. An app on daisyUI's built-in themes
+// gets a note on those themes, which answers the first (daisyUI's colours
+// are named by their job) and, when the app has more than one theme, the
+// second.
+function colorGaps(existing, colors, audit, minCount, defaultMode, daisy = null, reason = null) {
+  const classes = audit?.colorClasses
+  const all = [...existing, ...colors].filter((t) => t.type === 'color')
+  const any = all.length > 0 || classes?.count > 0
+  if (!any && !daisy) return []
+  const notes = []
+  const many = (n, one, more) => `${n} ${n === 1 ? one : more}`
+  const byPath = new Map(existing.map((t) => [key(t.path), t]))
+  const named = existing.some((t) => isColourToken(t, byPath) && describeByName(key(t.path)))
+  // A colour the sources already alias to another is a semantic layer of
+  // their own, whatever its name (--card: var(--gray-50)).
+  const aliased = existing.some((t) => t.type === 'color' && [t.value, ...Object.values(t.modes ?? {})].some(isAlias))
+  const noSemantic = any && !named && !aliased && !colors.some((t) => isAlias(t.value))
+  if (daisy) {
+    notes.push(daisyNote(daisy, existing.some((t) => t.type === 'color'), noSemantic ? classes : null))
+  } else if (noSemantic) {
+    const top = (classes?.top ?? []).map((c) => c.name)
+    const examples = top.length > 1 ? `${top.slice(0, -1).join(', ')} and ${top[top.length - 1]}` : top[0]
+    const why = reason ?? (classes?.count > 0
+      ? `the code sets its colours with ${many(classes.count, 'Tailwind palette class', 'Tailwind palette classes')}${examples ? ` (most used: ${examples})` : ''}, which extract does not turn into semantic tokens, and the sources name no colour by its job`
+      : `the sources name no colour by its job (such as bg, text or border), and the code uses no raw colour as a background, text or border ${minCount} times or more`)
+    notes.push(`No semantic colour is proposed: ${why}. Add the text, background, border and accent tokens when reviewing colour semantics, each an alias of a primitive.`)
+  }
+  if (any && !daisy?.several && defaultMode !== 'dark' && !all.some((t) => Object.keys(t.modes ?? {}).length > 0)) {
+    const why = classes?.dark > 0
+      ? `the code switches its colours with ${many(classes.dark, 'dark: variant', 'dark: variants')} of Tailwind palette classes, which extract does not read, and the sources set no colour for a dark theme`
+      : 'the sources set no colour for a dark theme'
+    notes.push(`No dark theme is proposed: ${why}. If the app has one theme only, nothing is missing; if that theme is dark, set tokens.defaultMode to dark.`)
+  }
+  return notes
+}
+
 // ── Scales: spacing, radius, type ──────────────────────────────────────────
 
 const rem = (px) => `${Number((px / 16).toFixed(4))}rem`
@@ -392,10 +661,67 @@ const pxOf = (text) => {
   const m = /^(-?\d*\.?\d+)(px|rem)$/.exec(String(text).trim())
   return m ? Number(m[1]) * (m[2] === 'rem' ? 16 : 1) : null
 }
-const existingPx = (tokens, groups) => new Set(tokens.filter((t) => groups.includes(t.path[0])).map((t) => pxOf(t.value)).filter((n) => n !== null))
+// The px sizes the tokens of some groups hold, through their references,
+// which are looked up in `all`: a Tailwind step that aliases a style file's
+// variable holds that variable's size.
+const existingPx = (tokens, groups, all = tokens) => {
+  const byPath = new Map(all.map((t) => [key(t.path), t]))
+  const valueOf = (t) => {
+    for (let hop = 0; t && isAlias(t.value) && hop < 8; hop++) t = byPath.get(aliasPath(t.value)) ?? byPath.get(`${aliasPath(t.value)}.$root`)
+    return t?.value
+  }
+  return new Set(tokens.filter((t) => groups.includes(t.path[0])).map((t) => pxOf(valueOf(t))).filter((n) => n !== null))
+}
+// A number as a token name: a dot is not allowed in one, so 0.5 is 0_5.
+const numberName = (n) => String(n).replace('.', '_')
 
-function proposeSpacing(existing, audit, report, outliers, minCount) {
-  const histogram = audit?.spacing?.histogram ?? []
+// A length the code writes in em is relative to a font size (a font size's
+// to its parent's, any other length's to its element's), so no rem token can
+// hold it. A family's em lengths, by how each is written and by the px the
+// audit counted it at, so a scale can leave them out of its counts.
+function emLengths(audit, category, body = null) {
+  const byValue = new Map()
+  const byPx = new Map()
+  let bodyLeft = typeof body?.px === 'number'
+  for (const f of audit?.findings ?? []) {
+    if (f.category !== category) continue
+    const written = f.kind === 'arbitrary' ? /\[(.*)\]/.exec(f.value)?.[1] : f.value
+    if (!/^-?\d*\.?\d+em$/.test(written ?? '')) continue
+    // The body size in em, set by a body, html or :root rule, follows the
+    // root size as rem does: it is the body size, not an em length.
+    if (bodyLeft && f.file === body.file && Math.abs(parseFloat(written) * 16 - body.px) < 0.01) {
+      bodyLeft = false
+      continue
+    }
+    byValue.set(written, (byValue.get(written) ?? 0) + 1)
+    if (f.px !== undefined) byPx.set(f.px, (byPx.get(f.px) ?? 0) + 1)
+  }
+  return { byValue, byPx }
+}
+// A count by px (a histogram, the type sizes) less the em lengths at each px.
+const withoutEm = (list, em) => list.map((s) => ({ ...s, count: s.count - (em.byPx.get(s.px) ?? 0) })).filter((s) => s.count > 0)
+// The em lengths of a family, under Not proposed in one row, most used first.
+function emOutliers(em, family, outliers) {
+  if (em.byValue.size === 0) return
+  const list = [...em.byValue].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
+  const shown = list.slice(0, 8).map(([value, n]) => (n > 1 ? `${value} ×${n}` : value)).join(', ')
+  const note = `in em, relative to the ${family === 'typography' ? "parent's" : "element's"} font size, so a rem token cannot hold ${list.length === 1 ? 'it' : 'them'}`
+  outliers.push({ family, value: list.length > 8 ? `${shown}, +${list.length - 8} more` : shown, count: list.reduce((n, [, c]) => n + c, 0), note, em: true })
+}
+
+// Tailwind's own classes of a family the audit counted (`rounded-lg`, a
+// spacing step), as one report row: Tailwind's scale needs no new tokens.
+function tailwindClassRow(audit, family, from, note) {
+  const list = audit?.forExtract?.classes?.[family] ?? []
+  if (list.length === 0) return null
+  const shown = list.slice(0, 12).map((c) => `${c.value} ×${c.count}`).join(', ')
+  return { family, token: '(none)', value: list.length > 12 ? `${shown}, +${list.length - 12} more` : shown, from, note }
+}
+
+// `closed` says the sources' steps are the whole scale (see propose).
+function proposeSpacing(existing, audit, report, outliers, minCount, tailwind, closed = existingPx(existing, ['spacing', 'space']).size >= 3) {
+  const em = emLengths(audit, 'spacing')
+  const histogram = withoutEm(audit?.spacing?.histogram ?? [], em)
   const have = existingPx(existing, ['spacing', 'space'])
   const weighted = histogram.reduce((n, s) => n + s.count, 0)
   const on = (base) => histogram.filter((s) => s.px % base === 0).reduce((n, s) => n + s.count, 0)
@@ -405,7 +731,7 @@ function proposeSpacing(existing, audit, report, outliers, minCount) {
     if (s.px === 0 || have.has(s.px)) continue
     // Three or more steps in the sources are a scale, and the code's other
     // values are drift for tidy; fewer (Tailwind 4's --spacing) leave gaps.
-    if (have.size >= 3) {
+    if (closed) {
       outliers.push({ family: 'spacing', value: `${s.px}px`, count: s.count, note: 'not on the existing spacing scale' })
       continue
     }
@@ -417,27 +743,85 @@ function proposeSpacing(existing, audit, report, outliers, minCount) {
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
     report.push({ family: 'spacing', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note: `on the ${base}px grid` })
   }
+  emOutliers(em, 'spacing', outliers)
+  const classes = tailwind && tailwindClassRow(audit, 'spacing', 'Tailwind spacing classes (p-, m-, gap- and the like), by step', "Tailwind's own spacing scale; give it tokens if the design should own it")
+  if (classes) report.push(classes)
   return out
 }
 
-function proposeRadius(existing, audit, report, outliers, minCount) {
+// Tailwind's radius scale by size in px, as each version names it. Tailwind
+// 3's 4px is `rounded` itself, which has no name to give a token.
+const TAILWIND_RADIUS = {
+  tailwind4: { 2: 'xs', 4: 'sm', 6: 'md', 8: 'lg', 12: 'xl', 16: '2xl', 24: '3xl', 32: '4xl' },
+  tailwind3: { 2: 'sm', 6: 'md', 8: 'lg', 12: 'xl', 16: '2xl', 24: '3xl' },
+}
+
+// `tailwind` is the Tailwind version the repo styles with, or null. There a
+// radius takes Tailwind's name only when its size is Tailwind's for that
+// name, so a token wired into Tailwind never changes what a class renders;
+// any other radius is named by its size, a name Tailwind's scale never uses.
+function proposeRadius(existing, audit, report, outliers, minCount, tailwind, closed = existingPx(existing, ['radius', 'radii', 'rounded']).size >= 3) {
   const have = existingPx(existing, ['radius', 'radii', 'rounded'])
+  const em = emLengths(audit, 'radius')
   const counts = new Map()
   for (const f of audit?.findings ?? []) if (f.category === 'radius' && f.px !== undefined) counts.set(f.px, (counts.get(f.px) ?? 0) + 1)
-  const values = [...counts.entries()].filter(([px]) => px > 0 && !have.has(px)).sort((a, b) => a[0] - b[0])
+  for (const [px, n] of em.byPx) counts.set(px, counts.get(px) - n)
+  const values = [...counts.entries()].filter(([px, n]) => px > 0 && n > 0 && !have.has(px)).sort((a, b) => a[0] - b[0])
   const names = ['sm', 'md', 'lg', 'xl', '2xl', '3xl']
+  const scale = tailwind ? TAILWIND_RADIUS[tailwind] : null
+  // A name a source already gives a radius (by its path or its CSS variable)
+  // is never proposed again; that radius is named by its size instead.
+  const owned = new Set(existing.flatMap((t) => [key(t.path), t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))]))
+  const free = (name) => !owned.has(`radius.${name}`) && !owned.has(cssVarFor(['radius', name]))
   const out = []
   let i = 0
   for (const [px, count] of values) {
-    if (count < minCount || have.size >= 3) {
-      outliers.push({ family: 'radius', value: `${px}px`, count, note: have.size >= 3 ? 'not on the existing radius scale' : 'used once' })
+    if (count < minCount || closed) {
+      outliers.push({ family: 'radius', value: `${px}px`, count, note: closed ? 'not on the existing radius scale' : 'used once' })
       continue
     }
-    const name = px >= 999 ? 'full' : names[i++] ?? String(px)
-    out.push({ path: ['radius', name], type: 'dimension', value: px >= 999 ? '9999px' : rem(px), modes: {}, description: '', source: 'audit' })
-    report.push({ family: 'radius', token: `radius.${name}`, value: px >= 999 ? '9999px' : rem(px), from: `${px}px used ${count}× in code`, note: '' })
+    const full = px >= 999
+    const wanted = full ? 'full' : scale ? scale[px] ?? numberName(px) : names[i++] ?? numberName(px)
+    const name = [wanted, numberName(px)].find(free)
+    if (name === undefined) {
+      outliers.push({ family: 'radius', value: `${px}px`, count, note: `the sources already use the names radius.${wanted} and radius.${numberName(px)}` })
+      continue
+    }
+    const note = name !== wanted
+      ? `the sources already define radius.${wanted}, so named by its size`
+      : !scale ? '' : full || scale[px] ? `Tailwind's rounded-${name}` : tailwind === 'tailwind3' && px === 4 ? "Tailwind's rounded, named by its size" : "off Tailwind's scale, named by its size"
+    out.push({ path: ['radius', name], type: 'dimension', value: full ? '9999px' : rem(px), modes: {}, description: '', source: 'audit' })
+    report.push({ family: 'radius', token: `radius.${name}`, value: full ? '9999px' : rem(px), from: `${px}px used ${count}× in code`, note })
   }
+  emOutliers(em, 'radius', outliers)
+  const classes = scale && tailwindClassRow(audit, 'radius', 'Tailwind classes', "Tailwind's own radii; give them tokens if the design should own them")
+  if (classes) report.push(classes)
   return out
+}
+
+// Widths and heights (a max width, a container): massimo proposes no size
+// family, so each value the code repeats is listed with that reason, and the
+// ones used once are listed together, never dropped.
+function sizeOutliers(audit, outliers, minCount) {
+  const byPx = new Map()
+  for (const f of audit?.findings ?? []) {
+    if (f.category !== 'size' || f.px === undefined || f.px === 0) continue
+    const written = f.kind === 'arbitrary' ? /\[(.*)\]/.exec(f.value)?.[1] ?? f.value : f.value
+    const e = byPx.get(f.px) ?? { px: f.px, count: 0, forms: new Map() }
+    e.count++
+    e.forms.set(written, (e.forms.get(written) ?? 0) + 1)
+    byPx.set(f.px, e)
+  }
+  const form = (e) => [...e.forms.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))[0][0]
+  const all = [...byPx.values()].sort((a, b) => b.count - a.count || a.px - b.px)
+  for (const e of all.filter((x) => x.count >= minCount)) {
+    outliers.push({ family: 'size', value: form(e), count: e.count, note: 'a width or height; massimo proposes no size tokens yet' })
+  }
+  const once = all.filter((x) => x.count < minCount).sort((a, b) => a.px - b.px)
+  if (once.length > 0) {
+    const shown = once.slice(0, 6).map(form).join(', ')
+    outliers.push({ family: 'size', value: once.length > 6 ? `${shown}, +${once.length - 6} more` : shown, count: once.reduce((n, x) => n + x.count, 0), note: 'widths and heights used once each' })
+  }
 }
 
 const WEIGHT_NAMES = { 100: 'thin', 200: 'extralight', 300: 'light', 400: 'regular', 500: 'medium', 600: 'semibold', 700: 'bold', 800: 'extrabold', 900: 'black' }
@@ -457,7 +841,7 @@ const inventoryCounts = (audit, family, read) => {
   return [...out.entries()].sort((a, b) => b[1] - a[1] || compare(String(a[0]), String(b[0])))
 }
 
-function proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind) {
+function proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind, closed = existingPx(existing, ['text', 'font-size']).size >= 3) {
   const out = []
   // Families: the sources' first, then the audit's.
   const families = existing.filter((t) => t.type === 'fontFamily')
@@ -495,13 +879,24 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
   })
   // Sizes: the sources' first, then the audit's, named around the body size.
   const haveSizes = existingPx(existing, ['text', 'font-size'])
-  // Three or more sizes in the sources are a scale; fewer leave gaps to fill.
-  const onScale = haveSizes.size < 3
-  const sizes = (audit?.typeSizes ?? []).filter((s) => s.count >= minCount && !haveSizes.has(s.px) && onScale).sort((a, b) => a.px - b.px)
-  for (const s of (audit?.typeSizes ?? []).filter((s) => !haveSizes.has(s.px) && (s.count < minCount || !onScale))) {
+  // The body size: the one a body, html or :root rule sets, else the most used.
+  const ruled = audit?.forExtract?.bodySize ?? null
+  const em = emLengths(audit, 'type', ruled)
+  const typeSizes = withoutEm(audit?.typeSizes ?? [], em)
+  const body = ruled?.px ?? [...typeSizes].sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16) || a.px - b.px)[0]?.px ?? 16
+  // Three or more sizes in the sources are a scale; fewer leave gaps to
+  // fill. A few sizes all on one side of the body size (a badge's 8px and
+  // 10px) are extra steps, not the scale running text is set in.
+  const spans = [...haveSizes].some((px) => px <= body) && [...haveSizes].some((px) => px >= body)
+  const onScale = !closed || !spans
+  // A size the body rule sets is kept even when the code repeats it nowhere
+  // else, and even beside a scale the sources close, which lacks it.
+  const kept = (s) => s.count >= minCount || s.px === ruled?.px
+  const sizes = typeSizes.filter((s) => kept(s) && !haveSizes.has(s.px) && (onScale || s.px === ruled?.px)).sort((a, b) => a.px - b.px)
+  for (const s of typeSizes.filter((s) => !haveSizes.has(s.px) && !sizes.includes(s))) {
     outliers.push({ family: 'typography', value: `${s.px}px`, count: s.count, note: onScale ? 'a font size used once' : 'not on the existing type scale' })
   }
-  const body = [...(audit?.typeSizes ?? [])].filter((s) => s.px >= 14 && s.px <= 18).sort((a, b) => b.count - a.count || Math.abs(a.px - 16) - Math.abs(b.px - 16))[0]?.px ?? 16
+  emOutliers(em, 'typography', outliers)
   const below = sizes.filter((s) => s.px < body).reverse()
   const above = sizes.filter((s) => s.px > body)
   // A Tailwind repo already names its sizes: keep Tailwind's names, and name
@@ -513,10 +908,23 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
         ...sizes.filter((s) => s.px === body).map((s) => ['base', s]),
         ...above.map((s, i) => [SIZE_NAMES_UP[i] ?? `${i}xl`, s]),
       ]
-  for (const [name, s] of named) {
+  // A name whose variable a source token already has (--font-size-base)
+  // is named by its size instead.
+  const ownedVars = new Set(existing.map((t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))))
+  for (const [wanted, s] of named) {
+    const name = [wanted, String(s.px).replace('.', '_')].find((n) => !ownedVars.has(cssVarFor(['font', 'size', n])))
+    if (name === undefined) {
+      outliers.push({ family: 'typography', value: `${s.px}px`, count: s.count, note: `the sources already use the variables ${cssVarFor(['font', 'size', wanted])} and ${cssVarFor(['font', 'size', String(s.px).replace('.', '_')])}` })
+      continue
+    }
     const path = ['font', 'size', name]
     out.push({ path, type: 'dimension', value: rem(s.px), modes: {}, description: '', source: 'audit' })
-    const note = tailwind ? (TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size") : name === 'base' ? 'the body size' : ''
+    const bodyNote = ruled ? `the body size, set on ${ruled.selector} in ${ruled.file}` : 'the most used size, taken as the body size'
+    const renamed = name === wanted ? '' : `the sources already use ${cssVarFor(['font', 'size', wanted])}, so named by its size`
+    const twNote = renamed || (TAILWIND_TEXT[s.px] ? `Tailwind's text-${name}` : "off Tailwind's scale, named by its size")
+    const note = !onScale
+      ? [tailwind ? twNote : renamed, `${bodyNote}, which the sources' type scale lacks`].filter(Boolean).join('; ')
+      : tailwind ? twNote : [renamed, wanted === 'base' ? bodyNote : ''].filter(Boolean).join('; ')
     report.push({ family: 'typography', token: key(path), value: rem(s.px), from: `${s.px}px used ${s.count}× in code`, note })
   }
   // Composites: exact from a Tailwind config's type steps, otherwise one per
@@ -543,11 +951,14 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
     const px = pxOf(size.value)
     const step = typeSteps.find((s) => key(s.path) === key(size.path))
     const assumed = []
+    // A step's own line height: a length, a number or a percentage. Any
+    // other (normal, a var()) is no number a composite can hold, so the
+    // line height is assumed as for a step without one, and said.
+    const written = step?.lineHeight === undefined ? null : String(step.lineHeight).trim()
+    const own = written === null ? null : pxOf(written) !== null ? Number((pxOf(written) / px).toFixed(4)) : /^\d*\.?\d+%$/.test(written) ? Number((parseFloat(written) / 100).toFixed(4)) : /^\d*\.?\d+$/.test(written) ? Number(written) : null
+    const instead = written !== null && own === null ? `, in place of ${step.source ?? 'the config'}'s ${written}` : ''
     const lineHeight = (() => {
-      if (step?.lineHeight !== undefined) {
-        const lh = pxOf(step.lineHeight)
-        return lh !== null ? Number((lh / px).toFixed(4)) : Number(step.lineHeight)
-      }
+      if (own !== null) return own
       const tw = tailwind && size.source === 'audit' && TAILWIND_TEXT[px]
       if (tw) {
         const lh = tw[1] === 1 ? 1 : Number((tw[1] / px).toFixed(4))
@@ -556,10 +967,10 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
       }
       const common = px >= 24 ? headingLeading : bodyLeading
       if (common !== undefined) {
-        assumed.push(`line height ${common}, the most used for ${px >= 24 ? 'headings' : 'body text'}`)
+        assumed.push(`line height ${common}, the most used for ${px >= 24 ? 'headings' : 'body text'}${instead}`)
         return common
       }
-      assumed.push(`line height ${px >= 24 ? 1.2 : 1.5}, as the code sets none for ${px >= 24 ? 'headings' : 'body text'}`)
+      assumed.push(`line height ${px >= 24 ? 1.2 : 1.5}, as the code sets none for ${px >= 24 ? 'headings' : 'body text'}${instead}`)
       return px >= 24 ? 1.2 : 1.5
     })()
     const weight = step?.fontWeight !== undefined ? Number(step.fontWeight) : px >= 24 ? headingWeight ?? bodyWeight : bodyWeight
@@ -581,7 +992,7 @@ function proposeType(existing, audit, typeSteps, report, outliers, minCount, tai
 
 // ── Shadows, borders, motion, layers, opacity ──────────────────────────────
 
-function proposeRest(existing, audit, colorTokens, report, outliers, minCount, fromCss) {
+function proposeRest(existing, audit, colorTokens, report, outliers, minCount, fromCss, tailwind) {
   const out = []
   const has = (type) => existing.some((t) => t.type === type)
   // Shadows, by blur.
@@ -600,7 +1011,8 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
       out.push({ path, type: 'shadow', value: s.value, modes: {}, description: '', source: 'audit' })
       report.push({ family: 'shadow', token: key(path), value: s.value, from: `used ${s.count}× in code`, note: '' })
     })
-    const tw = (audit?.inventory?.shadow ?? []).filter((s) => s.value.startsWith('class '))
+    // Class strings are Tailwind's shadows only in a repo styled with Tailwind.
+    const tw = tailwind ? (audit?.inventory?.shadow ?? []).filter((s) => s.value.startsWith('class ')) : []
     if (tw.length) report.push({ family: 'shadow', token: '(none)', value: tw.map((s) => s.value.slice(6)).join(', '), from: 'Tailwind classes', note: "Tailwind's own shadows; give them tokens if the design should own them" })
   }
   // Borders: the most used shorthands, their colour as a reference where a token matches.
@@ -635,14 +1047,15 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
       const m = /^(\d*\.?\d+)(ms|s)$/.exec(v)
       return m ? Number(m[1]) * (m[2] === 's' ? 1000 : 1) : null
     }).sort((a, b) => a[0] - b[0])
+    // Under 1ms (0.01ms in a reduced-motion reset) switches motion off; it is no step of the scale.
     const kept = ms.filter(([v, count]) => {
-      if (count >= minCount && v > 0) return true
-      if (v > 0) outliers.push({ family: 'motion', value: `${v}ms`, count, note: 'used once' })
+      if (count >= minCount && v >= 1) return true
+      if (v > 0) outliers.push({ family: 'motion', value: `${v}ms`, count, note: v < 1 ? 'under 1ms, which turns motion off rather than timing it' : 'used once' })
       return false
     })
     const names = kept.length <= 3 ? ['fast', 'normal', 'slow'].slice(kept.length === 1 ? 1 : 0) : []
     kept.forEach(([v, count], i) => {
-      const path = ['duration', names[i] ?? String(v)]
+      const path = ['duration', names[i] ?? numberName(v)]
       out.push({ path, type: 'duration', value: `${v}ms`, modes: {}, description: '', source: 'audit' })
       report.push({ family: 'motion', token: key(path), value: `${v}ms`, from: `used ${count}× in code`, note: '' })
     })
@@ -695,7 +1108,7 @@ function proposeRest(existing, audit, colorTokens, report, outliers, minCount, f
 // ── The whole proposal ─────────────────────────────────────────────────────
 
 // `fromCss` is dtcg.mjs's converter, passed in so this module stays small.
-export function propose({ sources, audit, fromCss, minCount = 2, styling = [] }) {
+export function propose({ sources, audit, fromCss, minCount = 2, styling = [], defaultMode = 'light' }) {
   const { tokens: existing, notes } = mergeSources(sources)
   const report = []
   const outliers = []
@@ -707,16 +1120,44 @@ export function propose({ sources, audit, fromCss, minCount = 2, styling = [] })
         : FAMILY_OF_GROUP[t.path[0]] ?? (t.type === 'shadow' ? 'shadow' : t.type === 'duration' || t.type === 'cubicBezier' ? 'motion' : 'other')
     report.push({ family, token: key(t.path), value: isObject(t.value) || Array.isArray(t.value) ? JSON.stringify(t.value) : String(t.value), from: t.source, note: '' })
   }
-  const colors = proposeColors(existing, audit, report, outliers, minCount)
-  const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
   const tailwind = (styling ?? []).some((s) => /^tailwind/.test(s))
+  // The Tailwind version, for the scales whose names changed in Tailwind 4
+  // and for its colour palette.
+  const tailwindVersion = !tailwind ? null : (styling ?? []).includes('tailwind3') && !(styling ?? []).includes('tailwind4') ? 'tailwind3' : 'tailwind4'
+  const gaps = {}
+  const page = sources.map((s) => s.page).find(Boolean) ?? null
+  // Groups some of whose values a source left unread (a spread, or a value
+  // from another module), by the readers' group names.
+  const partial = new Set(sources.flatMap((s) => s.partial ?? []))
+  const styleFile = sources.find((s) => s.kind === 'css')?.reads ?? (() => false)
+  const colors = proposeColors(existing, audit, report, outliers, minCount, { tailwind: tailwindVersion, page, styleFile, defaultMode, gaps, unread: partial.has('color') })
+  const daisy = sources.map((s) => s.daisyThemes).find(Boolean) ?? null
+  notes.push(...colorGaps(existing, colors, audit, minCount, defaultMode, daisy, gaps.reason ?? null))
+  if (gaps.pageFile) notes.push(gaps.pageFile)
+  if (gaps.partialDark) notes.push(gaps.partialDark)
+  const typeSteps = sources.flatMap((s) => s.typeSteps ?? [])
+  // Three or more steps the sources define close a scale: the code's other
+  // values are drift. Not when they come from a Tailwind config's
+  // theme.extend alone, which adds to Tailwind's own scale, nor when a
+  // source left part of the family unread (a spread, or a value from
+  // another module): then the code's values fill the gaps, with a note.
+  const extendOnly = new Set(sources.filter((s) => s.kind === 'tailwind').flatMap((s) => (s.extendOnly ?? []).flatMap((g) => [...new Set(s.tokens.map((t) => t.source))].map((file) => `${file}\n${g}`))))
+  const closed = (family, groups) => {
+    const steps = existingPx(existing.filter((t) => !extendOnly.has(`${t.source}\n${t.path[0]}`)), groups, existing).size >= 3
+    if (steps && groups.some((g) => partial.has(g))) {
+      notes.push(`The sources leave part of the ${family} scale unread (see the notes on the Tailwind config), so the code's own ${family} values were proposed beside the steps that were read; check them against the part left out.`)
+      return false
+    }
+    return steps
+  }
   const out = [
     ...existing,
     ...colors,
-    ...proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind),
-    ...proposeSpacing(existing, audit, report, outliers, minCount),
-    ...proposeRadius(existing, audit, report, outliers, minCount),
+    ...proposeType(existing, audit, typeSteps, report, outliers, minCount, tailwind, closed('type', ['text', 'font-size'])),
+    ...proposeSpacing(existing, audit, report, outliers, minCount, tailwind, closed('spacing', ['spacing', 'space'])),
+    ...proposeRadius(existing, audit, report, outliers, minCount, tailwindVersion, closed('radius', ['radius', 'radii', 'rounded'])),
   ]
-  out.push(...proposeRest(existing, audit, out.filter((t) => t.type === 'color'), report, outliers, minCount, fromCss))
+  out.push(...proposeRest(existing, audit, out.filter((t) => t.type === 'color'), report, outliers, minCount, fromCss, tailwind))
+  sizeOutliers(audit, outliers, minCount)
   return { tokens: out, report, outliers, notes }
 }

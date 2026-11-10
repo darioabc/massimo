@@ -1,0 +1,10 @@
+{
+  "styling": ["css"],
+  "components": {
+    "include": ["components/**/*.vue"],
+    "exclude": ["**/*.test.*", "**/*.stories.*", "**/*.story.*"]
+  },
+  "consumers": ["**/*.{ts,vue}"],
+  "stories": { "include": ["**/*.story.vue"] },
+  "tokens": { "styleFiles": [] }
+}

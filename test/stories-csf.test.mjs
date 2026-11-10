@@ -87,7 +87,11 @@ test('what a CSF reader cannot read is said, not guessed', () => {
   assert.equal(called.title, null)
   assert.deepEqual(called.unreadable, [{ story: null, field: null, detail: 'its default export is defineMeta, not an object literal' }])
   assert.deepEqual(called.stories.map((s) => s.export), ['A'])
-  assert.match(readCsf('export const A = () => 1', 'x.stories.ts').unreadable[0].detail, /no default export/)
+  // Named stories with no default export are Ladle's form, titled from the path;
+  // only a file with neither is not a CSF file.
+  const loose = readCsf('export const A = () => 1\nexport const B = () => 2', 'x.stories.ts')
+  assert.deepEqual([loose.title, loose.stories.map((s) => s.export), loose.unreadable], [null, ['A', 'B'], []])
+  assert.deepEqual(readCsf('const a = 1\n', 'x.stories.ts').unreadable, [{ story: null, field: null, detail: 'it has no default export, so it is not a CSF file' }])
   const titled = readCsf('const t = "x"\nexport default { title: t, includeStories: /^[A-Z]/ }\nexport const A = 1', 'x.stories.ts')
   assert.deepEqual(titled.unreadable.map((u) => u.field), ['title', 'includeStories'])
   assert.deepEqual(readCsf('export default { includeStories: ["B"] }\nexport const A = 1\nexport const B = 2', 'x.stories.ts').stories.map((s) => s.export), ['B'])

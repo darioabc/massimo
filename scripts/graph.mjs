@@ -35,10 +35,11 @@ import {
   stripComments,
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
-import { callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
+import { calledMapClasses, callSiteUsage, componentProps, componentStates } from './lib/props.mjs'
 import { closeBracket, componentsOf, listFaults, readCsf, readManifest, readStoryStates, slugFiles, slugPath, stateName } from './lib/stories-read.mjs'
 import { natural, truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
+import { NUXT_EDGE_KINDS, nuxtApp, nuxtEdges, withNuxt } from './lib/nuxt.mjs'
 
 helpAndExit(import.meta.url)
 
@@ -54,6 +55,8 @@ const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?(?![\w$])(\s*(?:<(?:[^<
 // A string literal with no `${}`, its text in group 2.
 const PLAIN_STRING = /(['"`])((?:\\.|(?!\1)[^\\\n$]|\$(?!\{))*)\1/g
 const EDGE_KINDS = ['mdx', 'glob']
+// Framework configs, at any depth, that wire components in by path.
+const FRAMEWORK_CONFIG = /(?:^|\/)astro\.config\.[cm]?[jt]s$/
 const TOKEN_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'other']
 
 const MAX_COMPONENT_LIST = 40
@@ -88,6 +91,33 @@ const isProse = (text) => /[.,!?;](?:\s|$)/.test(text.replace(/\$\{[^}]*\}/g, ' 
 
 // `hover:!btn-primary` -> `btn-primary`
 const bareClass = (raw) => raw.slice(raw.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
+
+// A Vue bound attribute just before a string: `:class="` or `v-bind:ui='`,
+// the attribute's name in group 1.
+const VUE_BOUND = /(?:^|\s)(?::|v-bind:)([\w-]+)(?:\.[\w-]+)*\s*=\s*["']$/
+
+// The string literals a node's classes and tokens are read from. In a .vue
+// file a bound attribute's value is script read as one string, so when it
+// reads as prose as a whole (`:class="cn('bg-card text-card-foreground', props.class)"`)
+// its own string literals stand in for it, each a class list when the
+// attribute is the class.
+function classLiterals(code, file) {
+  const out = []
+  const vue = /\.vue$/i.test(file)
+  for (const literal of stringLiterals(code, file)) {
+    const bound = vue && isProse(literal.text) ? VUE_BOUND.exec(code.slice(Math.max(0, literal.start - 64), literal.start)) : null
+    if (!bound) {
+      out.push(literal)
+      continue
+    }
+    for (const inner of stringLiterals(literal.text, 'bound.ts')) {
+      // An operand of a comparison (`variant === 'link'`) is a value, not a class list.
+      const compared = /[=!]==?\s*$/.test(literal.text.slice(0, inner.start - 1)) || /^\s*[=!]==?/.test(literal.text.slice(inner.start + inner.text.length + 1))
+      out.push({ text: inner.text, start: literal.start + inner.start, classAttr: bound[1] === 'class' && !compared })
+    }
+  }
+  return out
+}
 
 // The import and export lines of an MDX file, as MDX reads them: from a line
 // that opens with `import` or `export` to the next blank line, so an import
@@ -288,9 +318,12 @@ function placementOf(taxonomy) {
 
 // Everything the graph needs, computed from source. Pure apart from reads:
 // returns { json, markdown, warnings } so --check and tests can reuse it.
-// A component's props with how its call sites use them, and the states it styles.
-function propsAndStates(source, file, name, importers) {
-  const own = componentProps(source, file, componentName(file))
+// A component's props with how its call sites use them, and the states it
+// styles. `sourceOf(name)` is the source of the module the component imports
+// `name` from, where a variant map its props name may sit. Each importer is
+// { file, text, names }, `names` being the names it binds the component to.
+function propsAndStates(source, file, name, importers, sourceOf = null) {
+  const own = componentProps(source, file, componentName(file), sourceOf)
   const usage = callSiteUsage(componentName(file), importers)
   const props = own.map((p) => (usage[p.name] ? { ...p, usage: usage[p.name] } : p))
   for (const [prop, values] of Object.entries(usage)) {
@@ -298,6 +331,30 @@ function propsAndStates(source, file, name, importers) {
   }
   props.sort((a, b) => compare(a.name, b.name))
   return { props, states: componentStates(source, props) }
+}
+
+// The values a file's import statements bind, as { spec, imported, local }:
+// `import A, { b as c } from 'x'` binds A to x's default and c to its b, and
+// `import * as N from 'x'` binds N to all of x. A type-only import binds none.
+function importBindings(source, file) {
+  const out = []
+  for (const m of stripComments(source, file).matchAll(/(?<![\w$.])import\s+(type\s+)?([\w$*\s{},]+?)\s*\bfrom\s*(['"])([^'"\n]+)\3/g)) {
+    if (m[1]) continue
+    const spec = m[4]
+    for (const part of m[2].replace(/\{[\s\S]*\}/, '').split(',')) {
+      const head = part.trim()
+      const ns = /^\*\s*as\s+([\w$]+)$/.exec(head)
+      if (ns) out.push({ spec, imported: '*', local: ns[1] })
+      else if (/^[\w$]+$/.test(head)) out.push({ spec, imported: 'default', local: head })
+    }
+    for (const item of /\{([\s\S]*)\}/.exec(m[2])?.[1].split(',') ?? []) {
+      const s = item.trim()
+      if (!s || /^type\s/.test(s)) continue
+      const [imported, local] = s.split(/\s+as\s+/).map((x) => x.trim())
+      out.push({ spec, imported, local: local ?? imported })
+    }
+  }
+  return out
 }
 
 // ── The csf lane ────────────────────────────────────────────────────────────
@@ -408,7 +465,10 @@ export function buildGraph(root, config, command = "graph.mjs") {
     (f) => !isStory(f) && !isTestFile(f) && !nodeSet.has(f),
   )
 
-  const resolveImport = createResolver(root, config)
+  // A Nuxt app's aliases, layers and auto-imported components; null in any
+  // other project, which the graph then reads exactly as before.
+  const nuxt = nuxtApp(root, config, all, warnings)
+  const resolveImport = withNuxt(createResolver(root, config), nuxt)
   // Components go by their name; a node of another kind by its path without
   // `src/` and its extension (`pages/work/index`), which reads as its route.
   const nameOf = assignNames(kinds.length > 0 ? nodeFiles.filter((f) => kindOf.get(f) === 'component') : nodeFiles)
@@ -421,6 +481,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     }
   }
   const edgeKinds = new Set([].concat(config.graph?.edges ?? []))
+  for (const kind of NUXT_EDGE_KINDS) edgeKinds.delete(kind)
   for (const kind of edgeKinds) {
     if (!EDGE_KINDS.includes(kind)) warnings.push(`graph.edges lists "${kind}"; its values are "mdx" and "glob", so that one adds no edges`)
   }
@@ -478,6 +539,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
         else edges.push({ file: hit.file, names: imp.names })
       }
       if (edgeKinds.has('glob')) for (const target of globTargets(file, stripComments(source, parseAs))) edges.push({ file: target, names: ['*'] })
+      if (nuxt && !mdx) edges.push(...nuxtEdges(nuxt, file, text))
       let exportsCache = null
       info = { edges, unresolved, packages, reexports, exportNames: () => (exportsCache ??= extractExports(source, parseAs)) }
     }
@@ -534,6 +596,16 @@ export function buildGraph(root, config, command = "graph.mjs") {
         importersOf.get(target).add(file)
         if (nodeSet.has(file)) composes.get(file).add(target)
       }
+    }
+  }
+  // A framework config that names a component file in a quoted relative
+  // path wires it in (Astro's `components: { Head: './src/components/Head.astro' }`),
+  // so the config counts as a file that uses it.
+  for (const wiring of all.filter((f) => FRAMEWORK_CONFIG.test(f))) {
+    for (const { text: spec } of stringLiterals(readFileSync(join(root, wiring), 'utf8'), wiring)) {
+      if (!/^\.\.?\//.test(spec)) continue
+      const hit = resolveImport(wiring, spec)
+      if (hit.file && nodeSet.has(hit.file) && hit.file !== wiring) importersOf.get(hit.file).add(wiring)
     }
   }
 
@@ -957,11 +1029,27 @@ export function buildGraph(root, config, command = "graph.mjs") {
   }
   const lane = laneMode === 'manifest' ? readLane() : laneMode === 'csf' ? readCsfLane() : null
 
-  // Style harvesting reads the colour names the styleFiles define.
+  // Style harvesting reads the colour names the styleFiles define, and the
+  // ones the css and tailwind4 token outputs declare, so a component still
+  // reads its tokens once a style file imports the outputs in place of its
+  // own declarations.
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
   const customProps = []
+  // What the style files @import, as paths from the root.
+  const styleImports = new Set()
   for (const f of styleFiles) {
-    customProps.push(...parseCustomProperties(readFileSync(join(root, f), 'utf8'), f))
+    const css = readFileSync(join(root, f), 'utf8')
+    customProps.push(...parseCustomProperties(css, f))
+    for (const m of stripComments(css, f).matchAll(/@import\s+(?:url\(\s*)?["']([^"']+)["']/g)) styleImports.add(join(f, '..', m[1]).replaceAll('\\', '/'))
+  }
+  const outputProps = []
+  // The outputs a style file imports, which graph.md names under Tokens.
+  const importedOutputs = []
+  for (const output of config.tokens.outputs ?? []) {
+    const path = output?.path
+    if (!['css', 'tailwind4'].includes(output?.format) || typeof path !== 'string' || !existsSync(join(root, path))) continue
+    outputProps.push(...parseCustomProperties(readFileSync(join(root, path), 'utf8'), path))
+    if (styleImports.has(join(path).replaceAll('\\', '/'))) importedOutputs.push(path)
   }
   const libraries = classLibraries(config).map((lib) => ({
     ...lib,
@@ -969,7 +1057,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     byLength: [...lib.roots].sort((a, b) => b.length - a.length || compare(a, b)),
   }))
   const colorNames = sortedUnique([
-    ...customProps.map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
+    ...[...customProps, ...outputProps].map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
     ...libraries.flatMap((lib) => lib.colors),
   ])
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -1021,18 +1109,55 @@ export function buildGraph(root, config, command = "graph.mjs") {
     if (!textOf.has(f)) textOf.set(f, readFileSync(join(root, f), 'utf8'))
     return textOf.get(f)
   }
+  // The source of the module a node imports `name` from (a type import
+  // included), or null when it is not a file of the repo.
+  const importedSource = (file, source) => {
+    let imports = null
+    return (name) => {
+      imports ??= extractImports(source, file)
+      const imp = imports.find((i) => i.kind === 'static' && i.names.includes(name))
+      const hit = imp ? resolveImport(file, imp.spec).file : null
+      return hit && CODE_EXTS.test(hit) ? text(hit) : null
+    }
+  }
+  // The names a call site's markup gives a node: the local names of the
+  // file's imports that reach it (`import UiButton from './button.vue'`),
+  // and in a Nuxt app the names Nuxt registers it under, unless the file
+  // binds that name to a module other than "#components". A namespace
+  // import (`import * as UI`) names no tag, since its tags (`<UI.Card>`)
+  // name a member, not the namespace. Empty when neither names it;
+  // callSiteUsage then reads tags named after its file.
+  const registered = new Map()
+  for (const [name, entries] of nuxt?.autoImports ? nuxt.components : []) {
+    for (const e of entries) registered.set(e.file, [...(registered.get(e.file) ?? []), name, `Lazy${name}`])
+  }
+  const bindingsOf = new Map()
+  const tagNamesOf = (importer, target) => {
+    if (!bindingsOf.has(importer)) {
+      bindingsOf.set(importer, importBindings(text(importer), importer).map((b) => ({ ...b, file: resolveImport(importer, b.spec).file })))
+    }
+    const bindings = bindingsOf.get(importer)
+    const names = new Set(bindings.filter((b) => b.file && b.imported !== '*' && reach(b.file, [b.imported]).has(target)).map((b) => b.local))
+    for (const name of registered.get(target) ?? []) {
+      if (!bindings.some((b) => b.local === name && b.spec !== '#components')) names.add(name)
+    }
+    return [...names]
+  }
   const nodes = nodeFiles.map((file) => {
     const source = readFileSync(join(root, file), 'utf8')
     const code = stripComments(source, file)
+    const sourceOf = importedSource(file, source)
+    // The classes of the cva or tv maps it imports and calls are its own class lists.
+    const mapLiterals = calledMapClasses(code, sourceOf).map((text) => ({ text, start: 0, classAttr: true }))
     const classes = Object.fromEntries(libraries.map((lib) => [lib.id, new Set()]))
     const tokens = new Set()
-    for (const { text, start } of stringLiterals(code, file)) {
+    for (const { text, start, classAttr } of [...classLiterals(code, file), ...mapLiterals]) {
       if (isProse(text)) continue
       const words = text.split(/[\s"'`{}(),;]+/).filter(Boolean).map(bareClass)
       if (words.length === 0) continue
       // A bare word like `label` or `list` is only a class when the string is
       // plainly a class list; `btn-primary`-style tokens always count.
-      const classy = CLASS_CONTEXT.test(code.slice(Math.max(0, start - 48), start)) || words.some(CLASS_LIKE.test, CLASS_LIKE)
+      const classy = classAttr || CLASS_CONTEXT.test(code.slice(Math.max(0, start - 48), start)) || words.some(CLASS_LIKE.test, CLASS_LIKE)
       for (const token of words) {
         for (const lib of libraries) {
           const component = rootOf(lib, token, classy)
@@ -1043,7 +1168,9 @@ export function buildGraph(root, config, command = "graph.mjs") {
       }
     }
     const cssVars = new Set()
-    for (const m of code.matchAll(/var\(\s*(--[\w-]+)/g)) if (!m[1].startsWith('--tw-')) cssVars.add(m[1])
+    for (const src of [code, ...mapLiterals.map((l) => l.text)]) {
+      for (const m of src.matchAll(/var\(\s*(--[\w-]+)/g)) if (!m[1].startsWith('--tw-')) cssVars.add(m[1])
+    }
     const header = readHeader(source, file, keys, headerMode)
     for (const key of header.unknown) {
       warnings.push(`${file}: unknown header key "ds:${key}"`)
@@ -1092,7 +1219,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       composes: [...composes.get(file)].map((f) => nameOf.get(f)).sort(byName),
       composedBy: sortedAreas,
       usage: importersOf.get(file).size,
-      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) }))),
+      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f), names: tagNamesOf(f, file) })), sourceOf),
       packages: sortedUnique(packages.get(file)),
       style: {
         classes: Object.fromEntries(Object.entries(classes).filter(([, set]) => set.size > 0).map(([id, set]) => [id, sortedUnique(set)])),
@@ -1160,7 +1287,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     faults: faultList,
     ...(lane ? { storyLane: laneSummary(lane, nodes, problems) } : {}),
   }
-  const view = { order: tierOrder(config), taxonomy }
+  const view = { order: tierOrder(config), taxonomy, importedOutputs: sortedUnique(importedOutputs) }
   return { json, markdown: renderMarkdown(json, rulesNodes, command, view), warnings, faultLines: sortedUnique(faultLines) }
 }
 
@@ -1436,6 +1563,7 @@ function renderMarkdown(json, rulesNodes, command, view) {
     out.push(`Defined in ${tokens.styleFiles.map(code).join(', ')}.`, '')
     for (const [group, names] of Object.entries(tokens.groups)) out.push(`- ${group} (${names.length}): ${names.join(', ')}`)
     out.push('')
+    if (view.importedOutputs?.length > 0) out.push(`Colour tokens also come from the built token outputs these files import: ${view.importedOutputs.map(code).join(', ')}.`, '')
   }
 
   const specs = Object.keys(unresolved)

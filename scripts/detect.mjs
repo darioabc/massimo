@@ -7,12 +7,18 @@
 //   detect.mjs [--root <dir>]
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join, relative, sep } from 'node:path'
-import { compare } from './lib/glob.mjs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { colorModeSelector, tailwindDarkSelector } from './lib/dark-mode.mjs'
+import { compare, compileGlobs, globToRegExp } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
+import { findObject } from './lib/jsobject.mjs'
 import { csfScaffold } from './lib/lane-css.mjs'
+import { nuxtComponentFolders, nuxtRootConfig, nuxtSrcDir, withNuxtFolders } from './lib/nuxt.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
+import { TAILWIND_CONFIG_STARTS } from './lib/readers.mjs'
+import { stripComments, workspacePackages } from './lib/source.mjs'
+import { storybookKeys } from './lib/storybook.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
 helpAndExit(import.meta.url)
@@ -20,7 +26,46 @@ helpAndExit(import.meta.url)
 const { flags } = parseArgs()
 const root = flags.root ? flags.root : findRoot()
 const pkg = readJson(join(root, 'package.json'), {}) ?? {}
-const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies }
+const depsOf = (p) => ({ ...p?.dependencies, ...p?.devDependencies, ...p?.peerDependencies })
+
+// The workspace root a package belongs to: the nearest folder above `dir`, up
+// to the top of the checkout, that declares workspaces; null when there is
+// none or its globs do not name the package.
+function workspaceRootOf(dir) {
+  const real = (p) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return resolve(p)
+    }
+  }
+  const start = real(dir)
+  let top = null
+  try {
+    top = real(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: start, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim())
+  } catch {
+    // not a git checkout: look up to the root of the file system
+  }
+  for (let at = start; at !== top; ) {
+    const parent = dirname(at)
+    if (parent === at) return null
+    at = parent
+    const globs = workspaceGlobs(at)
+    if (globs.length > 0) return compileGlobs(globs)(relative(at, start).split(sep).join('/')) ? at : null
+  }
+  return null
+}
+
+// A package inside a workspace can use what the workspace root installs, so
+// the root's dependencies count beneath the package's own.
+const workspaceTop = workspaceRootOf(root)
+let hoisted = {}
+try {
+  hoisted = workspaceTop ? depsOf(readJson(join(workspaceTop, 'package.json'), {})) : {}
+} catch {
+  // an unreadable package.json at the workspace root adds nothing
+}
+const deps = { ...hoisted, ...depsOf(pkg) }
 const has = (name) => Object.hasOwn(deps, name)
 const major = (name) => {
   const m = String(deps[name] ?? '').match(/(\d+)/)
@@ -75,38 +120,85 @@ const nested = workspaces
   ? []
   : listed.filter((f) => f !== 'package.json' && f.endsWith('/package.json')).map((f) => f.slice(0, -'package.json'.length))
 const files = listed.filter((f) => !nested.some((dir) => f.startsWith(dir)))
+// The root's Tailwind 3 config, the one a Tailwind build or Nuxt's Tailwind module reads.
+const tailwindConfigFile = ['tailwind.config.ts', 'tailwind.config.js', 'tailwind.config.mjs', 'tailwind.config.cjs'].find((f) => files.includes(f)) ?? null
+// At a workspace root, the dependencies of each package it names: they tell
+// the framework and the styling the root's own leave out.
+const members = workspaces ? workspacePackages(root).map((m) => ({ dir: m.dir, deps: depsOf(m.pkg) })) : []
 
-function detectFramework() {
-  const vite = has('vite')
-  if (has('next')) return existsSync(join(root, 'app')) || existsSync(join(root, 'src/app')) ? 'next-app' : 'next-pages'
-  if (has('astro')) return 'astro'
-  if (has('@sveltejs/kit')) return 'sveltekit'
-  if (has('nuxt') || has('nuxt3')) return 'nuxt'
-  if (has('@remix-run/react') || has('@react-router/dev')) return 'react-router'
-  if (has('@angular/core')) return 'angular'
-  if (vite && (has('preact') || has('@preact/preset-vite'))) return 'vite-preact'
-  if (vite && has('vue')) return 'vite-vue'
-  if (vite && has('svelte')) return 'vite-svelte'
-  if (vite && has('solid-js')) return 'vite-solid'
-  if (vite && has('react')) return 'vite-react'
-  if (has('react-scripts') || (has('webpack') && has('react'))) return 'webpack-react'
+function detectFramework(have = has, dir = root) {
+  const vite = have('vite')
+  if (have('next')) return existsSync(join(dir, 'app')) || existsSync(join(dir, 'src/app')) ? 'next-app' : 'next-pages'
+  if (have('astro')) return 'astro'
+  if (have('@sveltejs/kit')) return 'sveltekit'
+  if (have('nuxt') || have('nuxt3')) return 'nuxt'
+  if (have('@remix-run/react') || have('@react-router/dev')) return 'react-router'
+  if (have('@angular/core')) return 'angular'
+  if (vite && (have('preact') || have('@preact/preset-vite'))) return 'vite-preact'
+  if (vite && have('vue')) return 'vite-vue'
+  if (vite && have('svelte')) return 'vite-svelte'
+  if (vite && have('solid-js')) return 'vite-solid'
+  if (vite && have('react')) return 'vite-react'
+  if (have('react-scripts') || (have('webpack') && have('react'))) return 'webpack-react'
   if (vite) return 'vite'
   return 'unknown'
 }
 
+// The framework a package's own dependencies name. Those it sits beneath (a
+// workspace root's) count only when its own name none, or Vite alone, so a
+// framework installed at the workspace root never beats the package's own.
+function frameworkOf(own, beneath, dir) {
+  const found = detectFramework((name) => Object.hasOwn(own, name), dir)
+  if (found !== 'unknown' && found !== 'vite') return found
+  const both = { ...beneath, ...own }
+  return detectFramework((name) => Object.hasOwn(both, name), dir)
+}
+
+// A workspace root that names no framework of its own (none, or Vite alone)
+// takes the one most of its packages use, each package read with the root's
+// dependencies beneath its own.
+function repoFramework(own) {
+  if ((own !== 'unknown' && own !== 'vite') || members.length === 0) return own
+  const counts = new Map()
+  for (const m of members) {
+    const found = frameworkOf(m.deps, deps, join(root, m.dir))
+    if (found !== 'unknown' && found !== 'vite') counts.set(found, (counts.get(found) ?? 0) + 1)
+  }
+  const [best] = [...counts].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
+  return best ? best[0] : own
+}
+
+// CSS with its comments taken out, and with `lines`, the // comments Sass and
+// Less have too. A string or a url() is kept whole, since a glob such as
+// "../**/*.tsx" holds a "/*" and a URL holds a "//".
+const withoutComments = (css, lines = false) =>
+  css.replace(lines ? /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|url\((?!\s*["'])[^)]*\))|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g : /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|url\((?!\s*["'])[^)]*\))|\/\*[\s\S]*?\*\//g, (m, kept) => kept ?? ' ')
+
 function detectStyling() {
   const out = []
+  // A workspace root's styling is its packages' styling too.
+  const used = (name) => has(name) || members.some((m) => Object.hasOwn(m.deps, name))
+  const majorIn = (d, name = 'tailwindcss') => Number(String(d[name] ?? '').match(/(\d+)/)?.[1] ?? 0)
+  const anyMajor = (name) => major(name) ?? (members.reduce((n, m) => Math.max(n, majorIn(m.deps, name)), 0) || null)
+  // Nuxt's Tailwind module brings Tailwind itself: its version 6 is Tailwind 3, 7 is Tailwind 4.
+  const nuxtModule = anyMajor('@nuxtjs/tailwindcss')
   // The package's own Tailwind version decides; the CSS only tells when it is not a dependency.
-  const tw = major('tailwindcss')
-  const cssText = styleFileStats.map((s) => s.text).join('\n')
+  const tw = major('tailwindcss') ?? (members.reduce((n, m) => Math.max(n, majorIn(m.deps)), 0) || null) ?? (nuxtModule ? (nuxtModule >= 7 ? 4 : 3) : null)
+  const cssText = styleFileStats.map((s) => s.css).join('\n')
   if (tw) out.push(tw >= 4 ? 'tailwind4' : 'tailwind3')
   else if (/@import\s+["']tailwindcss["']/.test(cssText)) out.push('tailwind4')
   else if (/@tailwind\s+base/.test(cssText)) out.push('tailwind3')
-  if (has('daisyui')) out.push('daisyui')
+  // Nuxt's module of no readable version, or a Tailwind 3 config with no
+  // other sign: the module injects the @tailwind lines itself.
+  else if (used('@nuxtjs/tailwindcss') || tailwindConfigFile) out.push('tailwind3')
+  if (used('daisyui')) out.push('daisyui')
   if (existsSync(join(root, 'components.json'))) out.push('shadcn')
   if (files.some((f) => /\.module\.(css|scss)$/.test(f))) out.push('css-modules')
-  if (has('sass') || has('node-sass') || files.some((f) => /\.s[ac]ss$/.test(f))) out.push('sass')
-  if (has('less')) out.push('less')
+  if (used('sass') || used('node-sass') || files.some((f) => /\.s[ac]ss$/.test(f))) out.push('sass')
+  if (used('less')) out.push('less')
+  // vanilla-extract shows in any of its packages (a bundler plugin at the
+  // root, the runtime in a package) or in its *.css.ts files.
+  const vanillaExtract = () => [deps, ...members.map((m) => m.deps)].some((d) => Object.keys(d).some((k) => k.startsWith('@vanilla-extract/'))) || files.some((f) => /\.css\.ts$/.test(f))
   for (const [dep, id] of [
     ['styled-components', 'styled-components'],
     ['@emotion/react', 'emotion'],
@@ -119,19 +211,27 @@ function detectStyling() {
     ['@mantine/core', 'mantine'],
     ['@radix-ui/themes', 'radix-themes'],
   ]) {
-    if (has(dep)) out.push(id)
+    if (used(dep) || (id === 'vanilla-extract' && vanillaExtract())) out.push(id)
   }
   if (!out.length) out.push('css')
   return out
 }
 
 function detectStoryTools() {
-  const out = []
-  if (Object.keys(deps).some((d) => d === 'storybook' || d.startsWith('@storybook/')) || files.some((f) => f.startsWith('.storybook/'))) out.push('storybook')
-  if (has('@ladle/react') || files.some((f) => f.startsWith('.ladle/'))) out.push('ladle')
-  if (has('histoire')) out.push('histoire')
-  if (has('react-cosmos')) out.push('react-cosmos')
   const storyFiles = files.filter((f) => /\.(stories|story)\.[a-z]+$/.test(f))
+  // The story tools a set of dependencies and a folder's config name.
+  const toolsIn = (d, configured) => {
+    const out = []
+    if (Object.keys(d).some((k) => k === 'storybook' || k.startsWith('@storybook/')) || configured('.storybook')) out.push('storybook')
+    if (Object.hasOwn(d, '@ladle/react') || configured('.ladle')) out.push('ladle')
+    if (Object.hasOwn(d, 'histoire')) out.push('histoire')
+    if (Object.hasOwn(d, 'react-cosmos')) out.push('react-cosmos')
+    return out
+  }
+  const own = toolsIn(depsOf(pkg), (dir) => files.some((f) => f.startsWith(`${dir}/`)))
+  // A package of a workspace that holds stories and names no story tool of
+  // its own uses the one the workspace root installs or configures.
+  const out = own.length === 0 && workspaceTop !== null && storyFiles.length > 0 ? toolsIn(hoisted, (dir) => existsSync(join(workspaceTop, dir))) : own
   return { tools: out, storyFiles: storyFiles.length, sample: storyFiles.slice(0, 5), lane: gatedLane() }
 }
 
@@ -199,14 +299,40 @@ function portOf(cmd, hops = 0) {
   return frameworkPort()
 }
 
-// Folders whose files look like components, ranked by how many they hold.
+// Folders whose files look like components, ranked by how many they hold. A
+// folder of packages that mostly hold one component each (three packages or
+// more, most with three component files or fewer in their src/) is one
+// folder, <parent>/*/src, in place of the named folders inside it.
 function componentDirs() {
+  const isComponent = (f) => COMPONENT_EXT.test(f) && !/\.(stories|story|test|spec)\./.test(f)
+  const packageDirs = new Set(files.filter((f) => f.endsWith('/package.json')).map((f) => f.slice(0, -'/package.json'.length)))
+  const inPackageSrc = (f) => {
+    const m = f.match(/^(.+?)\/([^/]+)\/src\//)
+    return m && packageDirs.has(`${m[1]}/${m[2]}`) ? { parent: m[1], name: m[2] } : null
+  }
+  const byParent = new Map()
+  for (const f of files) {
+    const at = isComponent(f) ? inPackageSrc(f) : null
+    if (!at) continue
+    const sizes = byParent.get(at.parent) ?? new Map()
+    sizes.set(at.name, (sizes.get(at.name) ?? 0) + 1)
+    byParent.set(at.parent, sizes)
+  }
+  const perPackage = new Set(
+    [...byParent]
+      .filter(([, sizes]) => {
+        const small = [...sizes.values()].filter((n) => n <= 3).length
+        return small >= 3 && small * 2 > sizes.size
+      })
+      .map(([parent]) => parent),
+  )
   const counts = new Map()
   for (const f of files) {
-    if (!COMPONENT_EXT.test(f) || /\.(stories|story|test|spec)\./.test(f)) continue
-    const m = f.match(/^(.*?\/(?:components|ui|primitives|design-system|elements|atoms|molecules))\//)
-    if (!m) continue
-    counts.set(m[1], (counts.get(m[1]) ?? 0) + 1)
+    if (!isComponent(f)) continue
+    const at = inPackageSrc(f)
+    const dir = at && perPackage.has(at.parent) ? `${at.parent}/*/src` : f.match(/^((?:.*?\/)??(?:components|ui|primitives|design-system|elements|atoms|molecules))\//)?.[1]
+    if (!dir) continue
+    counts.set(dir, (counts.get(dir) ?? 0) + 1)
   }
   return [...counts.entries()].map(([dir, count]) => ({ dir, count })).sort((a, b) => b.count - a.count || compare(a.dir, b.dir))
 }
@@ -222,34 +348,44 @@ const styleFileStats = files
     } catch {
       // unreadable, skip
     }
-    const customProps = (text.match(/--[a-zA-Z0-9-_]+\s*:/g) ?? []).length
-    const theme = /@theme\b|@plugin\s+["']daisyui\/theme["']|@tailwind\s+base|@import\s+["']tailwindcss["']/.test(text)
-    return { file: f, customProps, theme, text }
+    // A comment that mentions Tailwind is not Tailwind, and a custom property
+    // in a comment declares nothing.
+    const css = withoutComments(text, /\.(?:scss|sass|less)$/.test(f))
+    const customProps = (css.match(/--[a-zA-Z0-9-_]+\s*:/g) ?? []).length
+    const theme = /@theme\b|@plugin\s+["']daisyui\/theme["']|@tailwind\s+base|@import\s+["']tailwindcss["']/.test(css)
+    // A token output massimo built opens with its header.
+    const generated = /Generated by massimo tokens\b/.test(text.slice(0, text.indexOf('\n') + 1 || 400))
+    return { file: f, customProps, theme, css, generated }
   })
 
 // The project folder's own outputs, such as kit.css, are massimo's, not the
-// repo's.
+// repo's, and so are the token outputs it builds (tokens.outputs, or a file
+// that opens with its header). So are the folders that hold no UI styling. A
+// file that declares no custom property never outranks one that does as a
+// token source.
 function styleFiles() {
+  const outputs = new Set((existingConfig?.tokens?.outputs ?? []).map((o) => (typeof o?.path === 'string' ? o.path.replace(/^\.\//, '') : null)).filter(Boolean))
   return styleFileStats
-    .filter((s) => !s.file.startsWith(ownDir))
+    .filter((s) => !s.file.startsWith(ownDir) && !outputs.has(s.file) && !s.generated && !notUi.some((dir) => s.file.startsWith(`${dir}/`)))
     .filter((s) => s.customProps >= 5 || s.theme)
-    .sort((a, b) => Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || compare(a.file, b.file))
+    .sort((a, b) => Number(b.customProps > 0) - Number(a.customProps > 0) || Number(b.theme) - Number(a.theme) || b.customProps - a.customProps || compare(a.file, b.file))
     .map(({ file, customProps, theme }) => ({ file, customProps, theme }))
 }
 
 // Other places the repo keeps design values, for `tokens.mjs extract`: a
 // Tailwind 3 config, theme or token modules, and token JSON files (DTCG or
-// Tokens Studio). Read by name and, for JSON, by a quick look inside.
+// Tokens Studio). Read by name and, for JSON, by a quick look inside. None
+// from the folders that hold no UI styling.
 function tokenSources(projectDir) {
-  const ours = (f) => f.startsWith(`${projectDir}/`)
-  const tailwindConfig = ['tailwind.config.ts', 'tailwind.config.js', 'tailwind.config.mjs', 'tailwind.config.cjs'].find((f) => files.includes(f)) ?? null
+  const leftOut = (f) => f.startsWith(`${projectDir}/`) || notUi.some((dir) => f.startsWith(`${dir}/`))
+  const tailwindConfig = tailwindConfigFile
   const themeFiles = files
     .filter((f) => /(^|\/)(theme|tokens|design-tokens|stitches\.config|panda\.config)\.(ts|tsx|js|mjs|cjs)$/.test(f) || /\.css\.ts$/.test(f) && /(theme|tokens|vars)/i.test(f))
-    .filter((f) => !ours(f))
+    .filter((f) => !leftOut(f))
     .slice(0, 5)
   const importFiles = files
     .filter((f) => /\.tokens\.json$|(^|\/)tokens\.json$|(^|\/)\$themes\.json$|(^|\/)tokens\/[^/]+\.json$/.test(f))
-    .filter((f) => !ours(f) && f !== 'package.json')
+    .filter((f) => !leftOut(f) && f !== 'package.json')
     .filter((f) => {
       try {
         const p = join(root, f)
@@ -303,9 +439,8 @@ function devPort() {
   return frameworkPort()
 }
 
-// The port a framework's dev server uses when none is given.
+// The port the repo's framework serves on when none is given.
 function frameworkPort() {
-  const framework = detectFramework()
   if (framework.startsWith('next') || framework === 'nuxt' || framework === 'react-router') return 3000
   if (framework === 'astro') return 4321
   if (framework === 'angular') return 4200
@@ -313,14 +448,22 @@ function frameworkPort() {
   return null
 }
 
+// The lock file names the package manager. A package of a workspace with no
+// lock file of its own uses the one at the workspace root.
 function packageManager() {
-  if (existsSync(join(root, 'pnpm-lock.yaml'))) return 'pnpm'
-  if (existsSync(join(root, 'yarn.lock'))) return 'yarn'
-  if (existsSync(join(root, 'bun.lockb')) || existsSync(join(root, 'bun.lock'))) return 'bun'
+  const dirs = workspaceTop && !existsSync(join(root, 'package-lock.json')) ? [root, workspaceTop] : [root]
+  for (const dir of dirs) {
+    if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
+    if (existsSync(join(dir, 'yarn.lock'))) return 'yarn'
+    if (existsSync(join(dir, 'bun.lockb')) || existsSync(join(dir, 'bun.lock'))) return 'bun'
+  }
   return 'npm'
 }
 
-const framework = detectFramework()
+// The root's own framework, and the one the repo reports, which a workspace
+// root that names none takes from its packages.
+const ownFramework = frameworkOf(depsOf(pkg), hoisted, root)
+const framework = repoFramework(ownFramework)
 const styling = detectStyling()
 const dirs = componentDirs()
 // A repo may already own a folder named design-system (a package, docs); only
@@ -334,6 +477,56 @@ try {
   // an unreadable config: the project folder detect would choose stands in
 }
 const ownDir = `${String(existingConfig?.projectDir ?? projectDir).replace(/^\.\//, '').replace(/\/+$/, '')}/`
+
+// Capacitor's folders, when the root has a capacitor.config: its native
+// projects (android/, ios/) and the web folder it copies into them (its
+// webDir). Only folders that hold files; a webDir git ignores, or one in a
+// folder every script skips (dist, .output), needs no naming.
+function capacitorFolders() {
+  const file = ['capacitor.config.ts', 'capacitor.config.js', 'capacitor.config.mjs', 'capacitor.config.json'].find((f) => files.includes(f))
+  if (!file) return []
+  let webDir = null
+  if (file.endsWith('.json')) {
+    try {
+      webDir = readJson(join(root, file), null)?.webDir ?? null
+    } catch {
+      // an unreadable config names no web folder
+    }
+  } else {
+    webDir = /\bwebDir\s*:\s*(['"])([^'"\n]+)\1/.exec(stripComments(readText(file), file))?.[2] ?? null
+  }
+  const web = typeof webDir === 'string' ? webDir.trim().replace(/^\.\//, '').replace(/\/+$/, '') : ''
+  const usable = web && web !== '.' && !web.startsWith('..') && !web.startsWith('/') && !web.split('/').some((seg) => IGNORE.has(seg))
+  return ['android', 'ios', ...(usable ? [web] : [])].filter((dir, i, list) => list.indexOf(dir) === i && files.some((f) => f.startsWith(`${dir}/`)))
+}
+
+// Folders that hold no UI styling: a Nuxt app's server/ folder (its Nitro
+// API, with email templates and seed data) and Capacitor's folders. The
+// audit leaves them out, and no token source is suggested from them.
+const appSrc = nuxtSrcDir(root, files, framework)
+const nuxtServer = framework === 'nuxt' ? ['server', ...(appSrc ? [`${appSrc}/server`] : [])] : []
+const notUi = [...nuxtServer.filter((dir) => files.some((f) => f.startsWith(`${dir}/`))), ...capacitorFolders()]
+
+// How the app switches to its dark theme, for tokens.darkSelector and
+// tokens.darkMedia, as { selector, media, from }; null when nothing says, so
+// the defaults stand. Nuxt's color-mode module sets its class on <html>
+// whatever the system prefers; else a Tailwind 3 config's darkMode names the
+// selector dark: keys on. Either way the media query plays no part.
+function darkMode() {
+  if (has('@nuxtjs/color-mode')) {
+    const nuxt = nuxtRootConfig(root) ?? {}
+    const inline = (Array.isArray(nuxt.modules) ? nuxt.modules : []).find((m) => Array.isArray(m) && m[0] === '@nuxtjs/color-mode')?.[1]
+    const selector = colorModeSelector(nuxt.colorMode, inline, major('@nuxtjs/color-mode'))
+    if (selector) return { selector, media: false, from: '@nuxtjs/color-mode' }
+  }
+  if (tailwindConfigFile) {
+    const selector = tailwindDarkSelector(findObject(stripComments(readText(tailwindConfigFile), tailwindConfigFile), TAILWIND_CONFIG_STARTS)?.darkMode)
+    if (selector) return { selector, media: false, from: `${tailwindConfigFile} darkMode` }
+  }
+  return null
+}
+const dark = darkMode()
+
 const styles = styleFiles()
 const stories = detectStoryTools()
 // The csf lane's scaffold is massimo's own lane, written from the recipe. It
@@ -341,6 +534,18 @@ const stories = detectStoryTools()
 // suggested config takes nothing from it and it is nothing to adopt.
 if (stories.lane?.dir && stories.lane.dir === csfScaffold(root, existingConfig)) stories.lane.csf = true
 const lane = stories.lane?.dir && !stories.lane.csf ? stories.lane : null
+
+// A Storybook the repo keeps, when it has no gated lane of its own: the
+// stories keys from its main config and the package script that serves it,
+// which take the place of the native lane's. storyTools.storybook names the
+// main config and says what was not read. Null for any other repo.
+function keptStorybook() {
+  if (lane || !stories.tools.includes('storybook')) return null
+  const found = storybookKeys(root, { scripts: pkg.scripts ?? {}, packageManager: packageManager() })
+  if (found) stories.storybook = { main: found.main, notes: found.notes }
+  return found
+}
+const storybook = keptStorybook()
 const extByFramework = {
   'vite-vue': 'vue',
   nuxt: 'vue',
@@ -349,8 +554,46 @@ const extByFramework = {
   astro: '{astro,tsx,jsx,vue,svelte}',
 }
 const ext = extByFramework[framework] ?? '{tsx,jsx}'
-const topDirs = dirs.slice(0, 3).map((d) => d.dir)
+// A Nuxt app's components are also the folders Nuxt registers, every layer's included.
+const topDirs = withNuxtFolders(dirs.slice(0, 3).map((d) => d.dir), nuxtComponentFolders(root, files, framework))
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
+// A Nuxt app's story lane sits in its source folder, where `~` points: app/
+// in Nuxt 4's layout. One whose source folder is the root gets the stories
+// exclude any other app gets.
+const nuxtSrc = nuxtSrcDir(root, files, framework)
+const nuxtStories = nuxtSrc ? `${nuxtSrc}/stories/**` : null
+
+// The component globs, each one only if it matches a component file: the top
+// component folders; else the components folder by convention; else the top
+// folders that hold component files, most first. None when there is none.
+function componentInclude() {
+  const isComponent = (f) => COMPONENT_EXT.test(f) && !/\.(stories|story|test|spec)\./.test(f) && !/(^|\/)__tests__\//.test(f)
+  const inside = (glob) => {
+    const re = globToRegExp(glob)
+    return files.filter((f) => re.test(f) && isComponent(f))
+  }
+  // The framework's extensions when they match a file in the folder, else
+  // the extensions its component files have; null when it holds none.
+  const globIn = (dir) => {
+    if (inside(`${dir}/**/*.${ext}`).length > 0) return `${dir}/**/*.${ext}`
+    const exts = [...new Set(inside(`${dir}/**/*`).map((f) => f.slice(f.lastIndexOf('.') + 1)))].sort(compare)
+    return exts.length === 0 ? null : `${dir}/**/*.${exts.length === 1 ? exts[0] : `{${exts.join(',')}}`}`
+  }
+  const named = topDirs.map(globIn).filter(Boolean)
+  if (named.length > 0) return named
+  const conventional = globIn(srcRoot === '.' ? 'components' : 'src/components')
+  if (conventional) return [conventional]
+  const counts = new Map()
+  for (const f of files) {
+    if (!isComponent(f) || !f.includes('/') || f.startsWith('.')) continue
+    const top = f.slice(0, f.indexOf('/'))
+    counts.set(top, (counts.get(top) ?? 0) + 1)
+  }
+  return [...counts]
+    .sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
+    .slice(0, 3)
+    .map(([top]) => globIn(top))
+}
 
 // The stories keys 0.3.0 wrote. A key added later is left out, so a config
 // written by init holds none until a project opts in.
@@ -365,10 +608,11 @@ const suggestedConfig = {
   packageManager: packageManager(),
   styling,
   components: {
-    include: (topDirs.length ? topDirs : [`${srcRoot === '.' ? '' : 'src/'}components`]).map((d) => `${d}/**/*.${ext}`),
+    include: componentInclude(),
     exclude: DEFAULTS.components.exclude,
   },
-  consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(framework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
+  // The app/ folder only when the root's own Next.js app keeps it there.
+  consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(ownFramework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
   aliases: aliases(),
   // An existing gated lane is the lane: its pages are the stories, and its own
   // dev script and port run it.
@@ -383,9 +627,10 @@ const suggestedConfig = {
         port: lane.port ?? DEFAULTS.stories.port,
         url: lane.port ? `http://localhost:${lane.port}/stories` : null,
       }
-    : { ...storiesDefaults, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`] },
+    : { ...storiesDefaults, include: [`${srcRoot === '.' ? '' : 'src/'}**/*.story.${ext}`], ...storybook?.keys },
   tokens: {
     ...DEFAULTS.tokens,
+    ...(dark ? { darkSelector: dark.selector, darkMedia: dark.media } : {}),
     source: `${projectDir}/tokens/tokens.resolver.json`,
     styleFiles: styles.slice(0, 3).map((s) => s.file),
     ...tokenSources(projectDir),
@@ -394,7 +639,12 @@ const suggestedConfig = {
   audit: {
     include: [`${srcRoot === '.' ? '' : 'src/'}**/*.{css,scss,sass,less,tsx,jsx,ts,js,vue,svelte,astro,html}`],
     // A lane stages components with fixture values on purpose: not drift.
-    exclude: [...DEFAULTS.audit.exclude.map((g) => (srcRoot === '.' ? g.replace(/^src\//, '') : g)), ...(lane && !DEFAULTS.audit.exclude.includes(`${lane.dir}/**`) ? [`${lane.dir}/**`] : [])],
+    // Nor is a folder that holds no UI styling, where the audit reaches it.
+    exclude: [
+      ...DEFAULTS.audit.exclude.map((g) => (nuxtStories && g === 'src/stories/**' ? nuxtStories : srcRoot === '.' ? g.replace(/^src\//, '') : g)),
+      ...(lane && !DEFAULTS.audit.exclude.includes(`${lane.dir}/**`) && `${lane.dir}/**` !== nuxtStories ? [`${lane.dir}/**`] : []),
+      ...notUi.filter((dir) => srcRoot === '.' || dir.startsWith('src/')).map((dir) => `${dir}/**`),
+    ],
   },
 }
 
@@ -415,7 +665,8 @@ const result = {
   styling,
   storyTools: stories,
   playwright: has('playwright') || has('@playwright/test'),
-  monorepo: workspaces || existsSync(join(root, 'turbo.json')),
+  // A root that holds packages and no framework of its own holds only apps.
+  monorepo: workspaces || existsSync(join(root, 'turbo.json')) || (nested.length > 0 && framework === 'unknown'),
   scripts: { dev: pkg.scripts?.dev ?? null, build: pkg.scripts?.build ?? null },
   devPort: devPort(),
   componentDirs: dirs.slice(0, 10),
@@ -423,6 +674,8 @@ const result = {
   styleFiles: styles.slice(0, 10),
   aliases: suggestedConfig.aliases,
   suggestedConfig,
+  // Where the suggested dark selector comes from, only when one was read.
+  ...(dark ? { darkMode: dark } : {}),
   ...(adoptable.length > 0 ? { adoptable } : {}),
 }
 
