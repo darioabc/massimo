@@ -11,7 +11,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { compare } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
-import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson } from './lib/project.mjs'
+import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
 helpAndExit(import.meta.url)
@@ -66,9 +66,11 @@ function listFiles() {
 }
 
 // A folder with its own package.json is another app (a docs site, a demo) unless
-// the root declares workspaces; its files would only muddle this one's picture.
+// the root declares workspaces (package.json or pnpm-workspace.yaml); its files
+// would only muddle this one's picture.
+const workspaces = workspaceGlobs(root).length > 0
 const listed = listFiles()
-const nested = pkg.workspaces
+const nested = workspaces
   ? []
   : listed.filter((f) => f !== 'package.json' && f.endsWith('/package.json')).map((f) => f.slice(0, -'package.json'.length))
 const files = listed.filter((f) => !nested.some((dir) => f.startsWith(dir)))
@@ -262,9 +264,13 @@ function tokenSources(projectDir) {
   return { tailwindConfig, themeFiles, importFiles }
 }
 
+// The tsconfig paths as config aliases: `@/*` to a folder, and an exact key
+// such as `@scope/ui` to the file or folder it names. tsconfig.base.json is
+// where a monorepo keeps the paths its packages share; it is read first, so
+// a key the files that extend it also map takes their target.
 function aliases() {
   const out = {}
-  for (const name of ['tsconfig.json', 'jsconfig.json', 'tsconfig.app.json']) {
+  for (const name of ['tsconfig.base.json', 'tsconfig.json', 'jsconfig.json', 'tsconfig.app.json']) {
     let cfg
     try {
       cfg = readJson(join(root, name), null)
@@ -275,8 +281,14 @@ function aliases() {
     if (!paths) continue
     const base = cfg.compilerOptions.baseUrl ?? '.'
     for (const [k, v] of Object.entries(paths)) {
-      if (!k.endsWith('/*') || !v?.[0]?.endsWith('/*')) continue
-      const target = join(base, v[0].slice(0, -1)).split(sep).join('/').replace(/^\.\//, '')
+      const first = Array.isArray(v) ? v[0] : null
+      if (typeof first !== 'string') continue
+      if (!k.includes('*') && !first.includes('*')) {
+        out[k] = join(base, first).split(sep).join('/').replace(/^\.\//, '')
+        continue
+      }
+      if (!k.endsWith('/*') || !first.endsWith('/*')) continue
+      const target = join(base, first.slice(0, -1)).split(sep).join('/').replace(/^\.\//, '')
       out[k.slice(0, -1)] = target.endsWith('/') ? target : `${target}/`
     }
   }
@@ -398,7 +410,7 @@ const result = {
   styling,
   storyTools: stories,
   playwright: has('playwright') || has('@playwright/test'),
-  monorepo: Boolean(pkg.workspaces) || existsSync(join(root, 'pnpm-workspace.yaml')) || existsSync(join(root, 'turbo.json')),
+  monorepo: workspaces || existsSync(join(root, 'turbo.json')),
   scripts: { dev: pkg.scripts?.dev ?? null, build: pkg.scripts?.build ?? null },
   devPort: devPort(),
   componentDirs: dirs.slice(0, 10),

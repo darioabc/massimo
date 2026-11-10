@@ -12,7 +12,7 @@ import { readDesignMd } from './designmd.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './glob.mjs'
 import { findObject } from './jsobject.mjs'
 import { laneRegistry } from './lane.mjs'
-import { stripJsonComments } from './project.mjs'
+import { stripJsonComments, workspaceGlobs } from './project.mjs'
 import { DEFAULT_TIERS, keyRoles, knownKeys, tierOf } from './roles.mjs'
 import { RULE_KEYS, createResolver, extractImports, extractRules, isTestFile, stringLiterals, stripComments } from './source.mjs'
 import { readCsf, readHistoire, readManifest, readStoryStates } from './stories-read.mjs'
@@ -1152,9 +1152,45 @@ export function consumerIndex(root, files, assets, { pkg = {}, config = {}, text
 
 const STYLE_SOURCE = /--[\w-]+\s*:/g
 
+// What one tokens.styleFiles entry matches: a path, or a glob as graph and
+// tokens read it. A path matches itself even when it holds glob characters.
+function styleMatcher(entry) {
+  const path = entry.replace(/^\.\//, '')
+  const glob = compileGlobs([entry])
+  return (f) => f === path || glob(f)
+}
+
+// Why a tokens.styleFiles entry adds no style file: what it matches declares
+// no custom property, or scan does not read it (a folder the config ignores,
+// another package, a file git ignores), or nothing matches it.
+function styleFileReason(root, entry, matched, ignore) {
+  const glob = /[*?[{]/.test(entry)
+  if (matched.length) return glob ? 'no file it matches declares a custom property' : 'it declares no custom property'
+  const isFile = (f) => {
+    try {
+      return statSync(join(root, f)).isFile()
+    } catch {
+      return false
+    }
+  }
+  const path = entry.replace(/^\.\//, '')
+  const found = isFile(path) ? path : glob ? walk(root).find(styleMatcher(entry)) : null
+  if (!found) return glob ? 'no file matches it' : 'there is no such file'
+  const parts = found.split('/')
+  if (parts.some((seg) => ignore.includes(seg))) return 'it is in a folder the config ignores'
+  if (workspaceGlobs(root).length === 0 && parts.slice(0, -1).some((_, i) => isFile(`${parts.slice(0, i + 1).join('/')}/package.json`))) return 'it is in another package'
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', found], { cwd: root, stdio: 'ignore' })
+    return 'git ignores it'
+  } catch {
+    return 'it is in a folder scan does not read'
+  }
+}
+
 // The whole inventory of a repo, from detect's report (its framework, story
-// tools, lane and style files) and the repo's files. Read-only.
-export function buildInventory(root, { detected, config = {}, pkg = {}, files, auditKinds = [] }) {
+// tools, lane and style files) and the repo's files. Read-only. `configured`
+// is false before init, when the config is the one detect suggests.
+export function buildInventory(root, { detected, config = {}, pkg = {}, files, auditKinds = [], configured = true }) {
   const cache = new Map()
   const text = (f) => {
     if (!cache.has(f)) cache.set(f, readText(root, f))
@@ -1178,9 +1214,17 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   for (const r of own.ratchets) Object.assign(r, proposedMap(r.rules, auditKinds))
   // The style files the config names and those detect finds, so a config
   // that later names fewer leaves the inventory, and the ledger, as they were.
-  const styleFiles = [...new Set([...(config.tokens?.styleFiles ?? []), ...(detected?.suggestedConfig?.tokens?.styleFiles ?? [])])]
-    .filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)
+  // Each entry is a path or a glob, matched against the files scan reads.
+  const declares = (f) => (text(f).match(STYLE_SOURCE) ?? []).length > 0
+  const named = (list) => [...new Set((list ?? []).filter((f) => typeof f === 'string'))]
+  const matched = new Map([...named(config.tokens?.styleFiles), ...named(detected?.suggestedConfig?.tokens?.styleFiles)].map((e) => [e, files.filter(styleMatcher(e))]))
+  const styleFiles = [...new Set([...matched.values()].flat())].filter(declares).sort(compare)
+  // A config entry that adds no style file is said, not dropped. Before init
+  // the config's entries are the ones detect suggests.
+  const notes = named(config.tokens?.styleFiles)
+    .filter((e) => !matched.get(e).some(declares))
     .sort(compare)
+    .map((e) => `${configured ? 'tokens.styleFiles names' : 'detect suggests'} ${e}, which scan leaves out: ${styleFileReason(root, e, matched.get(e), config.ignore ?? [])}.`)
   const toolRecords = storyTools(tools, files, pkg, records, text)
   const assets = assetList({ lane, tools: toolRecords, own, styleFiles })
   const consumers = consumerIndex(root, files, assets, { pkg, config, text })
@@ -1192,6 +1236,7 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
     headers,
     own: { ...own, styleFiles },
     assets: assets.map((a) => ({ id: a.id, class: a.class, kind: a.kind, paths: [...a.paths, ...a.dirs.map((d) => `${d}/`)].sort(compare), ...(a.scripts.length ? { scripts: a.scripts } : {}), ...(a.port ? { port: a.port } : {}), ...(a.output ? { output: true } : {}), consumers: consumers[a.id] })),
+    ...(notes.length ? { notes } : {}),
   }
 }
 
@@ -1220,6 +1265,7 @@ export function inventoryMarkdown(inv, { command }) {
   out.push(`- The repo's own files: ${plural(inv.own.docs.filter((d) => d.generated).length, 'generated doc')}, ${plural(inv.own.ratchets.length, 'ratchet')}, ${plural(inv.own.tokenFiles.length, 'token file')}, ${plural(inv.own.docs.filter((d) => !d.generated).length, 'hand-written note')}${inv.own.generators.length ? `, written by ${inv.own.generators.map((g) => g.path).join(', ')}` : ''}.`)
   out.push(`- DESIGN.md: ${inv.own.designMd.length ? inv.own.designMd.map((d) => d.path).join(', ') : 'none'}.`)
   out.push(`- Consumers: ${consumers.length} (${byClass}).`, '')
+  if (inv.notes?.length) out.push(...inv.notes.map((n) => `Note: ${n}`), '')
 
   out.push('## Stories', '')
   if (lane) {
