@@ -89,8 +89,10 @@ const HEX_NOT_COLOR =
   /(?:(?<![\w-])(?:href|to|id|for|src|poster|action|cite|hash|anchor|target|xlink:href|data-[\w-]+|aria-[\w-]+)\s*[=:]\s*\{?\s*['"`]?[^'"`\s]*|url\(\s*['"]?[^)'"]*|(?:querySelector(?:All)?|closest|matches|getElementById)\(\s*['"`][^'"`]*)$/i
 const COLOR_FN = /(?<![\w$.-])(?:rgba?|hsla?|hwb|oklab|oklch|lab|lch|color)\(/gi
 
+// A bracket followed by `:` or by a group or peer name and `:`
+// (`peer-data-[size=sm]/menu-button:top-1`) is a variant, not a value.
 const ARBITRARY =
-  /(?<![\w[\]$.-])((?:[\w-]+(?:-\[[^\]\s]*\])?:|\[[^\]\s]*\]:)*)(!?-?[a-z][a-z0-9]*(?:-[a-z0-9]+)*)-\[((?:[^[\]\s]|\[[^\]\s]*\])+)\](?:\/(?:[\w.]+|\[[^\]\s]*\]))?(?![\w:[-])/g
+  /(?<![\w[\]$.-])((?:[\w-]+(?:-\[[^\]\s]*\])?:|\[[^\]\s]*\]:)*)(!?-?[a-z][a-z0-9]*(?:-[a-z0-9]+)*)-\[((?:[^[\]\s]|\[[^\]\s]*\])+)\](?:\/(?:[\w.]+|\[[^\]\s]*\]))?(?![\w:[-]|\/[\w-]+:)/g
 
 const LENGTH_TOKEN = /(?<![\w.#-])(-?\d*\.?\d+)(px|rem|em)\b/g
 
@@ -1169,11 +1171,24 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   } catch {
     // an invalid token file is tokens.mjs's problem to report
   }
-  // Every literal DTCG token is a primitive, unless audit.primitives is
-  // 'color': then only colour primitives count, and with no DTCG set yet,
-  // the literal colours the token files define, read anywhere but those files.
+  // Every literal DTCG token is a primitive, except a colour no token aliases:
+  // with no alias to read instead, that colour is a role of its own. Unless
+  // audit.primitives is 'color': then only colour primitives count, and with
+  // no DTCG set yet, the literal colours the token files define, read anywhere
+  // but those files.
   const colorPrimitives = config.audit?.primitives === 'color'
-  let primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value)).map((t) => t.cssVar))
+  // A token aliases another through its value or a theme's, a reference
+  // inside a composite value (a border's colour, a gradient stop), or a
+  // var() its CSS reads, named by that token's custom property.
+  const byCssVar = new Map(dtcgTokens.map((t) => [t.cssVar, t.name]))
+  const refsIn = (v) => {
+    if (isAlias(v)) return [aliasPath(v)]
+    if (typeof v === 'string') return [...v.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => byCssVar.get(m[1])).filter(Boolean)
+    return v && typeof v === 'object' ? Object.values(v).flatMap(refsIn) : []
+  }
+  const aliasTargets = new Set(dtcgTokens.flatMap((t) => [t.value, t.css, ...Object.values(t.modes ?? {}), ...Object.values(t.cssModes ?? {})].flatMap(refsIn)))
+  const aliasedOrNoColor = (t) => (t.type ?? t.groupType) !== 'color' || aliasTargets.has(t.name)
+  let primitives = new Set(dtcgTokens.filter((t) => !isAlias(t.value) && aliasedOrNoColor(t)).map((t) => t.cssVar))
   if (colorPrimitives) {
     primitives = dtcgTokens.length > 0 ? new Set(dtcgTokens.filter(isColorPrimitive).map((t) => t.cssVar)) : stylePrimitives(customProps)
   }
@@ -1202,8 +1217,14 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     ...(tokenNamesAreTailwind ? dtcgTokens.filter((t) => t.path[0] === 'color').map((t) => t.path.slice(1).join('-')) : []),
     ...(turnedOn('tailwind-palette') ? tailwindColorNames(theme) : []),
   ])
-  const palette = hasTailwind && ownColors.size > 0
-  if (!palette) skipped.set('tailwind-palette', hasTailwind ? 'no colour tokens of its own' : 'no Tailwind in styling')
+  // Turned on, the kind also runs where a class library names the colours
+  // (daisyUI's primary or base-100), so a palette class such as text-rose-500
+  // counts there too. The library's names are not the repo's own colours, so
+  // they stay out of ownColors.
+  const libraryColors = turnedOn('tailwind-palette') && libraries.some((lib) => lib.colors.length > 0)
+  const palette = hasTailwind && (ownColors.size > 0 || libraryColors)
+  const noColors = turnedOn('tailwind-palette') ? "turned on in audit.kinds, but found no colours of the repo's own" : 'no colour tokens of its own'
+  if (!palette) skipped.set('tailwind-palette', hasTailwind ? noColors : 'no Tailwind in styling')
 
   // The breakpoint scale, in rem, and the Tailwind screens its variants name.
   const scale = kinds.includes('breakpoint') ? breakpointScale(config.tokens.breakpoints) : { widths: null, warnings: [] }
