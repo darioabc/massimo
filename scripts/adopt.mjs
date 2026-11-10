@@ -107,7 +107,7 @@ import { buildInventory, inventoryMarkdown, laneRecord, readText, repoFiles, wor
 import { recipeFiles } from './lib/lane-css.mjs'
 import { ladleMeta, laneRegistry, redirectTable } from './lib/lane.mjs'
 import { stateUrl } from './lib/lane-route.mjs'
-import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, writeFileAtomic } from './lib/project.mjs'
+import { DEFAULTS, deepMerge, fail, loadConfig, newerMessage, parseArgs, readJson, refuseNewer, rel, scriptCommand, stripJsonComments, today, workspaceGlobs, writeFileAtomic } from './lib/project.mjs'
 import { editsSummary, idScope, isBinaryPath, mentionCoverage, toolEdits, toolPackages, writeEditsFile } from './lib/redirects.mjs'
 import { parsePairs } from './lib/shoot.mjs'
 import { loadState, setPhase, statePath, updateState } from './lib/state.mjs'
@@ -142,8 +142,8 @@ function detect() {
 }
 
 // The repo's files as scan reads them.
-function scanFiles(effective, pkg) {
-  return repoFiles(root, { ignore: effective.ignore, projectRel: exists ? projectRel : effective.projectDir, workspaces: Boolean(pkg.workspaces) })
+function scanFiles(effective) {
+  return repoFiles(root, { ignore: effective.ignore, projectRel: exists ? projectRel : effective.projectDir, workspaces: workspaceGlobs(root).length > 0 })
 }
 
 // The inventory of the repo as it is now. Before init, the config detect
@@ -153,7 +153,7 @@ function scan() {
     const detected = detect()
     const pkg = readJson(join(root, 'package.json'), {}) ?? {}
     const effective = exists ? config : deepMerge(structuredClone(DEFAULTS), detected.suggestedConfig ?? {})
-    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective, pkg), auditKinds: ALL_KINDS })
+    return buildInventory(root, { detected, config: effective, pkg, files: scanFiles(effective), auditKinds: ALL_KINDS })
   } catch (e) {
     fail(e.message)
   }
@@ -301,14 +301,14 @@ function liveLane() {
   const lane = detect()?.storyTools?.lane
   if (!lane?.dir) return null
   const pkg = readJson(join(root, 'package.json'), {}) ?? {}
-  return laneRecord(root, scanFiles(config, pkg), pkg, lane)
+  return laneRecord(root, scanFiles(config), pkg, lane)
 }
 
 // The csf lane's registry as the story files hold it now, with the repo's
 // files and package.json that it was read from.
 function currentRegistry() {
   const pkg = readJson(join(root, 'package.json'), {}) ?? {}
-  const files = scanFiles(config, pkg)
+  const files = scanFiles(config)
   const include = compileGlobs(config.stories.include)
   const registry = laneRegistry({ root, config, files: files.filter(include), read: (f) => readFileSync(join(root, f), 'utf8') })
   return { registry, files, pkg }
@@ -712,13 +712,11 @@ function checkVerifyFlags(name, cls) {
 
 const workPath = (...parts) => join(projectDir, 'adopt', 'stories', 'work', ...parts)
 const readSource = (f) => readFileSync(join(root, f), 'utf8')
-const pkgJson = () => readJson(join(root, 'package.json'), {}) ?? {}
-
 // The csf registry of the repo as `effective` configures it, with the ids
 // rule of the config unless `ids` says another.
 function csfRegistry(effective = config, ids = effective.stories.ids) {
   const stories = ids === effective.stories.ids ? effective : deepMerge(structuredClone(effective), { stories: { ids } })
-  const files = expandGlobs(root, stories.stories.include ?? [], [], [], scanFiles(stories, pkgJson()))
+  const files = expandGlobs(root, stories.stories.include ?? [], [], [], scanFiles(stories))
   return laneRegistry({ root, config: stories, files, read: readSource })
 }
 
@@ -891,6 +889,7 @@ switch (command) {
     const consumers = inv.assets.reduce((n, a) => n + a.consumers.length, 0)
     const keys = inv.headers.keys.filter((k) => k.files > 0).length
     process.stdout.write(`massimo adopt: ${plural(inv.assets.length, 'asset')}, ${plural(consumers, 'consumer')}, ${plural(keys, 'header key')} in use; wrote ${shown('inventory.json')} and inventory.md\n`)
+    for (const note of inv.notes ?? []) process.stdout.write(`note: ${note}\n`)
     break
   }
   case 'plan': {

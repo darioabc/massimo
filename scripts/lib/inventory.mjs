@@ -6,7 +6,7 @@
 // the start skill can offer adopt.
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, join, posix } from 'node:path'
 import { readDesignMd } from './designmd.mjs'
 import { compare, compileGlobs, expandGlobs, walk } from './glob.mjs'
@@ -1181,6 +1181,14 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
   const styleFiles = [...new Set([...(config.tokens?.styleFiles ?? []), ...(detected?.suggestedConfig?.tokens?.styleFiles ?? [])])]
     .filter((f) => files.includes(f) && (text(f).match(STYLE_SOURCE) ?? []).length > 0)
     .sort(compare)
+  // A style file the config names and scan leaves out is said, not dropped.
+  const notes = [...new Set(config.tokens?.styleFiles ?? [])]
+    .filter((f) => typeof f === 'string' && !styleFiles.includes(f))
+    .sort(compare)
+    .map((f) => {
+      const why = files.includes(f) ? 'it declares no custom property' : existsSync(join(root, f)) ? 'it is in a folder scan does not read (another package, or an ignored folder)' : 'there is no such file'
+      return `tokens.styleFiles names ${f}, which scan leaves out: ${why}.`
+    })
   const toolRecords = storyTools(tools, files, pkg, records, text)
   const assets = assetList({ lane, tools: toolRecords, own, styleFiles })
   const consumers = consumerIndex(root, files, assets, { pkg, config, text })
@@ -1192,6 +1200,7 @@ export function buildInventory(root, { detected, config = {}, pkg = {}, files, a
     headers,
     own: { ...own, styleFiles },
     assets: assets.map((a) => ({ id: a.id, class: a.class, kind: a.kind, paths: [...a.paths, ...a.dirs.map((d) => `${d}/`)].sort(compare), ...(a.scripts.length ? { scripts: a.scripts } : {}), ...(a.port ? { port: a.port } : {}), ...(a.output ? { output: true } : {}), consumers: consumers[a.id] })),
+    ...(notes.length ? { notes } : {}),
   }
 }
 
@@ -1220,6 +1229,7 @@ export function inventoryMarkdown(inv, { command }) {
   out.push(`- The repo's own files: ${plural(inv.own.docs.filter((d) => d.generated).length, 'generated doc')}, ${plural(inv.own.ratchets.length, 'ratchet')}, ${plural(inv.own.tokenFiles.length, 'token file')}, ${plural(inv.own.docs.filter((d) => !d.generated).length, 'hand-written note')}${inv.own.generators.length ? `, written by ${inv.own.generators.map((g) => g.path).join(', ')}` : ''}.`)
   out.push(`- DESIGN.md: ${inv.own.designMd.length ? inv.own.designMd.map((d) => d.path).join(', ') : 'none'}.`)
   out.push(`- Consumers: ${consumers.length} (${byClass}).`, '')
+  if (inv.notes?.length) out.push(...inv.notes.map((n) => `Note: ${n}`), '')
 
   out.push('## Stories', '')
   if (lane) {

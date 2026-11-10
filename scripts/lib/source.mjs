@@ -7,9 +7,10 @@
 // and Astro files, and it must run with zero dependencies. It aims for the
 // right answer on real-world source, not for a full grammar.
 
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
-import { readJson } from './project.mjs'
+import { compare, globToRegExp } from './glob.mjs'
+import { readJson, workspaceGlobs } from './project.mjs'
 
 // ── Comment and string scanning ─────────────────────────────────────────────
 
@@ -314,10 +315,11 @@ function readTsconfig(abs, depth = 0) {
 }
 
 // tsconfig/jsconfig files that can carry `paths`: the root ones and whatever
-// they reference (Vite scaffolds put the aliases in tsconfig.app.json).
+// they reference (Vite scaffolds put the aliases in tsconfig.app.json), and
+// tsconfig.base.json, where a monorepo keeps the paths its packages share.
 export function loadTsconfigs(root) {
   const out = []
-  for (const name of ['tsconfig.json', 'jsconfig.json']) {
+  for (const name of ['tsconfig.json', 'jsconfig.json', 'tsconfig.base.json']) {
     const abs = join(root, name)
     const cfg = readTsconfig(abs)
     if (!cfg) continue
@@ -331,6 +333,96 @@ export function loadTsconfigs(root) {
     }
   }
   return out
+}
+
+// ── Workspace packages ──────────────────────────────────────────────────────
+
+// The folders under `root` that one workspace glob matches, segment by
+// segment, as repo-relative paths. `**` takes a folder and every folder below
+// it; node_modules and .git are never entered.
+function globDirs(root, glob) {
+  const subdirs = (dir) => {
+    try {
+      return readdirSync(join(root, dir), { withFileTypes: true })
+        .filter((e) => e.isDirectory() && e.name !== 'node_modules' && e.name !== '.git')
+        .map((e) => (dir ? `${dir}/${e.name}` : e.name))
+    } catch {
+      return []
+    }
+  }
+  let dirs = ['']
+  for (const seg of glob.replace(/^\.\//, '').split('/')) {
+    if (seg === '' || seg === '.') continue
+    const next = new Set()
+    for (const dir of dirs) {
+      if (seg === '**') {
+        const stack = [{ dir, depth: 0 }]
+        while (stack.length) {
+          const at = stack.pop()
+          next.add(at.dir)
+          if (at.depth < 8) for (const d of subdirs(at.dir)) stack.push({ dir: d, depth: at.depth + 1 })
+        }
+      } else if (/[*?[{]/.test(seg)) {
+        const re = globToRegExp(seg)
+        for (const d of subdirs(dir)) if (re.test(d.slice(d.lastIndexOf('/') + 1))) next.add(d)
+      } else {
+        const d = dir ? `${dir}/${seg}` : seg
+        try {
+          if (statSync(join(root, d)).isDirectory()) next.add(d)
+        } catch {
+          // no such folder
+        }
+      }
+    }
+    dirs = [...next]
+  }
+  return dirs.filter(Boolean)
+}
+
+const workspaceCache = new Map()
+
+// The packages of a workspace root: each folder its workspace globs match
+// that holds a package.json with a name, as { name, dir, pkg } sorted by
+// folder, the first folder winning a name two share. Read once per root.
+export function workspacePackages(root) {
+  const key = resolve(root)
+  if (workspaceCache.has(key)) return workspaceCache.get(key)
+  const dirs = [...new Set(workspaceGlobs(key).flatMap((glob) => globDirs(key, glob)))].sort(compare)
+  const out = []
+  const names = new Set()
+  for (const dir of dirs) {
+    let pkg = null
+    try {
+      pkg = readJson(join(key, dir, 'package.json'), null)
+    } catch {
+      // an unreadable package.json names no package
+    }
+    if (typeof pkg?.name !== 'string' || !pkg.name || names.has(pkg.name)) continue
+    names.add(pkg.name)
+    out.push({ name: pkg.name, dir, pkg })
+  }
+  workspaceCache.set(key, out)
+  return out
+}
+
+// The conditions read from a package's exports, in order.
+const EXPORT_CONDITIONS = ['source', 'import', 'module', 'default', 'require']
+
+// The paths an exports value names, a conditions object tried in the order above.
+function exportTargets(value) {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.flatMap(exportTargets)
+  if (value && typeof value === 'object') return EXPORT_CONDITIONS.filter((c) => Object.hasOwn(value, c)).flatMap((c) => exportTargets(value[c]))
+  return []
+}
+
+// What a package's exports give for a subpath (`.` or `./sub`): a string or
+// a conditions object with no subpath keys stands for `.` alone.
+function exportFor(exports, sub) {
+  if (exports === undefined || exports === null) return undefined
+  const keyed = typeof exports === 'object' && !Array.isArray(exports) && Object.keys(exports).some((k) => k.startsWith('.'))
+  if (!keyed) return sub === '.' ? exports : undefined
+  return exports[sub]
 }
 
 // A resolver for one repo. `resolve(fromFile, spec)` returns exactly one of
@@ -401,6 +493,41 @@ export function createResolver(root, config = {}) {
   }
   const installed = (spec) => declared.has(packageName(spec)) || existsSync(join(root, 'node_modules', packageName(spec)))
 
+  // A bare specifier naming a workspace package resolves to that package's
+  // source in the repo: its exports, then source, module and main, then
+  // src/index and index, the first that is a file outside an ignored folder
+  // and not a declaration file. A subpath takes its own exports entry, else
+  // the package folder and the subpath.
+  const members = new Map(workspacePackages(root).map((m) => [m.name, m]))
+  const skipped = new Set(['node_modules', ...(config.ignore ?? [])])
+  const usable = (abs) => {
+    if (!abs || /\.d\.[cm]?ts$/.test(abs)) return null
+    const path = toRel(abs)
+    return path.startsWith('../') || path.split('/').some((seg) => skipped.has(seg)) ? null : path
+  }
+  const memberHits = new Map()
+  const workspaceFile = (spec) => {
+    const member = members.get(packageName(spec))
+    if (!member) return null
+    if (memberHits.has(spec)) return memberHits.get(spec)
+    const dir = join(root, member.dir)
+    const sub = spec.slice(member.name.length).replace(/^\//, '')
+    const { pkg } = member
+    const candidates = sub
+      ? [...exportTargets(exportFor(pkg.exports, `./${sub}`)).map((t) => join(dir, t)), join(dir, sub)]
+      : [
+          ...[...exportTargets(exportFor(pkg.exports, '.')), pkg.source, pkg.module, pkg.main].filter((t) => typeof t === 'string').map((t) => join(dir, t)),
+          ...['src/index', 'index'].flatMap((base) => ['.ts', '.tsx', '.js', '.jsx', '.mjs'].map((e) => join(dir, `${base}${e}`))),
+        ]
+    let hit = null
+    for (const candidate of candidates) {
+      hit = usable(tryPath(candidate))
+      if (hit) break
+    }
+    memberHits.set(spec, hit)
+    return hit
+  }
+
   // Where a specifier points, as a repo-relative path, without checking that
   // anything is there: for an import.meta.glob pattern, whose files are
   // matched afterwards. A bare specifier sits under the first tsconfig
@@ -465,6 +592,8 @@ export function createResolver(root, config = {}) {
       const hit = tryPath(resolve(base, spec))
       if (hit) return { file: toRel(hit) }
     }
+    const member = workspaceFile(spec)
+    if (member) return { file: member }
     if (aliased && !installed(spec)) return { unresolved: rawSpec }
     return { pkg: packageName(spec) }
   }

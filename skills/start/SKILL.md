@@ -11,14 +11,14 @@ Front door for everything massimo does in a repo. It sets the project up once, t
 
 ## Which path
 
-Look for `massimo.config.json` at the repo root (git toplevel).
+Look for `massimo.config.json` in the folder Claude started in and each folder above it, up to the repo root (git toplevel). The nearest one is the project, and its folder is the project root: a monorepo can keep the project in one package.
 
 - **Absent** → Kickoff.
 - **Present** → Resume.
 
 ## Kickoff
 
-1. **Detect.** Run `node <plugin>/scripts/detect.mjs`. Summarise it in four or five plain lines: framework, styling, where components seem to live (with counts), the style files that hold tokens, existing story tools, Playwright yes/no, and, when it reports `adoptable`, what the repo already has for its design system. If the repo is a monorepo, ask which package to work on and re-run with `--root <package>`.
+1. **Detect.** Run `node <plugin>/scripts/detect.mjs`. Summarise it in four or five plain lines: framework, styling, where components seem to live (with counts), the style files that hold tokens, existing story tools, Playwright yes/no, and, when it reports `adoptable`, what the repo already has for its design system. If the repo is a monorepo, ask which package to work on and re-run with `--root <package>`; pass the same `--root` to every script until init has written the project, which the scripts then find from inside that package without it.
 2. **Ask.** One round of questions, two at most. Use the host's question tool when there is one; otherwise ask in plain text with a recommended answer for each. Ask only what detection could not settle:
    - Who is driving: a designer, a developer, or both? (It sets how much code you show versus visuals.)
    - Confirm or correct the component folders and token files detect found.
