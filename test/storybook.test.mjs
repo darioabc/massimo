@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { markClass } from '../scripts/lib/adopt.mjs'
@@ -184,6 +184,64 @@ test('stories.mjs storybook --against checks the ids with Storybook\'s own index
   assert.match(off.stdout, /^not named by massimo: button--large \(src\/components\/Button\/Button\.stories\.ts\)$/m)
 })
 
+test('a stories entry decides which script files are story files, whatever their names', () => {
+  const ctx = fresh()
+  writeFileSync(join(ctx.root, '.storybook', 'main.ts'), "export default { stories: ['../src/**/*.story.@(ts|tsx)'], framework: '@storybook/vue3-vite' }\n")
+  mkdirSync(join(ctx.root, 'src', 'widgets', 'Chip'), { recursive: true })
+  writeFileSync(join(ctx.root, 'src', 'widgets', 'Chip', 'Chip.story.ts'), 'export default {}\n\nexport const Default = {}\nexport const Removable = {}\n')
+  writeFileSync(join(ctx.root, 'src', 'widgets', 'Chip', 'chip.ts'), 'export const size = 2\n')
+  assert.deepEqual(detect(ctx.root).suggestedConfig.stories.include, ['src/**/*.story.{ts,tsx}'])
+  const listed = run('stories', ctx, ['storybook', '--json'])
+  assert.equal(listed.status, 0, listed.stderr)
+  assert.deepEqual(
+    JSON.parse(listed.stdout).files.map((f) => [f.file, f.title, f.stories.map((s) => s.id)]),
+    [['src/widgets/Chip/Chip.story.ts', 'widgets/Chip', ['widgets-chip--default', 'widgets-chip--removable']]],
+  )
+})
+
+test('stories.mjs storybook --against with no file names shows a story file massimo did not list, and skips a story\'s test entries', () => {
+  const ctx = fresh()
+  rmSync(join(ctx.root, 'src', 'components', 'Broken.stories.ts'))
+  const listed = JSON.parse(run('stories', ctx, ['storybook', '--json']).stdout).files
+  const entries = {}
+  for (const f of listed) for (const s of f.stories) entries[s.id] = { id: s.id, type: 'story', subtype: 'story', title: f.title, name: s.name, importPath: `./${f.file}` }
+  // A story's test has an entry of its own, of the story type.
+  entries['button--primary:shows-the-label'] = { id: 'button--primary:shows-the-label', type: 'story', subtype: 'test', title: 'Button', name: 'shows the label', importPath: './src/components/Button/Button.stories.ts' }
+  const index = join(ctx.root, 'index.json')
+  writeFileSync(index, JSON.stringify({ v: 5, entries }))
+  const ok = run('stories', ctx, ['storybook', '--against', index])
+  assert.equal(ok.status, 0, ok.stdout)
+  assert.match(ok.stdout, /^ok: every id matches Storybook's index$/m)
+  assert.equal(run('stories', ctx, ['storybook', 'src/components/Button/Button.stories.ts', '--against', index]).status, 0)
+  entries['legacy-panel--default'] = { id: 'legacy-panel--default', type: 'story', title: 'Legacy/Panel', name: 'Default', importPath: './src/legacy/Panel.stories.js' }
+  writeFileSync(index, JSON.stringify({ v: 5, entries }))
+  const off = run('stories', ctx, ['storybook', '--against', index])
+  assert.equal(off.status, 1)
+  assert.match(off.stdout, /^not named by massimo: legacy-panel--default \(src\/legacy\/Panel\.stories\.js\)$/m)
+  // Asked for one file, the comparison stays with that file.
+  assert.equal(run('stories', ctx, ['storybook', 'src/components/Button/Button.stories.ts', '--against', index]).status, 0)
+})
+
+test("a story file's meta id, an __esModule export and a file with no default export, as Storybook reads them", async () => {
+  const { storybookIndex } = await lib()
+  const ctx = fresh()
+  const files = {
+    'src/components/Empty/Empty.stories.ts': "export default { title: 'Kit/Empty', id: '' }\n\nexport const Default = {}\n",
+    'src/components/Interop/Interop.stories.ts': "export default { title: 'Interop' }\n\nexport const __esModule = true\nexport const Default = {}\n",
+    'src/components/Factory/Factory.stories.ts': "import preview from '../../../.storybook/preview'\n\nconst meta = preview.meta({ title: 'Factory' })\n\nexport const Default = meta.story({})\n",
+    'src/components/Numbered/Numbered.stories.ts': "export default { title: 'Numbered', id: 5 }\n\nexport const Default = {}\n",
+  }
+  const index = storybookIndex(ctx.root, Object.keys(files), { read: (f) => files[f] })
+  const got = Object.fromEntries(index.files.map((f) => [f.file, [f.stories.map((s) => s.id), f.problems]]))
+  assert.deepEqual(got, {
+    // An empty id falls back to the title.
+    'src/components/Empty/Empty.stories.ts': [['kit-empty--default'], []],
+    'src/components/Factory/Factory.stories.ts': [[], ['it has no default export, so massimo reads no meta from it']],
+    'src/components/Interop/Interop.stories.ts': [['interop--default'], []],
+    'src/components/Numbered/Numbered.stories.ts': [[], ['id is not a string, which Storybook refuses']],
+  })
+})
+
 test('a class whose every asset is kept ends at cut-over: mark refuses retired, unless forced', () => {
   const ledger = () => ({ classes: { stories: { state: 'cut-over', date: 'd0', batch: 'stories-1', assets: [{ id: 'tool:storybook', decision: 'keep', loss: 'carried', state: 'cut-over', date: 'd0', batch: 'stories-1' }] } } })
   const kept = ledger()
@@ -194,6 +252,10 @@ test('a class whose every asset is kept ends at cut-over: mark refuses retired, 
   const mixed = ledger()
   mixed.classes.stories.assets.push({ id: 'lane:src/stories', decision: 'retire', loss: 'clean', state: 'cut-over', date: 'd0', batch: 'stories-1' })
   assert.equal(markClass(mixed, 'stories', 'retired', { date: 'd1' }), 'stories: cut-over -> retired')
+  // So does one whose retire asset the scan no longer finds, once its files are gone.
+  const gone = { classes: { stories: { state: 'cut-over', date: 'd0', batch: 'stories-1', assets: [{ id: 'tool:ladle', decision: 'retire', loss: 'clean', state: 'cut-over', date: 'd0', batch: 'stories-1', missing: true }] } } }
+  assert.equal(markClass(gone, 'stories', 'retired', { date: 'd1' }), 'stories: cut-over -> retired')
+  assert.equal(gone.classes.stories.state, 'retired')
 })
 
 test('the skills write down the path beside a kept Storybook, end to end', () => {
@@ -206,13 +268,17 @@ test('the skills write down the path beside a kept Storybook, end to end', () =>
   assert.match(stories, /--ready '#storybook-root'/)
   assert.match(stories, /\*\*New stories\*\* are CSF files in the repo's existing format, beside its `\*\.stories\.\*` files/)
   assert.match(stories, /beside a kept story tool, no recipe: the tool, one of its story files as the format, and its story URL pattern/)
-  assert.match(doc('agents', 'story-writer.md'), /In a csf lane \(`stories\.lane: "csf"`\), or beside a kept story tool \(Storybook, Ladle, Histoire\), that is a CSF file beside the repo's other `\*\.stories\.\*` files/)
+  const writer = doc('agents', 'story-writer.md')
+  assert.match(writer, /In a csf lane \(`stories\.lane: "csf"`\), or beside a kept story tool \(Storybook, Ladle, Histoire\), that is a CSF file beside the repo's other `\*\.stories\.\*` files/)
+  // A title only where the repo's files set one, so a new story sits with its neighbours.
+  assert.match(writer, /a default export \(with a title only where the repo's other story files set one; the tool builds it from the file's path otherwise\)/)
   assert.match(doc('agents', 'translator.md'), /in the story lane \(beside a kept story tool, a story file in that tool's format beside the repo's other stories: CSF for Storybook or Ladle\)/)
   assert.match(doc('agents', 'baseline.md'), /the story is then a story file in that tool's format beside the repo's other stories \(CSF for Storybook or Ladle\)/)
   const ux = doc('skills', 'ux', 'SKILL.md')
   assert.match(ux, /Beside a Storybook the team keeps, the kept stories are the lane: `node <project>\/scripts\/stories\.mjs storybook <component file>`/)
   assert.match(ux, /with `--selector '#storybook-root'` for a Storybook URL/)
   assert.match(ux, /beside a kept story tool, the tool, one of its story files as the format and its story URL pattern, so the render is a story in that tool/)
+  assert.match(ux, /so the new story is a story file in that tool's format beside the others \(CSF for Storybook or Ladle\)/)
   const tidy = doc('skills', 'tidy', 'SKILL.md')
   assert.match(tidy, /A story tool the team keeps \(Storybook, Ladle, Histoire\) counts as the lane/)
   assert.match(tidy, /shoot each URL with `--selector '#storybook-root'`, and keep the server up for the after shots/)
@@ -220,11 +286,14 @@ test('the skills write down the path beside a kept Storybook, end to end', () =>
   assert.match(figma, /A story tool the team keeps \(Storybook, Ladle, Histoire\) counts as the lane/)
   assert.match(figma, /beside a kept Storybook, shoot the iframe URL that `node <project>\/scripts\/stories\.mjs storybook <component file>` prints/)
   const start = doc('skills', 'start', 'SKILL.md')
-  assert.match(start, /When the only thing to adopt is a story tool the team keeps \(Storybook, Histoire, or Ladle without the csf opt-in/)
+  assert.match(start, /When the only thing to adopt is a story tool the team keeps \(Storybook, Histoire, or Ladle kept as it is/)
+  // Ladle can still opt into the csf lane, which happens in adopt, so it is offered first.
+  assert.match(start, /For Ladle, offer the csf lane first: adopt opts into it with `adopt\.mjs config --write --lane csf`[^\n]*Recommend the skip for Ladle only when the team turns that down/)
   assert.match(start, /recommend skipping adopt instead/)
   assert.match(start, /or keep a story tool with nothing else to adopt \(`--note "keeps <tool>"`\)/)
   const adopt = doc('skills', 'adopt', 'SKILL.md')
   assert.match(adopt, /4\. \*\*Shadow\.\*\*[^\n]*A project kept in a package \(made with `init\.mjs --root <package>`\)[^\n]*`defaults: run: working-directory:`/)
+  assert.match(adopt, /`config --write` adds to `stories\.include` and never removes from it, so when the config already holds the native lane's glob that setup wrote/)
   assert.match(adopt, /A class whose every asset is kept[^\n]*has nothing to retire: it ends at cut-over, and `mark` refuses `retired` for it/)
   assert.match(doc('README.md'), /^#### Keeping Storybook$/m)
   assert.match(doc('reference', 'project.md'), /Beside a Storybook the repo keeps, it is Storybook's story address with `\{id\}`/)

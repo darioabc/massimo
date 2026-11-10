@@ -11,9 +11,10 @@
 // glob, and the matcher, massimo's glob with Storybook's `@(a|b)` read as
 // `{a,b}`, so an entry with any other extglob or group matches nothing. The
 // id of a story is toId(meta.id or the title, storyNameFromExport(its export
-// name)), as Storybook's code/core/src/csf-tools/CsfFile.ts builds it, and the
-// title is the meta's own, or the auto title from the file's path and the
-// first stories entry that matches it.
+// name)), as Storybook's code/core/src/csf-tools/CsfFile.ts builds it, for
+// each export but `__esModule`, as isExportStory in export-story.ts skips
+// it, and the title is the meta's own, or the auto title from the file's
+// path and the first stories entry that matches it.
 //
 // The MIT License (MIT)
 //
@@ -266,7 +267,8 @@ const MAIN_FILES = ['main.ts', 'main.js', 'main.mjs', 'main.cjs', 'main.mts', 'm
 const DEV = /\bstorybook\s+dev\b|\bstart-storybook\b/
 const STORYBOOK_PORT = 6006
 const RUN = { npm: 'npm run', pnpm: 'pnpm run', yarn: 'yarn', bun: 'bun run' }
-const CSF_FILE = /\.stories\.[cm]?[jt]sx?$/
+// A script file: the stories entries decide which of them are story files.
+const SCRIPT_FILE = /\.[cm]?[jt]sx?$/
 
 const portIn = (cmd) => Number((/--port[ =](\d+)/.exec(cmd) ?? /(?:^|\s)-p[ =]?(\d+)/.exec(cmd) ?? /\bPORT=(\d+)/.exec(cmd))?.[1]) || null
 
@@ -355,26 +357,34 @@ export function storybookKeys(root, { scripts = {}, packageManager = 'npm' } = {
 
 // Each CSF file Storybook serves among `files` (paths from `root`), with its
 // title and each story's id: { files: [{ file, title, stories: [{ export,
-// name, id }], problems }], main }. A file whose title or list of stories
-// massimo cannot read has its problems, and no id is guessed for it.
+// name, id }], problems }], main }. A script file is a story file when a
+// stories entry matches it, whatever its name. A file whose title, meta id
+// or list of stories massimo cannot read has its problems, and no id is
+// guessed for it.
 export function storybookIndex(root, files, { configDir = '.storybook', read = (f) => readFileSync(join(root, f), 'utf8') } = {}) {
   const main = storybookMain(root, configDir)
   if (!main) return null
   const entries = storybookEntries(root, main)
   const out = []
   for (const file of [...files].sort(compare)) {
-    if (!CSF_FILE.test(file)) continue
+    if (!SCRIPT_FILE.test(file)) continue
     const importPath = `./${file}`
     if (!entries.some((e) => e.importPathMatcher?.exec(importPath))) continue
     const csf = readCsf(read(file), file)
     const problems = listFaults(csf).map((u) => (u.story ? `${u.story}: ${u.detail}` : u.detail))
-    if (csf.metaSpan === null && csf.stories.length > 0) problems.unshift('it has no default export, which Storybook needs')
+    if (csf.metaSpan === null && csf.stories.length > 0) problems.unshift('it has no default export, so massimo reads no meta from it')
+    // Storybook takes the meta's id only as a string written out.
+    if (csf.unreadable.some((u) => u.story === null && u.field === 'id')) problems.push('id is not statically readable')
+    else if (csf.meta.id !== undefined && typeof csf.meta.id !== 'string') problems.push('id is not a string, which Storybook refuses')
     const title = problems.length > 0 ? null : (userOrAutoTitle(importPath, entries, csf.title ?? undefined) ?? null)
-    const kind = typeof csf.meta.id === 'string' ? csf.meta.id : title
+    // The kind is the meta's id, or the title when the id is left out or empty.
+    const kind = problems.length > 0 ? null : csf.meta.id || title
     const stories = []
     if (kind) {
       try {
         for (const s of csf.stories) {
+          // Babel's CommonJS interop adds __esModule, which is no story.
+          if (s.export === '__esModule') continue
           const name = storyNameFromExport(s.export)
           stories.push({ export: s.export, name: s.storyName ?? name, id: toId(kind, name) })
         }

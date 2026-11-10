@@ -18,7 +18,8 @@
 // stories.storyUrl with {id} for the id, else Storybook's iframe URL on
 // stories.url or the dev script's port. --against compares the ids with
 // Storybook's own index (a saved index.json, or the URL of a running
-// Storybook) and exits 1 on any difference; a story file massimo cannot read
+// Storybook) and exits 1 on any difference, which with no <file> includes a
+// story from a file massimo did not list; a story file massimo cannot read
 // also exits 1. --routes prints { "<id>": "<path>" } for shoot.mjs --sweep
 // --routes.
 //
@@ -399,15 +400,17 @@ export function storybookStories({ root, config, projectDir, names = [], files =
 // The ids massimo names beside Storybook's own index (`entries`, or the
 // `stories` of an older index), for the files listed: { missing, extra },
 // `missing` the ids Storybook does not have, `extra` the stories Storybook
-// has for those files that massimo does not name. A docs entry is no story.
-export function compareStorybookIndex(listed, index) {
-  const theirs = Object.values(index?.entries ?? index?.stories ?? {}).filter((e) => e && (e.type ?? 'story') === 'story')
+// has for those files that massimo does not name; with `every`, the stories
+// of any file, so a story file massimo did not list shows too. A docs entry
+// is no story, and neither is a story's test, which has its own entry.
+export function compareStorybookIndex(listed, index, { every = false } = {}) {
+  const theirs = Object.values(index?.entries ?? index?.stories ?? {}).filter((e) => e && (e.type ?? 'story') === 'story' && (e.subtype ?? 'story') === 'story')
   const files = new Set(listed.map((f) => f.file))
   const ours = new Map(listed.flatMap((f) => f.stories.map((st) => [st.id, f.file])))
   const known = new Set(theirs.map((e) => e.id))
   const missing = [...ours].filter(([id]) => !known.has(id)).map(([id, file]) => ({ id, file }))
   const extra = theirs
-    .filter((e) => files.has(String(e.importPath ?? '').replace(/^\.\//, '')) && !ours.has(e.id))
+    .filter((e) => (every || files.has(String(e.importPath ?? '').replace(/^\.\//, ''))) && !ours.has(e.id))
     .map((e) => ({ id: e.id, file: String(e.importPath).replace(/^\.\//, '') }))
   const order = (a, b) => compare(a.file, b.file) || compare(a.id, b.id)
   return { missing: missing.sort(order), extra: extra.sort(order) }
@@ -429,7 +432,7 @@ async function storybookCommand({ root, config, projectDir, names, flags }) {
       index = await r.json()
     } else index = readJson(resolve(from), null)
     if (!index || typeof index !== 'object') fail(`${from} is not Storybook's index.json`)
-    compared = compareStorybookIndex(found.files, index)
+    compared = compareStorybookIndex(found.files, index, { every: names.length === 0 })
   }
   if (flags.routes) {
     const routes = Object.fromEntries(found.files.flatMap((f) => f.stories.map((st) => [st.id, `${new URL(st.url).pathname}${new URL(st.url).search}`])))

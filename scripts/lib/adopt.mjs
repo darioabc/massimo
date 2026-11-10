@@ -430,8 +430,9 @@ export function markClass(ledger, cls, state, { batch = null, force = false, dat
   }
   const cuts = from < CUT_OVER && to >= CUT_OVER
   if (cuts && (typeof batch !== 'string' || !batch)) throw new Error('cut-over needs --batch <id>, the id the batch commit carries in its trailer')
-  // A class whose every asset is kept has nothing to retire: it ends at cut-over.
-  if (state === 'retired' && !force && c.assets.every((a) => a.missing || a.decision === 'keep')) {
+  // A class whose every asset is kept has nothing to retire: it ends at
+  // cut-over. An asset the scan no longer finds still counts by its decision.
+  if (state === 'retired' && !force && !c.assets.some((a) => a.decision !== 'keep')) {
     throw new Error(`nothing in ${cls} is marked retire or convert, so it ends at cut-over: a kept asset is never retired`)
   }
   // The batch an asset or the class carries at `next`, coming from `was`.
