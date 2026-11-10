@@ -194,6 +194,69 @@ test('a package inside a workspace reads what the workspace root installs and it
   }
 })
 
+test('a package that names its own framework keeps it under a workspace root that installs another', (t) => {
+  if (!hasGit()) return t.skip('git is not installed')
+  for (const [rootDeps, rootPort] of [
+    [{ astro: '5', '@astrojs/starlight': '0.30' }, 'astro'],
+    [{ next: '15' }, 'next'],
+  ]) {
+    const r = repo({
+      'package.json': { name: 'acme', private: true, devDependencies: { ...rootDeps, '@ladle/react': '4' } },
+      'pnpm-workspace.yaml': 'packages:\n  - packages/*\n',
+      'pnpm-lock.yaml': 'lockfileVersion: 9.0\n',
+      '.ladle/config.mjs': 'export default {}\n',
+      'packages/ui/package.json': { name: '@acme/ui', devDependencies: { vite: '5', react: '18', '@vitejs/plugin-react': '4', storybook: '8' } },
+      'packages/ui/src/components/Button.tsx': COMPONENT,
+      'packages/ui/src/components/Button.stories.tsx': "export default { title: 'Button' }\n",
+      'packages/web/package.json': { name: '@acme/web', devDependencies: { vite: '5' } },
+      'packages/web/src/components/Card.tsx': COMPONENT,
+    })
+    try {
+      assert.equal(git(r.root, 'init', '-q').status, 0)
+      const ui = detect(join(r.root, 'packages/ui'))
+      assert.equal(ui.framework, 'vite-react', rootPort)
+      assert.equal(ui.devPort, 5173, rootPort)
+      assert.deepEqual(ui.suggestedConfig.components.include, ['src/components/**/*.{tsx,jsx}'], rootPort)
+      // A story tool of its own: the one the root configures is not added.
+      assert.deepEqual(ui.storyTools.tools, ['storybook'], rootPort)
+      // The workspace's lock file names the package manager.
+      assert.equal(ui.packageManager, 'pnpm', rootPort)
+      // Vite alone names no framework, so the root's counts.
+      assert.equal(detect(join(r.root, 'packages/web')).framework, rootPort === 'next' ? 'next-pages' : 'astro')
+    } finally {
+      r.cleanup()
+    }
+  }
+})
+
+test('a workspace root that takes its framework from its packages takes its port too, and no consumer glob of a folder it lacks', () => {
+  const r = repo({
+    'package.json': { name: 'acme', private: true, devDependencies: { turbo: '2' } },
+    'pnpm-workspace.yaml': 'packages:\n  - apps/*\n  - packages/*\n',
+    'apps/web/package.json': { name: 'web', dependencies: { next: '15', react: '19' } },
+    'apps/web/app/page.tsx': COMPONENT,
+    'apps/docs/package.json': { name: 'docs', dependencies: { next: '15', react: '19' } },
+    'apps/docs/app/page.tsx': COMPONENT,
+    'packages/ui/package.json': { name: '@acme/ui' },
+    'packages/ui/src/button.tsx': COMPONENT,
+  })
+  try {
+    const out = detect(r.root)
+    assert.equal(out.framework, 'next-app')
+    assert.equal(out.devPort, 3000)
+    assert.deepEqual(out.suggestedConfig.consumers, ['**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}'])
+  } finally {
+    r.cleanup()
+  }
+  // A Next.js app of its own keeps its app/ folder among the consumers.
+  const app = repo({ 'package.json': { name: 'acme', dependencies: { next: '15', react: '19' } }, 'app/page.tsx': COMPONENT, 'components/Button.tsx': COMPONENT })
+  try {
+    assert.deepEqual(detect(app.root).suggestedConfig.consumers, ['**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}', 'app/**/*.{tsx,jsx,ts,js}'])
+  } finally {
+    app.cleanup()
+  }
+})
+
 test('style files: a comment that mentions Tailwind is not Tailwind, and a file with no custom property does not lead the token sources', () => {
   const r = repo({
     'package.json': { name: 'acme', dependencies: { react: '18', vite: '5' } },
@@ -221,6 +284,20 @@ test('style files: a comment that mentions Tailwind is not Tailwind, and a file 
   } finally {
     commented.cleanup()
   }
+  // Custom properties in a comment declare nothing, and Sass and Less have
+  // // comments too; a URL's // is no comment.
+  const docs = repo({
+    'package.json': { name: 'acme' },
+    'src/styles/docs.css': '/**\n * Set these on :root:\n *   --brand: red;\n *   --accent: blue;\n *   --muted: gray;\n *   --line: black;\n *   --space: 4px;\n */\n:root { --one: 1px; }\n',
+    'src/styles/base.scss': "// @tailwind base;\n$x: 1px;\n:root { --a: 1px; --b: 2px; --c: url(https://example.com/a.png); --d: 4px; --e: 5px; }\n// --f: 6px;\n",
+  })
+  try {
+    const out = detect(docs.root)
+    assert.deepEqual(out.styling, ['sass'])
+    assert.deepEqual(out.styleFiles, [{ file: 'src/styles/base.scss', customProps: 5, theme: false }])
+  } finally {
+    docs.cleanup()
+  }
 })
 
 test('the start skill says when to keep the root, when to pick a package, and how the package reaches init', () => {
@@ -231,6 +308,9 @@ test('the start skill says when to keep the root, when to pick a package, and ho
   assert.match(kickoff, /one package per component/)
   assert.match(kickoff, /`packages\/\*\/src\/\*\*\/\*\.\{tsx,jsx\}`/)
   assert.match(kickoff, /\*\*One package\*\*, when the root holds packages and nothing of its own: detect lists `nestedPackages`/)
+  // At a workspace root the packages are its members, which detect does not list as nested.
+  assert.match(kickoff, /At a workspace root the packages are its workspace members, not `nestedPackages`/)
+  assert.match(kickoff, /When a warning says a format check would flag the project folder or the config/)
   assert.match(kickoff, /A chosen package reaches init through `--root <package>` \(step 4\)/)
   assert.match(kickoff, /init\.mjs --config-json '<json>'`[^\n]*with `--root <package>` when step 1 chose a package/)
   assert.doesNotMatch(kickoff, /If the repo is a monorepo, ask which package/)

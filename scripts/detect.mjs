@@ -137,25 +137,35 @@ function detectFramework(have = has, dir = root) {
   return 'unknown'
 }
 
+// The framework a package's own dependencies name. Those it sits beneath (a
+// workspace root's) count only when its own name none, or Vite alone, so a
+// framework installed at the workspace root never beats the package's own.
+function frameworkOf(own, beneath, dir) {
+  const found = detectFramework((name) => Object.hasOwn(own, name), dir)
+  if (found !== 'unknown' && found !== 'vite') return found
+  const both = { ...beneath, ...own }
+  return detectFramework((name) => Object.hasOwn(both, name), dir)
+}
+
 // A workspace root that names no framework of its own (none, or Vite alone)
 // takes the one most of its packages use, each package read with the root's
 // dependencies beneath its own.
-function repoFramework() {
-  const own = detectFramework()
+function repoFramework(own) {
   if ((own !== 'unknown' && own !== 'vite') || members.length === 0) return own
   const counts = new Map()
   for (const m of members) {
-    const both = { ...deps, ...m.deps }
-    const found = detectFramework((name) => Object.hasOwn(both, name), join(root, m.dir))
+    const found = frameworkOf(m.deps, deps, join(root, m.dir))
     if (found !== 'unknown' && found !== 'vite') counts.set(found, (counts.get(found) ?? 0) + 1)
   }
   const [best] = [...counts].sort((a, b) => b[1] - a[1] || compare(a[0], b[0]))
   return best ? best[0] : own
 }
 
-// CSS with its comments taken out. A string is kept whole, since a glob such
-// as "../**/*.tsx" holds a "/*".
-const withoutComments = (css) => css.replace(/("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\/\*[\s\S]*?\*\//g, (m, str) => str ?? ' ')
+// CSS with its comments taken out, and with `lines`, the // comments Sass and
+// Less have too. A string or a url() is kept whole, since a glob such as
+// "../**/*.tsx" holds a "/*" and a URL holds a "//".
+const withoutComments = (css, lines = false) =>
+  css.replace(lines ? /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|url\((?!\s*["'])[^)]*\))|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g : /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|url\((?!\s*["'])[^)]*\))|\/\*[\s\S]*?\*\//g, (m, kept) => kept ?? ' ')
 
 function detectStyling() {
   const out = []
@@ -195,18 +205,20 @@ function detectStyling() {
 }
 
 function detectStoryTools() {
-  const out = []
   const storyFiles = files.filter((f) => /\.(stories|story)\.[a-z]+$/.test(f))
-  // A story tool the workspace root installs or configures serves the
-  // packages that hold stories.
-  const fromTop = workspaceTop !== null && storyFiles.length > 0
-  const toolDeps = fromTop ? deps : depsOf(pkg)
-  const tool = (name) => Object.hasOwn(toolDeps, name)
-  const shared = (dir) => fromTop && existsSync(join(workspaceTop, dir))
-  if (Object.keys(toolDeps).some((d) => d === 'storybook' || d.startsWith('@storybook/')) || files.some((f) => f.startsWith('.storybook/')) || shared('.storybook')) out.push('storybook')
-  if (tool('@ladle/react') || files.some((f) => f.startsWith('.ladle/')) || shared('.ladle')) out.push('ladle')
-  if (tool('histoire')) out.push('histoire')
-  if (tool('react-cosmos')) out.push('react-cosmos')
+  // The story tools a set of dependencies and a folder's config name.
+  const toolsIn = (d, configured) => {
+    const out = []
+    if (Object.keys(d).some((k) => k === 'storybook' || k.startsWith('@storybook/')) || configured('.storybook')) out.push('storybook')
+    if (Object.hasOwn(d, '@ladle/react') || configured('.ladle')) out.push('ladle')
+    if (Object.hasOwn(d, 'histoire')) out.push('histoire')
+    if (Object.hasOwn(d, 'react-cosmos')) out.push('react-cosmos')
+    return out
+  }
+  const own = toolsIn(depsOf(pkg), (dir) => files.some((f) => f.startsWith(`${dir}/`)))
+  // A package of a workspace that holds stories and names no story tool of
+  // its own uses the one the workspace root installs or configures.
+  const out = own.length === 0 && workspaceTop !== null && storyFiles.length > 0 ? toolsIn(hoisted, (dir) => existsSync(join(workspaceTop, dir))) : own
   return { tools: out, storyFiles: storyFiles.length, sample: storyFiles.slice(0, 5), lane: gatedLane() }
 }
 
@@ -323,9 +335,10 @@ const styleFileStats = files
     } catch {
       // unreadable, skip
     }
-    const customProps = (text.match(/--[a-zA-Z0-9-_]+\s*:/g) ?? []).length
-    // A comment that mentions Tailwind is not Tailwind.
-    const css = withoutComments(text)
+    // A comment that mentions Tailwind is not Tailwind, and a custom property
+    // in a comment declares nothing.
+    const css = withoutComments(text, /\.(?:scss|sass|less)$/.test(f))
+    const customProps = (css.match(/--[a-zA-Z0-9-_]+\s*:/g) ?? []).length
     const theme = /@theme\b|@plugin\s+["']daisyui\/theme["']|@tailwind\s+base|@import\s+["']tailwindcss["']/.test(css)
     return { file: f, customProps, theme, css }
   })
@@ -407,9 +420,8 @@ function devPort() {
   return frameworkPort()
 }
 
-// The port a framework's dev server uses when none is given.
+// The port the repo's framework serves on when none is given.
 function frameworkPort() {
-  const framework = detectFramework()
   if (framework.startsWith('next') || framework === 'nuxt' || framework === 'react-router') return 3000
   if (framework === 'astro') return 4321
   if (framework === 'angular') return 4200
@@ -417,14 +429,22 @@ function frameworkPort() {
   return null
 }
 
+// The lock file names the package manager. A package of a workspace with no
+// lock file of its own uses the one at the workspace root.
 function packageManager() {
-  if (existsSync(join(root, 'pnpm-lock.yaml'))) return 'pnpm'
-  if (existsSync(join(root, 'yarn.lock'))) return 'yarn'
-  if (existsSync(join(root, 'bun.lockb')) || existsSync(join(root, 'bun.lock'))) return 'bun'
+  const dirs = workspaceTop && !existsSync(join(root, 'package-lock.json')) ? [root, workspaceTop] : [root]
+  for (const dir of dirs) {
+    if (existsSync(join(dir, 'pnpm-lock.yaml'))) return 'pnpm'
+    if (existsSync(join(dir, 'yarn.lock'))) return 'yarn'
+    if (existsSync(join(dir, 'bun.lockb')) || existsSync(join(dir, 'bun.lock'))) return 'bun'
+  }
   return 'npm'
 }
 
-const framework = repoFramework()
+// The root's own framework, and the one the repo reports, which a workspace
+// root that names none takes from its packages.
+const ownFramework = frameworkOf(depsOf(pkg), hoisted, root)
+const framework = repoFramework(ownFramework)
 const styling = detectStyling()
 const dirs = componentDirs()
 // A repo may already own a folder named design-system (a package, docs); only
@@ -504,7 +524,8 @@ const suggestedConfig = {
     include: componentInclude(),
     exclude: DEFAULTS.components.exclude,
   },
-  consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(framework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
+  // The app/ folder only when the root's own Next.js app keeps it there.
+  consumers: [`${srcRoot === '.' ? '' : 'src/'}**/*.{tsx,jsx,ts,js,mjs,vue,svelte,astro}`].concat(ownFramework === 'next-app' && !existsSync(join(root, 'src/app')) ? ['app/**/*.{tsx,jsx,ts,js}'] : []),
   aliases: aliases(),
   // An existing gated lane is the lane: its pages are the stories, and its own
   // dev script and port run it.
