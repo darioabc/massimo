@@ -123,6 +123,51 @@ test('a CSS-in-JS theme: palette, scales and fonts, computed values named', () =
   assert.ok(notes.some((n) => /spacingUnit is computed \(brandSpacing \* 2\)/.test(n)))
 })
 
+test('a theme module: a theme call with a selector before its object, every exported palette, and the objects not read named', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'massimo-theme-'))
+  try {
+    writeFileSync(join(tmp, 'themes.css.ts'), [
+      "import { createGlobalTheme } from '@vanilla-extract/css'",
+      "import { vars } from './contract.css'",
+      "createGlobalTheme(':root', vars, {",
+      "  color: { brand: '#ff8800', text: '#111111' },",
+      "  radius: { sm: '4px' },",
+      '})',
+      'createGlobalTheme(\'[data-theme="dark"]\', vars, {',
+      "  color: { brand: '#ffaa33', text: '#eeeeee' },",
+      '})',
+      '',
+    ].join('\n'))
+    const themes = readThemeObject(tmp, 'themes.css.ts')
+    const t = byPath(themes.tokens)
+    assert.equal(t['color.brand'].value, '#ff8800')
+    assert.equal(t['radius.sm'].value, '4px')
+    assert.ok(themes.notes.includes(`themes.css.ts: read createGlobalTheme(':root', vars, {…}); createGlobalTheme('[data-theme="dark"]', vars, {…}) is another object, which was not read`), themes.notes.join('\n'))
+
+    writeFileSync(join(tmp, 'colors.ts'), [
+      "export const color = { black: '#101010', gray50: '#fafafa' } as const",
+      "export const accentColor = { default: '#ff9900' } as const",
+      "export const themeLight: ThemeSet = { primary: '#2255ff' }",
+      "export const themeDark: ThemeSet = { primary: '#88aaff' }",
+      '',
+    ].join('\n'))
+    const colors = readThemeObject(tmp, 'colors.ts')
+    const c = byPath(colors.tokens)
+    assert.equal(c['color.black'].value, '#101010')
+    assert.equal(c['color.gray50'].value, '#fafafa')
+    assert.equal(c['other.primary'].value, '#2255ff')
+    assert.ok(colors.notes.includes('colors.ts: read themeLight; themeDark, accentColor are other objects, which were not read'), colors.notes.join('\n'))
+
+    // A contract's strings are CSS variable names; the theme beside it holds the values.
+    writeFileSync(join(tmp, 'contract.css.ts'), "export const vars = createGlobalThemeContract({ color: { brand: 'color-brand' } })\n")
+    assert.deepEqual(readThemeObject(tmp, 'contract.css.ts'), { tokens: [], notes: ['contract.css.ts: a theme contract names CSS variables, not values, so it was not read'] })
+    writeFileSync(join(tmp, 'theme.css.ts'), "export const vars = createThemeContract({ color: { brand: null } })\nexport const light = createTheme(vars, { color: { brand: '#0055ff' } })\n")
+    assert.equal(byPath(readThemeObject(tmp, 'theme.css.ts').tokens)['color.brand'].value, '#0055ff')
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('the object reader never runs code and stops at what it cannot read', () => {
   const src = "module.exports = { a: 'x', b: [1, 'two', { c: true }], d: fn(1, { e: 2 }), 'f-g': `h`, i: `${j}`, ...k, l() { return 1 } }"
   const obj = findObject(src, [/module\.exports\s*=\s*/])

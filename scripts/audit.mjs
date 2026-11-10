@@ -400,6 +400,77 @@ const TAILWIND_INVENTORY = [
 ]
 const DURATION = /(?<![\w.-])(\d*\.?\d+)(ms|s)\b/g
 const EASING = /cubic-bezier\([^)]*\)|steps\([^)]*\)|\b(?:ease-in-out|ease-in|ease-out|ease|linear)\b/g
+// Tailwind's own radius and spacing classes, by step: `rounded-t-lg` is
+// `rounded-lg`, `-mx-4` is step 4. They go to extract only, so an audit's
+// latest.json and latest.md stay as they were.
+const RADIUS_CLASS = /^rounded(?:-(?:[trblse]|tl|tr|br|bl|ss|se|es|ee))?(?:-(xs|sm|md|lg|xl|[2-4]xl|full))?$/
+const SPACING_CLASS = /^-?(?:p[xytrblse]?|m[xytrblse]?|gap(?:-[xy])?|space-[xy])-(\d+(?:\.\d+)?|px)$/
+
+function scaleClasses(tokens, classes) {
+  const count = (family, value) => classes[family].set(value, (classes[family].get(value) ?? 0) + 1)
+  for (const { token } of tokens) {
+    const r = RADIUS_CLASS.exec(token)
+    if (r) count('radius', r[1] ? `rounded-${r[1]}` : 'rounded')
+    const s = SPACING_CLASS.exec(token)
+    if (s && s[1] !== '0') count('spacing', s[1])
+  }
+}
+
+// The call that defines a theme contract (createThemeContract,
+// createGlobalThemeContract): its strings are the names of CSS variables,
+// not values, so its arguments are blanked, keeping offsets and lines.
+const CONTRACT_CALL = /(?<![\w$.])create(?:Global)?ThemeContract\s*\(/g
+
+function blankContracts(code, file) {
+  if (/\.(?:css|scss|sass|less|styl)$/i.test(file) || !code.includes('ThemeContract')) return code
+  let out = code
+  for (const m of code.matchAll(CONTRACT_CALL)) {
+    const open = m.index + m[0].length - 1
+    let depth = 0
+    let end = code.length
+    for (let i = open; i < code.length; i++) {
+      const c = code[i]
+      if (c === '"' || c === "'" || c === '`') {
+        const close = code.indexOf(c, i + 1)
+        i = close === -1 ? code.length : close
+      } else if (c === '(') depth++
+      else if (c === ')' && --depth === 0) {
+        end = i
+        break
+      }
+    }
+    out = out.slice(0, open + 1) + code.slice(open + 1, end).replace(/[^\n]/g, ' ') + out.slice(end)
+  }
+  return out
+}
+
+// The selector of the rule a declaration at `offset` sits in, or ''.
+function selectorAt(code, offset) {
+  let depth = 0
+  for (let i = offset - 1; i >= 0; i--) {
+    if (code[i] === '}') depth++
+    else if (code[i] === '{' && depth-- === 0) {
+      let start = i - 1
+      while (start >= 0 && !'{};>`'.includes(code[start])) start--
+      return code.slice(start + 1, i).trim()
+    }
+  }
+  return ''
+}
+
+// The font size a body, html or :root rule sets, the body's first: the size
+// running text takes. Read from the first such rule.
+const BODY_SELECTORS = ['body', 'html', ':root']
+function noteBodySize(ctx, file, code, offset, value) {
+  const parts = selectorAt(code, offset).split(',').map((s) => s.trim())
+  const rank = BODY_SELECTORS.findIndex((s) => parts.includes(s))
+  if (rank === -1) return
+  const t = [...stripVarsAndUrls(value).matchAll(LENGTH_TOKEN)][0]
+  if (!t) return
+  const current = ctx.forExtract.bodySize
+  if (current && BODY_SELECTORS.indexOf(current.selector) <= rank) return
+  ctx.forExtract.bodySize = { px: px(Math.abs(parseFloat(t[1])), t[2]), selector: BODY_SELECTORS[rank], file }
+}
 
 function inventoryOf(code, isCss, tokens, inv) {
   const count = (family, value) => {
@@ -435,7 +506,7 @@ function inventoryOf(code, isCss, tokens, inv) {
 
 // `info` is what the file's header says through the roles (fileInfo).
 function scanFile(file, source, ctx, info) {
-  const code = stripComments(source, file)
+  const code = blankContracts(stripComments(source, file), file)
   const li = lineIndex(source)
   const findings = []
   const reads = []
@@ -534,6 +605,7 @@ function scanFile(file, source, ctx, info) {
   for (const m of code.matchAll(CSS_DECL)) {
     const start = m.index + m[0].length
     lengthFindings(start, m[1], readCssValue(code, start))
+    if (m[1] === 'font-size') noteBodySize(ctx, file, code, m.index, readCssValue(code, start))
   }
   for (const m of code.matchAll(JS_DECL)) {
     const prop = m[1]
@@ -572,9 +644,11 @@ function scanFile(file, source, ctx, info) {
       if (raw) tokens.push({ token: raw.slice(raw.lastIndexOf(':') + 1).replace(/^!|!$/g, ''), offset: m.index })
     }
   }
-  inventoryOf(code, isCss, tokens, ctx.inventory)
+  // Class strings count as Tailwind's classes only in a repo styled with Tailwind.
+  inventoryOf(code, isCss, ctx.tailwind ? tokens : [], ctx.inventory)
+  if (ctx.tailwind) scaleClasses(tokens, ctx.forExtract.classes)
   for (const { token, offset } of tokens) {
-    const t = TEXT_UTILITY.exec(token)
+    const t = ctx.tailwind && TEXT_UTILITY.exec(token)
     if (t) ctx.tailwindText.set(TEXT_SCALE[t[1]], (ctx.tailwindText.get(TEXT_SCALE[t[1]]) ?? 0) + 1)
     if (ctx.palette) {
       const p = PALETTE_UTILITY.exec(token)
@@ -1052,8 +1126,12 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     primitivesOutside: colorPrimitives ? styleSet : null,
     palette,
     ownColors,
+    tailwind: hasTailwind,
     tailwindText: new Map(),
     inventory: {},
+    // What only tokens.mjs extract reads: the body's font size and Tailwind's
+    // own radius and spacing classes. Never written to latest.json.
+    forExtract: { bodySize: null, classes: { radius: new Map(), spacing: new Map() } },
     arbitraryColorOnly: config.audit?.arbitrary === 'color',
     colorVars: config.audit?.arbitrary === 'color' ? colorProperties(customProps, dtcgTokens) : new Set(),
     breakpoints,
@@ -1251,6 +1329,13 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     // CLI, never written to latest.json.
     kinds,
     warnings,
+    // Read by tokens.mjs extract, never written to latest.json.
+    forExtract: {
+      bodySize: ctx.forExtract.bodySize,
+      classes: Object.fromEntries(
+        Object.entries(ctx.forExtract.classes).map(([family, map]) => [family, [...map.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).map(([value, count]) => ({ value, count }))]),
+      ),
+    },
   }
 }
 
@@ -1484,7 +1569,7 @@ function main() {
   const date = today()
   const auditsDir = join(projectDir, 'audits')
   mkdirSync(auditsDir, { recursive: true })
-  const { findings, kinds, warnings, ...summary } = result
+  const { findings, kinds, warnings, forExtract, ...summary } = result
   const json = { version: 1, generatedBy: 'massimo audit', date, ...summary, findings }
   writeFileSync(join(auditsDir, 'latest.json'), `${JSON.stringify(json, null, 2)}\n`)
   writeFileSync(join(auditsDir, 'latest.md'), renderMarkdown(result, date, scriptCommand(root, projectDir, 'audit')))

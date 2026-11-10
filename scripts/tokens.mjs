@@ -558,7 +558,7 @@ function readSources(root, config) {
 
 const looksLegacyDoc = (doc) => JSON.stringify(doc).includes('"massimo":{"modes"') || /"\$value":\s*"#/.test(JSON.stringify(doc))
 
-const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', other: 'Other' }
+const FAMILY_TITLES = { color: 'Colour', typography: 'Typography', spacing: 'Spacing', radius: 'Radius', shadow: 'Shadow', border: 'Border', motion: 'Motion', 'z-index': 'Layers', opacity: 'Opacity', size: 'Size', other: 'Other' }
 const cell = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
 // The draft's report: what each token is and where it came from, family by
