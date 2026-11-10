@@ -12,6 +12,7 @@ import { join, relative, sep } from 'node:path'
 import { compare } from './lib/glob.mjs'
 import { adoptableSummary } from './lib/inventory.mjs'
 import { csfScaffold } from './lib/lane-css.mjs'
+import { nuxtComponentFolders } from './lib/nuxt.mjs'
 import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -349,7 +350,8 @@ const extByFramework = {
   astro: '{astro,tsx,jsx,vue,svelte}',
 }
 const ext = extByFramework[framework] ?? '{tsx,jsx}'
-const topDirs = dirs.slice(0, 3).map((d) => d.dir)
+// A Nuxt app's components are the folders Nuxt registers, every layer's included.
+const topDirs = nuxtComponentFolders(root, files, framework) ?? dirs.slice(0, 3).map((d) => d.dir)
 const srcRoot = existsSync(join(root, 'src')) ? 'src' : '.'
 
 // The stories keys 0.3.0 wrote. A key added later is left out, so a config

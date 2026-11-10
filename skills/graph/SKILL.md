@@ -29,6 +29,16 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 
 Any phase that adds, renames or deletes components re-runs `graph.mjs` before it ends. Run `node <project>/scripts/graph.mjs --check` to see whether the committed graph is stale without writing.
 
+## A Nuxt app
+
+In a Nuxt app (the config's `framework` is `nuxt`, or a `nuxt.config` sits at the root), the graph also reads what Nuxt resolves for itself. Nuxt keeps these in a tsconfig it writes into `.nuxt/`, which git ignores, so the graph reads them from the app's `nuxt.config` and its layers' instead, literal values only:
+
+- Aliases: `~` and `@` name the source folder (the config's `srcDir`, else `app/` in Nuxt 4's layout, else the root), `~~` and `@@` the root, `#shared` the `shared/` folder, `#layers/<name>` each layer, and the config's `alias` entries are read too. Inside a layer's source folder, `~` and `@` name that layer's folder. They are tried after `aliases` and the tsconfig paths. Nuxt's virtual modules (`#imports`, `#components`, `#app` and the like) are framework imports, neither packages nor unresolved.
+- Auto-imported components: every component Nuxt registers, from each layer's `components/` folder, the `components` option (with its `prefix` and `pathPrefix`) and shadcn-nuxt's `shadcn.componentDir` (with `shadcn.prefix`), named by Nuxt's own rule. A template tag that names one (`<BaseButton>`, `<base-button>`, `<LazyBaseButton>`), a `resolveComponent('BaseButton')` call and an import from `#components` count as a use, as an import does, and a file that does both counts once. A tag that the file's own script binds to an import belongs to that import.
+- Layers: the folders under `layers/` that hold a `nuxt.config`, and the local paths `extends` lists. A remote or package layer is out of reach, and the run lists it as a warning.
+
+`graph.edges: ["!nuxt"]` turns the auto-imported components' edges off and keeps the aliases. A config that lists `mdx` or `glob` keeps them on, and `"nuxt"` states the default. A `nuxt.config` value that is not a literal (a variable, a function call) is not read, and the run says so in a warning. In every project, an import that starts with `@/` or `~/` and resolves to nothing is listed as unresolved, never as a package.
+
 ## ds headers
 
 Components declare their place in the system in comment lines at the top of their file, which the graph harvests:

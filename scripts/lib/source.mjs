@@ -622,6 +622,8 @@ export function createResolver(root, config = {}) {
     const member = workspaceFile(spec)
     if (member) return { file: member }
     if (aliased && !installed(spec)) return { unresolved: rawSpec }
+    // `@/` and `~/` are never package names, only aliases nothing here maps.
+    if (/^[@~]\//.test(spec)) return { unresolved: rawSpec }
     return { pkg: packageName(spec) }
   }
 }
