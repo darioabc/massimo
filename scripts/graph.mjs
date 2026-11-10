@@ -92,6 +92,31 @@ const isProse = (text) => /[.,!?;](?:\s|$)/.test(text.replace(/\$\{[^}]*\}/g, ' 
 // `hover:!btn-primary` -> `btn-primary`
 const bareClass = (raw) => raw.slice(raw.lastIndexOf(':') + 1).replace(/^!|!$/g, '')
 
+// A Vue bound attribute just before a string: `:class="` or `v-bind:ui='`,
+// the attribute's name in group 1.
+const VUE_BOUND = /(?:^|\s)(?::|v-bind:)([\w-]+)(?:\.[\w-]+)*\s*=\s*["']$/
+
+// The string literals a node's classes and tokens are read from. In a .vue
+// file a bound attribute's value is script read as one string, so when it
+// reads as prose as a whole (`:class="cn('bg-card text-card-foreground', props.class)"`)
+// its own string literals stand in for it, each a class list when the
+// attribute is the class.
+function classLiterals(code, file) {
+  const out = []
+  const vue = /\.vue$/i.test(file)
+  for (const literal of stringLiterals(code, file)) {
+    const bound = vue && isProse(literal.text) ? VUE_BOUND.exec(code.slice(Math.max(0, literal.start - 64), literal.start)) : null
+    if (!bound) {
+      out.push(literal)
+      continue
+    }
+    for (const inner of stringLiterals(literal.text, 'bound.ts')) {
+      out.push({ text: inner.text, start: literal.start + inner.start, classAttr: bound[1] === 'class' })
+    }
+  }
+  return out
+}
+
 // The import and export lines of an MDX file, as MDX reads them: from a line
 // that opens with `import` or `export` to the next blank line, so an import
 // that wraps stays whole. Fenced code is skipped: an import shown in a code
@@ -291,9 +316,11 @@ function placementOf(taxonomy) {
 
 // Everything the graph needs, computed from source. Pure apart from reads:
 // returns { json, markdown, warnings } so --check and tests can reuse it.
-// A component's props with how its call sites use them, and the states it styles.
-function propsAndStates(source, file, name, importers) {
-  const own = componentProps(source, file, componentName(file))
+// A component's props with how its call sites use them, and the states it
+// styles. `sourceOf(name)` is the source of the module the component imports
+// `name` from, where a variant map its props name may sit.
+function propsAndStates(source, file, name, importers, sourceOf = null) {
+  const own = componentProps(source, file, componentName(file), sourceOf)
   const usage = callSiteUsage(componentName(file), importers)
   const props = own.map((p) => (usage[p.name] ? { ...p, usage: usage[p.name] } : p))
   for (const [prop, values] of Object.entries(usage)) {
@@ -975,11 +1002,20 @@ export function buildGraph(root, config, command = "graph.mjs") {
   }
   const lane = laneMode === 'manifest' ? readLane() : laneMode === 'csf' ? readCsfLane() : null
 
-  // Style harvesting reads the colour names the styleFiles define.
+  // Style harvesting reads the colour names the styleFiles define, and the
+  // ones the css and tailwind4 token outputs declare, so a component still
+  // reads its tokens once a style file imports the outputs in place of its
+  // own declarations.
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore, all)
   const customProps = []
   for (const f of styleFiles) {
     customProps.push(...parseCustomProperties(readFileSync(join(root, f), 'utf8'), f))
+  }
+  const outputProps = []
+  for (const output of config.tokens.outputs ?? []) {
+    const path = output?.path
+    if (!['css', 'tailwind4'].includes(output?.format) || typeof path !== 'string' || !existsSync(join(root, path))) continue
+    outputProps.push(...parseCustomProperties(readFileSync(join(root, path), 'utf8'), path))
   }
   const libraries = classLibraries(config).map((lib) => ({
     ...lib,
@@ -987,7 +1023,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
     byLength: [...lib.roots].sort((a, b) => b.length - a.length || compare(a, b)),
   }))
   const colorNames = sortedUnique([
-    ...customProps.map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
+    ...[...customProps, ...outputProps].map((p) => /^--color-([\w-]+)$/.exec(p.name)?.[1]).filter(Boolean),
     ...libraries.flatMap((lib) => lib.colors),
   ])
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -1039,18 +1075,29 @@ export function buildGraph(root, config, command = "graph.mjs") {
     if (!textOf.has(f)) textOf.set(f, readFileSync(join(root, f), 'utf8'))
     return textOf.get(f)
   }
+  // The source of the module a node imports `name` from (a type import
+  // included), or null when it is not a file of the repo.
+  const importedSource = (file, source) => {
+    let imports = null
+    return (name) => {
+      imports ??= extractImports(source, file)
+      const imp = imports.find((i) => i.kind === 'static' && i.names.includes(name))
+      const hit = imp ? resolveImport(file, imp.spec).file : null
+      return hit && CODE_EXTS.test(hit) ? text(hit) : null
+    }
+  }
   const nodes = nodeFiles.map((file) => {
     const source = readFileSync(join(root, file), 'utf8')
     const code = stripComments(source, file)
     const classes = Object.fromEntries(libraries.map((lib) => [lib.id, new Set()]))
     const tokens = new Set()
-    for (const { text, start } of stringLiterals(code, file)) {
+    for (const { text, start, classAttr } of classLiterals(code, file)) {
       if (isProse(text)) continue
       const words = text.split(/[\s"'`{}(),;]+/).filter(Boolean).map(bareClass)
       if (words.length === 0) continue
       // A bare word like `label` or `list` is only a class when the string is
       // plainly a class list; `btn-primary`-style tokens always count.
-      const classy = CLASS_CONTEXT.test(code.slice(Math.max(0, start - 48), start)) || words.some(CLASS_LIKE.test, CLASS_LIKE)
+      const classy = classAttr || CLASS_CONTEXT.test(code.slice(Math.max(0, start - 48), start)) || words.some(CLASS_LIKE.test, CLASS_LIKE)
       for (const token of words) {
         for (const lib of libraries) {
           const component = rootOf(lib, token, classy)
@@ -1110,7 +1157,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       composes: [...composes.get(file)].map((f) => nameOf.get(f)).sort(byName),
       composedBy: sortedAreas,
       usage: importersOf.get(file).size,
-      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) }))),
+      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) })), importedSource(file, source)),
       packages: sortedUnique(packages.get(file)),
       style: {
         classes: Object.fromEntries(Object.entries(classes).filter(([, set]) => set.size > 0).map(([id, set]) => [id, sortedUnique(set)])),
