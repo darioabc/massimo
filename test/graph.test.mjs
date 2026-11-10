@@ -128,6 +128,37 @@ test('--check: byte comparison, never writes', () => {
   assert.equal(run('graph', ctx, ['--check']).status, 0)
 })
 
+test('a component an Astro config wires in by a quoted relative path is used by that config', () => {
+  const t = scratch()
+  try {
+    writeFileSync(join(t.root, 'astro.config.mjs'), [
+      "import docs from '@acme/docs'",
+      'export default {',
+      '  integrations: [docs({',
+      "    customCss: ['./src/styles/theme.css'],",
+      '    components: {',
+      "      // Icon: './src/components/Icon.tsx',",
+      "      Hero: './src/components/Hero.astro',",
+      '    },',
+      '  })],',
+      "  vite: { alias: { other: 'src/components/ui/Other.tsx' } },",
+      '}',
+      '',
+    ].join('\n'))
+    assert.equal(run('graph', t).status, 0)
+    const nodes = readJson(t.project, 'graph.json').nodes
+    const hero = nodes.find((n) => n.name === 'Hero')
+    assert.equal(hero.usage, 1)
+    assert.deepEqual(hero.composedBy, { root: ['astro.config.mjs'] })
+    // A commented-out path and a path that is not relative wire nothing in.
+    assert.equal(nodes.find((n) => n.name === 'Icon').usage, 2)
+    assert.equal(nodes.find((n) => n.name === 'Other').usage, 0)
+    assert.match(read(t.project, 'graph.md'), /^- Hero: no-story · used by 1$/m)
+  } finally {
+    t.cleanup()
+  }
+})
+
 test('--check names missing files', () => {
   const other = scratch()
   try {

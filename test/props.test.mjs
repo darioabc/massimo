@@ -45,6 +45,31 @@ test('cva and tv variant maps, Vue, Svelte 4 and 5', () => {
   assert.deepEqual(componentProps(svelte5, 'T.svelte', 'T').map((p) => [p.name, p.default]), [['tone', 'info'], ['open', undefined]])
 })
 
+test('Astro props: defaults from the frontmatter destructuring of Astro.props, ahead of a helper in the frontmatter', () => {
+  const src = `---
+interface Props {
+  title?: string
+  variant?: 'solid' | 'outline'
+  wide?: boolean
+  label?: string
+}
+const {
+  title,
+  variant = 'solid',
+  wide = false,
+  label = strings.send,
+  ...rest
+} = Astro.props;
+const tags = list.map(({ variant = 'plain' }) => variant)
+---
+<a class:list={[variant, { wide }]}>{label}{title}</a>`
+  const p = byName(componentProps(src, 'Action.astro', 'Action'))
+  assert.equal(p.variant.default, 'solid')
+  assert.equal(p.wide.default, 'false')
+  assert.equal(p.label.default, undefined) // an expression is no default to show
+  assert.equal(p.title.default, undefined)
+})
+
 test('states: Tailwind variants, CSS pseudo-classes, ARIA, data attributes and state props', () => {
   const src = `<button className="hover:bg-x focus-visible:ring disabled:opacity-50 aria-expanded:rotate-180 data-[state=open]:block group-hover:underline" />
     .x:hover { } .x:focus-visible { } [aria-invalid="true"] { }`

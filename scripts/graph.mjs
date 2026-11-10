@@ -54,6 +54,8 @@ const GLOB_CALL = /(?<![\w$])import\.meta\.glob(?:Eager)?(?![\w$])(\s*(?:<(?:[^<
 // A string literal with no `${}`, its text in group 2.
 const PLAIN_STRING = /(['"`])((?:\\.|(?!\1)[^\\\n$]|\$(?!\{))*)\1/g
 const EDGE_KINDS = ['mdx', 'glob']
+// Framework configs at the project's root that wire components in by path.
+const FRAMEWORK_CONFIG = /^astro\.config\.[cm]?[jt]s$/
 const TOKEN_GROUPS = ['color', 'spacing', 'radius', 'font', 'text', 'shadow', 'other']
 
 const MAX_COMPONENT_LIST = 40
@@ -534,6 +536,16 @@ export function buildGraph(root, config, command = "graph.mjs") {
         importersOf.get(target).add(file)
         if (nodeSet.has(file)) composes.get(file).add(target)
       }
+    }
+  }
+  // A framework config that names a component file in a quoted relative
+  // path wires it in (Astro's `components: { Head: './src/components/Head.astro' }`),
+  // so the config counts as a file that uses it.
+  for (const wiring of all.filter((f) => FRAMEWORK_CONFIG.test(f))) {
+    for (const { text: spec } of stringLiterals(readFileSync(join(root, wiring), 'utf8'), wiring)) {
+      if (!/^\.\.?\//.test(spec)) continue
+      const hit = resolveImport(wiring, spec)
+      if (hit.file && nodeSet.has(hit.file) && hit.file !== wiring) importersOf.get(hit.file).add(wiring)
     }
   }
 
