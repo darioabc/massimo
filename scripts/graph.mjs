@@ -320,7 +320,8 @@ function placementOf(taxonomy) {
 // returns { json, markdown, warnings } so --check and tests can reuse it.
 // A component's props with how its call sites use them, and the states it
 // styles. `sourceOf(name)` is the source of the module the component imports
-// `name` from, where a variant map its props name may sit.
+// `name` from, where a variant map its props name may sit. Each importer is
+// { file, text, names }, `names` being the names it binds the component to.
 function propsAndStates(source, file, name, importers, sourceOf = null) {
   const own = componentProps(source, file, componentName(file), sourceOf)
   const usage = callSiteUsage(componentName(file), importers)
@@ -330,6 +331,30 @@ function propsAndStates(source, file, name, importers, sourceOf = null) {
   }
   props.sort((a, b) => compare(a.name, b.name))
   return { props, states: componentStates(source, props) }
+}
+
+// The values a file's import statements bind, as { spec, imported, local }:
+// `import A, { b as c } from 'x'` binds A to x's default and c to its b, and
+// `import * as N from 'x'` binds N to all of x. A type-only import binds none.
+function importBindings(source, file) {
+  const out = []
+  for (const m of stripComments(source, file).matchAll(/(?<![\w$.])import\s+(type\s+)?([\w$*\s{},]+?)\s*\bfrom\s*(['"])([^'"\n]+)\3/g)) {
+    if (m[1]) continue
+    const spec = m[4]
+    for (const part of m[2].replace(/\{[\s\S]*\}/, '').split(',')) {
+      const head = part.trim()
+      const ns = /^\*\s*as\s+([\w$]+)$/.exec(head)
+      if (ns) out.push({ spec, imported: '*', local: ns[1] })
+      else if (/^[\w$]+$/.test(head)) out.push({ spec, imported: 'default', local: head })
+    }
+    for (const item of /\{([\s\S]*)\}/.exec(m[2])?.[1].split(',') ?? []) {
+      const s = item.trim()
+      if (!s || /^type\s/.test(s)) continue
+      const [imported, local] = s.split(/\s+as\s+/).map((x) => x.trim())
+      out.push({ spec, imported, local: local ?? imported })
+    }
+  }
+  return out
 }
 
 // ── The csf lane ────────────────────────────────────────────────────────────
@@ -1095,6 +1120,29 @@ export function buildGraph(root, config, command = "graph.mjs") {
       return hit && CODE_EXTS.test(hit) ? text(hit) : null
     }
   }
+  // The names a call site's markup gives a node: the local names of the
+  // file's imports that reach it (`import UiButton from './button.vue'`),
+  // and in a Nuxt app the names Nuxt registers it under, unless the file
+  // binds that name to a module other than "#components". A namespace
+  // import (`import * as UI`) names no tag, since its tags (`<UI.Card>`)
+  // name a member, not the namespace. Empty when neither names it;
+  // callSiteUsage then reads tags named after its file.
+  const registered = new Map()
+  for (const [name, entries] of nuxt?.autoImports ? nuxt.components : []) {
+    for (const e of entries) registered.set(e.file, [...(registered.get(e.file) ?? []), name, `Lazy${name}`])
+  }
+  const bindingsOf = new Map()
+  const tagNamesOf = (importer, target) => {
+    if (!bindingsOf.has(importer)) {
+      bindingsOf.set(importer, importBindings(text(importer), importer).map((b) => ({ ...b, file: resolveImport(importer, b.spec).file })))
+    }
+    const bindings = bindingsOf.get(importer)
+    const names = new Set(bindings.filter((b) => b.file && b.imported !== '*' && reach(b.file, [b.imported]).has(target)).map((b) => b.local))
+    for (const name of registered.get(target) ?? []) {
+      if (!bindings.some((b) => b.local === name && b.spec !== '#components')) names.add(name)
+    }
+    return [...names]
+  }
   const nodes = nodeFiles.map((file) => {
     const source = readFileSync(join(root, file), 'utf8')
     const code = stripComments(source, file)
@@ -1171,7 +1219,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       composes: [...composes.get(file)].map((f) => nameOf.get(f)).sort(byName),
       composedBy: sortedAreas,
       usage: importersOf.get(file).size,
-      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f) })), sourceOf),
+      ...propsAndStates(source, file, nameOf.get(file), [...importersOf.get(file)].map((f) => ({ file: f, text: text(f), names: tagNamesOf(f, file) })), sourceOf),
       packages: sortedUnique(packages.get(file)),
       style: {
         classes: Object.fromEntries(Object.entries(classes).filter(([, set]) => set.size > 0).map(([id, set]) => [id, sortedUnique(set)])),

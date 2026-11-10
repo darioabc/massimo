@@ -6,7 +6,10 @@
 // spacing, size, type, radius and border declarations), font-family,
 // primitive-read (a var() of a primitive token outside the token files),
 // undefined-var (a var() with no fallback and no definition anywhere),
-// tailwind-palette (`text-red-600` in a repo with its own colour tokens).
+// tailwind-palette (`text-red-600` in a repo with its own colour tokens:
+// a class whose colour a token holds, naming that token; every one with the
+// kind turned on, or in a Tailwind 4 app whose style files declare --color-*
+// colours; the others are counted in latest.md, never ratcheted).
 // Two more families join when their key is set: breakpoint (an @media width
 // or a Tailwind screen off tokens.breakpoints), and the story lane's policies
 // (story-title, story-files, story-states, no-story), which the graph writes
@@ -55,6 +58,7 @@ import { readTokenSource } from './lib/dtcg.mjs'
 import { findObject, leaves } from './lib/jsobject.mjs'
 import { TAILWIND_CONFIG_STARTS, channelColor, readCss } from './lib/readers.mjs'
 import { headerRoles, keyRoles, knownKeys, placeFile } from './lib/roles.mjs'
+import { paletteValue } from './lib/tailwind-palette.mjs'
 import { truthy } from './lib/text.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -118,7 +122,7 @@ const TAILWIND4_NAMESPACES =
 const DEFAULT_PALETTE =
   'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose'
 const PALETTE_UTILITY = new RegExp(
-  `^-?(?:bg|text|border-[xytrblse]|border|ring-offset|ring|outline|fill|stroke|from|via|to|decoration|divide|placeholder|caret|accent|shadow)-(black|white|(?:${DEFAULT_PALETTE})-(?:50|[1-9]00|950))(?:/[\\w.[\\]]+)?$`,
+  `^-?(?:bg|text|border-[xytrblse]|border|ring-offset|ring|outline|fill|stroke|from|via|to|decoration|divide|placeholder|caret|accent|shadow)-(black|white|(?:${DEFAULT_PALETTE})-(?:50|[1-9]00|950))(?:/[\\w.%[\\]]+)?$`,
 )
 
 const TEXT_SCALE = { xs: 12, sm: 14, base: 16, lg: 18, xl: 20, '2xl': 24, '3xl': 30, '4xl': 36, '5xl': 48, '6xl': 60, '7xl': 72, '8xl': 96, '9xl': 128 }
@@ -350,6 +354,45 @@ function tailwindColorNames(theme) {
   return names
 }
 
+// What the repo's own sources say about Tailwind's palette. `replaced`, why
+// Tailwind's default palette is gone, or null: a Tailwind config sets
+// theme.colors of its own (not under extend), literal or computed, or a
+// style file resets the theme's colours (`--color-*: initial`). Every
+// palette-named class is then one of the repo's own colours. A config that
+// reads tailwindcss/colors builds theme.colors from Tailwind's palette
+// (`gray: colors.gray`, `...colors`), so it keeps it. `styleColors`: the
+// style files, apart from the token outputs, declare --color-* properties
+// of their own.
+function paletteSources(root, config, styleFiles, outputs) {
+  const file = config.tokens?.tailwindConfig
+  const theme = tailwindTheme(root, file)
+  const keepsPalette = theme !== null && /['"]tailwindcss\/colors(?:\.js)?['"]/.test(stripComments(readFileSync(join(root, file), 'utf8'), file))
+  let replaced = Object.hasOwn(theme ?? {}, 'colors') && !keepsPalette ? `${file} sets theme.colors of its own` : null
+  let styleColors = false
+  for (const f of styleFiles) {
+    if (outputs.has(f)) continue
+    const text = stripComments(readFileSync(join(root, f), 'utf8'), f)
+    if (!replaced && /(?<![\w-])--(?:color-)?\*\s*:\s*initial\b/.test(text)) replaced = `${f} resets the theme's colours`
+    if (parseCustomProperties(text, f).some((p) => /^--color-[\w-]+$/.test(p.name))) styleColors = true
+  }
+  return { replaced, styleColors }
+}
+
+// The colour a palette class renders: its colour name's Tailwind value, at
+// the opacity its modifier sets (`/50`, `/[.35]`); null when the modifier is
+// not a number.
+function paletteColor(token, name, version) {
+  const value = paletteValue(name, version)
+  const parsed = value ? parseColor(value) : null
+  if (!parsed) return null
+  const modifier = /\/([^/]+)$/.exec(token)?.[1]
+  if (modifier === undefined) return parsed
+  const m = /^(?:(\d+(?:\.\d+)?)|\[(\d*\.?\d+)(%?)\])$/.exec(modifier)
+  if (!m) return null
+  const alpha = m[1] !== undefined ? Number(m[1]) / 100 : m[3] ? Number(m[2]) / 100 : Number(m[2])
+  return alpha >= 0 && alpha <= 1 ? { ...parsed, a: alpha } : null
+}
+
 // ── What a colour is used for ───────────────────────────────────────────────
 
 // The job a raw colour does where it sits: a background, text, a border, an
@@ -563,6 +606,7 @@ function scanFile(file, source, ctx, info) {
       snippet: snippetOf(source, li, offset),
       ...(extra.px !== undefined ? { px: extra.px } : {}),
       ...(kind === 'color' || extra.sub === 'color' ? { role: extra.role ?? colorRole(code, offset) } : {}),
+      ...(extra.token ? { token: extra.token } : {}),
     })
   }
 
@@ -688,9 +732,21 @@ function scanFile(file, source, ctx, info) {
   for (const { token, offset } of tokens) {
     const t = ctx.tailwind && TEXT_UTILITY.exec(token)
     if (t) ctx.tailwindText.set(TEXT_SCALE[t[1]], (ctx.tailwindText.get(TEXT_SCALE[t[1]]) ?? 0) + 1)
-    if (ctx.palette) {
+    if (ctx.palette || ctx.paletteCounted) {
       const p = PALETTE_UTILITY.exec(token)
-      if (p && !ctx.ownColors.has(p[1])) add(offset, 'tailwind-palette', token.replace(/^-/, ''))
+      if (p && !ctx.ownColors.has(p[1])) {
+        // A class whose colour a token holds names that token; one no token
+        // holds is a finding only when the kind is strict, else counted, as
+        // is every one while the kind waits for colours of the repo's own.
+        // A file that audit.exempt exempts from the kind counts none.
+        const held = ctx.palette ? ctx.heldBy(token, p[1]) : null
+        const value = token.replace(/^-/, '')
+        if (ctx.palette && (held || ctx.paletteStrict)) add(offset, 'tailwind-palette', value, held ? { token: held } : {})
+        else if (ctx.paletteCounted && !ctx.paletteExempt?.(file, info)) {
+          ctx.paletteCounted.count++
+          ctx.paletteCounted.classes.set(value, (ctx.paletteCounted.classes.get(value) ?? 0) + 1)
+        }
+      }
     }
     // Every palette colour class, the repo's own ramps too, and the ones
     // under a dark: variant, for what extract says it could not propose.
@@ -820,6 +876,19 @@ function readerColors(root, styleFiles) {
     return []
   }
   return themeColors(tokens)
+}
+
+// The colours that can hold the colour a palette class renders, in the
+// default theme: the style files' own, literal or as the CSS reader resolves
+// them, then the token set's. A literal counts only where it is the page's
+// default (the root or @theme), never a dark theme's value or one a
+// component's selector scopes.
+function paletteHolders(root, styleFiles, customProps, dtcgTokens) {
+  const literal = customProps
+    .filter((p) => p.mode === 'default' && (p.scope === 'root' || p.scope === 'theme'))
+    .map((p) => ({ name: p.name, parsed: parseColor(p.value) }))
+    .filter((t) => t.parsed && t.parsed.a > 0 && !t.name.startsWith('--tw-'))
+  return [...literal, ...readerColors(root, styleFiles), ...themeColors(dtcgTokens)].filter((t) => !t.theme)
 }
 
 // The colour each token holds in each theme, its references followed to
@@ -1222,9 +1291,31 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // counts there too. The library's names are not the repo's own colours, so
   // they stay out of ownColors.
   const libraryColors = turnedOn('tailwind-palette') && libraries.some((lib) => lib.colors.length > 0)
-  const palette = hasTailwind && (ownColors.size > 0 || libraryColors)
+  const sources = hasTailwind ? paletteSources(root, config, styleFiles, new Set(outputPaths)) : { replaced: null, styleColors: false }
+  const palette = hasTailwind && !sources.replaced && (ownColors.size > 0 || libraryColors)
   const noColors = turnedOn('tailwind-palette') ? "turned on in audit.kinds, but found no colours of the repo's own" : 'no colour tokens of its own'
-  if (!palette) skipped.set('tailwind-palette', hasTailwind ? noColors : 'no Tailwind in styling')
+  const replacedWhy = `${sources.replaced}, which replaces Tailwind's palette, so every palette-named class is one of the repo's own colours`
+  if (!palette) skipped.set('tailwind-palette', !hasTailwind ? 'no Tailwind in styling' : sources.replaced ? replacedWhy : noColors)
+  // Which palette classes are findings. Turned on, or in a Tailwind 4 app
+  // whose style files declare --color-* colours of their own (Tailwind
+  // colours it can use instead), every palette class outside the repo's own
+  // colours is one. Otherwise one is a finding only when a colour
+  // token holds the colour it renders, with that token as its fix; the others
+  // are counted, never ratcheted, until a token holds their colour.
+  const paletteStrict = turnedOn('tailwind-palette') || (styling.includes('tailwind4') && sources.styleColors)
+  const paletteVersion = styling.includes('tailwind3') && !styling.includes('tailwind4') ? 'tailwind3' : 'tailwind4'
+  // A token the primitive-read kind leaves alone comes before a primitive,
+  // so the token a palette class names is never itself a primitive read.
+  const holders = palette ? paletteHolders(root, styleFiles, customProps, dtcgTokens).sort((a, b) => primitives.has(a.name) - primitives.has(b.name)) : []
+  const heldCache = new Map()
+  const heldBy = (token, name) => {
+    const key = `${name}${/\/[^/]+$/.exec(token)?.[0] ?? ''}`
+    if (!heldCache.has(key)) {
+      const c = paletteColor(token, name, paletteVersion)
+      heldCache.set(key, (c && holders.find((t) => Math.abs(t.parsed.a - c.a) <= 0.01 && deltaE(t.parsed, c) <= 0.005)?.name) ?? null)
+    }
+    return heldCache.get(key)
+  }
 
   // The breakpoint scale, in rem, and the Tailwind screens its variants name.
   const scale = kinds.includes('breakpoint') ? breakpointScale(config.tokens.breakpoints) : { widths: null, warnings: [] }
@@ -1257,6 +1348,12 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     primitivesOutside: colorPrimitives ? styleSet : null,
     palette,
     ownColors,
+    paletteStrict,
+    heldBy,
+    // The palette classes that are not findings, counted for the report
+    // unless Tailwind's palette is replaced or the kind is off.
+    paletteCounted: hasTailwind && !sources.replaced && !off.has('tailwind-palette') ? { count: 0, classes: new Map() } : null,
+    paletteExempt: exemptions(config).get('tailwind-palette') ?? null,
     tailwind: hasTailwind,
     tailwindText: new Map(),
     colorClasses: hasTailwind ? { count: 0, dark: 0, classes: new Map() } : null,
@@ -1392,13 +1489,30 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     if (home) home.members.push(c)
     else clusters.push({ rep: c, members: [c] })
   }
+  // The token nearest a cluster: the nearest at its opacity (within 0.05, as
+  // clusters are made), else the nearest at any opacity, ranked by colour
+  // and opacity together. Its distance is the larger of the colour and
+  // opacity differences, so a token at another opacity never reads as an
+  // exact match. The nearest at any opacity keeps its colour distance when
+  // that is past the cluster distance.
+  const sameOpacity = (a, b) => Math.abs(a.a - b.a) < 0.05
   const colorClusters = clusters
     .map((cl) => {
       let nearest = null
       if (cl.rep.parsed) {
-        for (const t of tokenColors) {
-          const d = deltaE(cl.rep.parsed, t.parsed)
-          if (!nearest || d < nearest.distance) nearest = { name: t.name, value: t.value, distance: d, theme: t.theme }
+        const c = cl.rep.parsed
+        const matched = tokenColors.filter((t) => sameOpacity(c, t.parsed))
+        for (const t of matched.length > 0 ? matched : tokenColors) {
+          const d = deltaE(c, t.parsed)
+          const opacity = Math.abs(c.a - t.parsed.a)
+          const rank = matched.length > 0 ? d : Math.hypot(d, opacity)
+          if (!nearest || rank < nearest.rank) nearest = { name: t.name, value: t.value, distance: d, rank, alpha: t.parsed.a, theme: t.theme }
+        }
+        if (nearest && (matched.length > 0 || nearest.distance <= cluster)) {
+          // Two opacities a hex colour writes with the same alpha byte are
+          // the same, so `rgba(0, 0, 0, 0.08)` and `#00000014` differ by nothing.
+          const byte = (a) => Math.round(a * 255)
+          nearest.distance = Math.max(nearest.distance, byte(c.a) === byte(nearest.alpha) ? 0 : Math.abs(c.a - nearest.alpha))
         }
       }
       if (nearest?.theme) nearestThemes.set(cl.rep.value, nearest.theme)
@@ -1446,6 +1560,18 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   }
   const fontFamilies = [...familyMap.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).map(([family, count]) => ({ family, count }))
 
+  // The palette classes that are not findings, counted for the report: every
+  // one while the kind waits for colours of the repo's own, else the ones no
+  // token holds while the kind is not strict. Never ratcheted.
+  const notFindings = ctx.paletteCounted
+  const paletteClasses = notFindings?.count > 0
+    ? {
+        count: notFindings.count,
+        distinct: notFindings.classes.size,
+        top: [...notFindings.classes].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).slice(0, 5).map(([name, n]) => ({ name, count: n })),
+      }
+    : null
+
   const canon = {
     distinctColors: colors.length,
     colorClusters: colorClusters.length,
@@ -1475,6 +1601,8 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     skipped: Object.fromEntries([...skipped.entries()].sort((a, b) => compare(a[0], b[0]))),
     // Findings audit.exempt left out, by kind; there only when it is set.
     ...(exempt.size > 0 ? { exempted: Object.fromEntries(Object.entries(exempted).sort((a, b) => compare(a[0], b[0]))) } : {}),
+    // Tailwind palette classes counted, not findings; there only when some are.
+    ...(paletteClasses ? { paletteClasses } : {}),
     cluster,
     // The kinds reported, and settings that point at nothing: read by the
     // CLI, never written to latest.json.
@@ -1539,11 +1667,33 @@ function renderMarkdown(result, date, command) {
   out.push(`- Arbitrary values: ${canon.arbitraryValues}`, '')
 
   out.push('## Findings by kind', '')
+  const palette = result.paletteClasses
   for (const kind of result.kinds ?? KINDS) {
     const exempt = result.exempted?.[kind] ? ` (${result.exempted[kind]} exempt by audit.exempt)` : ''
-    out.push(skipped[kind] ? `- ${kind}: skipped (${skipped[kind]})` : `- ${kind}: ${totals[kind]}${exempt}`)
+    const counted = kind === 'tailwind-palette' && palette && !skipped[kind] ? ` (${palette.count} more palette ${palette.count === 1 ? 'class' : 'classes'} counted, not ratcheted)` : ''
+    out.push(skipped[kind] ? `- ${kind}: skipped (${skipped[kind]})` : `- ${kind}: ${totals[kind]}${exempt}${counted}`)
   }
   out.push('')
+
+  // The palette classes that are not findings, and the rule that says which are.
+  if (palette) {
+    const many = (n) => `${n} Tailwind palette ${n === 1 ? 'class' : 'classes'}`
+    const top = `Most used: ${palette.top.map((c) => `${c.name} ×${c.count}`).join(', ')}.`
+    out.push('## Tailwind palette classes', '')
+    if (skipped['tailwind-palette']) {
+      out.push(`The code uses ${many(palette.count)}, ${palette.distinct} distinct. ${top}`, '')
+      // Turned on in audit.kinds, every one becomes a finding with the
+      // repo's first colours; otherwise only the ones a token holds do.
+      if (/^turned on in audit\.kinds/.test(skipped['tailwind-palette'])) {
+        out.push("They are not findings while the repo has no colours of its own. The palette kind is on in audit.kinds, so each one becomes a finding once the repo has colours of its own.", '')
+      } else {
+        out.push("They are not findings while the repo has no colour tokens of its own. Once it has, a palette class whose colour a token holds is a finding, with that token as its fix. The others stay counted here, out of the baseline, unless audit.kinds turns the palette kind on or a Tailwind 4 app's style files declare --color-* colours of their own: then each one is a finding.", '')
+      }
+    } else {
+      out.push(`${many(palette.count)}, ${palette.distinct} distinct, use a colour no token holds. ${top}`, '')
+      out.push('They are counted here, not findings, so the baseline leaves them out. Once a token holds a class\'s colour, the class is a finding with that token as its fix. To make every palette class a finding, turn the palette kind on in audit.kinds.', '')
+    }
+  }
 
   out.push('## Top files', '')
   if (topFiles.length === 0) out.push('No findings.')
@@ -1607,7 +1757,7 @@ function renderMarkdown(result, date, command) {
     if (out.length - startLength >= MD_LINE_CAP) break
     out.push(`### ${file} (${list.length})`)
     // A story finding names a file, not a line, so it has none to show.
-    for (const f of list.slice(0, MD_PER_FILE)) out.push(`- ${f.line ? `L${f.line} ` : ''}${f.kind}${f.sub ? `/${f.sub}` : ''} \`${f.value.replace(/`/g, "'")}\``)
+    for (const f of list.slice(0, MD_PER_FILE)) out.push(`- ${f.line ? `L${f.line} ` : ''}${f.kind}${f.sub ? `/${f.sub}` : ''} \`${f.value.replace(/`/g, "'")}\`${f.token ? `, its colour is \`${f.token}\`` : ''}`)
     if (list.length > MD_PER_FILE) out.push(`- +${list.length - MD_PER_FILE} more`)
     out.push('')
     shown++

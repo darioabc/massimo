@@ -168,3 +168,27 @@ test("a colour a composite token or a var() in a token's CSS refers to has an al
   const reads = latest.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value)
   assert.deepEqual(reads.sort(), ['--color-ink', '--color-line', '--color-shade', '--color-stop'])
 })
+
+test("the nearest token keeps to the colour's opacity, and a token at another opacity never reads as a match", () => {
+  const ctx = fresh()
+  // Each translucent token comes before the opaque one of the same colour,
+  // and the other way round, so the order of the sheet decides nothing.
+  writeFileSync(join(ctx.root, 'src', 'styles', 'theme.css'), ':root {\n  --veil: #ffffff99;\n  --paper: #ffffff;\n  --violet: #6d28d9;\n  --violet-10: #6d28d91a;\n  --ink: #222222;\n}\n')
+  writeFileSync(join(ctx.root, 'src', 'veils.tsx'), "export const V = () => <p style={{ color: '#ffffff', borderColor: '#6d28d91a', background: '#22222280', outlineColor: '#222222f5' }} />\n")
+  const latest = audit(ctx)
+  assert.deepEqual(cluster(latest, '#ffffff')?.nearestToken, { name: '--paper', value: '#ffffff', distance: 0 })
+  assert.deepEqual(cluster(latest, '#6d28d91a')?.nearestToken, { name: '--violet-10', value: '#6d28d91a', distance: 0 })
+  // No token is at half opacity: the nearest is the same colour, opaque, and
+  // its distance is the opacity difference, not 0.
+  assert.deepEqual(cluster(latest, '#22222280')?.nearestToken, { name: '--ink', value: '#222222', distance: 0.498 })
+  assert.match(read(ctx.project, 'audits', 'latest.md'), /- #22222280 ×1 · nearest token `--ink` #222222 \(0\.498\)/)
+  // Nearly opaque, the colour still takes the opaque token at its opacity,
+  // and its distance is the opacity difference, not 0.
+  assert.deepEqual(cluster(latest, '#222222f5')?.nearestToken, { name: '--ink', value: '#222222', distance: 0.0392 })
+
+  // A token's opacity written as a fraction matches the same opacity in hex.
+  const shade = fresh()
+  writeFileSync(join(shade.root, 'src', 'styles', 'theme.css'), ':root {\n  --shade: rgba(0, 0, 0, 0.08);\n}\n')
+  writeFileSync(join(shade.root, 'src', 'shade.tsx'), "export const S = () => <p style={{ boxShadow: '0 1px 2px #00000014' }} />\n")
+  assert.deepEqual(cluster(audit(shade), '#00000014')?.nearestToken, { name: '--shade', value: '#00000014', distance: 0 })
+})
