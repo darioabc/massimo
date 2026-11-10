@@ -4,6 +4,8 @@
 // Only the 22 families the audit's palette classes name are kept, each as its
 // steps 50 to 950 in order. The values are copied from Tailwind CSS 3.4.17
 // (src/public/colors.js) and 4.3.5 (packages/tailwindcss/src/compat/colors.ts).
+// Tailwind 4.3 also has mauve, olive, mist and taupe, which the audit does
+// not read as palette classes yet, so they are left out.
 //
 // MIT License
 //

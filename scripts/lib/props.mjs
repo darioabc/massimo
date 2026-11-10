@@ -322,8 +322,10 @@ const VUE_ATTRIBUTE = /([A-Za-z_:@#][\w:.-]*(?:\[[^\]]*\][\w.-]*)?)(?:\s*=\s*(?:
 
 // The tags that name a component bound to `names`: each name as written, and
 // in a .vue file the other forms Vue resolves to it, so UiButton is also
-// `<uiButton>` and `<ui-button>`. A .vue tag in lowercase with no hyphen
-// is an HTML element, never a component, so Button is never `<button>`.
+// `<uiButton>` and `<ui-button>`. A .vue tag in lowercase with no hyphen is
+// left out, so Button is never `<button>`: most such tags are HTML elements.
+// Vue resolves one that is not (`<icon>`) to its PascalCase binding, which
+// this leaves unread.
 function tagForms(names, vue) {
   const forms = new Set()
   for (const n of names) {

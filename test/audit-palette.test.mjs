@@ -118,7 +118,7 @@ test("a Tailwind config's theme.colors or a @theme reset replaces Tailwind's pal
   }
   const tokens = { source: 'tokens/base.tokens.json', tailwindConfig: 'tailwind.config.js', outputs: [{ format: 'tailwind3', path: 'tokens.tailwind.cjs' }] }
   const ctx = repoOf(files, configOf(['tailwind3'], tokens))
-  const why = "tailwind.config.js sets theme.colors, which replaces Tailwind's palette, so every palette-named class is one of the repo's own colours"
+  const why = "tailwind.config.js sets theme.colors of its own, which replaces Tailwind's palette, so every palette-named class is one of the repo's own colours"
   const latest = audit(ctx)
   assert.deepEqual(palette(latest), [])
   assert.equal(latest.skipped['tailwind-palette'], why)
@@ -135,4 +135,70 @@ test("a Tailwind config's theme.colors or a @theme reset replaces Tailwind's pal
   const reset = audit(four)
   assert.deepEqual(palette(reset), [])
   assert.equal(reset.skipped['tailwind-palette'], "src/main.css resets the theme's colours, which replaces Tailwind's palette, so every palette-named class is one of the repo's own colours")
+})
+
+test("a config that builds theme.colors from tailwindcss/colors keeps Tailwind's palette", () => {
+  const page = '<template>\n  <p class="text-gray-500 bg-emerald-500 text-red-500 bg-brand">Hi</p>\n</template>\n'
+  const config = (colors) => `const colors = require('tailwindcss/colors')\n\nmodule.exports = {\n  content: ['./src/**/*.vue'],\n  theme: {\n    colors: {\n${colors}\n      brand: 'var(--color-brand)',\n    },\n  },\n}\n`
+  const tokens = { tailwindConfig: 'tailwind.config.js' }
+  // Picked family by family, the classes are still Tailwind's colours.
+  const curated = repoOf({
+    'src/main.css': ':root {\n  --color-brand: #123456;\n}\n',
+    'src/components/Page.vue': page,
+    'tailwind.config.js': config('      white: colors.white,\n      gray: colors.gray,\n      emerald: colors.emerald,'),
+  }, configOf(['tailwind3'], tokens))
+  const picked = audit(curated)
+  assert.equal(picked.skipped['tailwind-palette'], undefined)
+  assert.deepEqual(palette(picked), [])
+  assert.deepEqual(picked.paletteClasses.top.map((c) => c.name), ['bg-emerald-500', 'text-gray-500', 'text-red-500'])
+  // Spread whole, a colour the style files hold is a finding naming it.
+  const spread = repoOf({
+    'src/main.css': ':root {\n  --color-brand: #123456;\n  --color-ink: #6b7280;\n}\n',
+    'src/components/Page.vue': page,
+    'tailwind.config.js': config('      ...colors,'),
+  }, configOf(['tailwind3'], tokens))
+  const whole = audit(spread)
+  assert.deepEqual(palette(whole), ['text-gray-500 --color-ink'])
+  assert.deepEqual(whole.paletteClasses.top.map((c) => c.name), ['bg-emerald-500', 'text-red-500'])
+})
+
+test("only a colour of the default theme at the root holds a palette class, never a dark theme's or a component's", () => {
+  const files = {
+    'src/main.css': ':root {\n  --color-brand: #123456;\n  --surface: #ffffff;\n}\n.dark {\n  --surface: #0f172a;\n}\n.card {\n  --edge: #e2e8f0;\n}\n',
+    'src/components/Page.vue': '<template>\n  <p class="bg-slate-900 border-slate-200 bg-white">Hi</p>\n</template>\n',
+  }
+  const latest = audit(repoOf(files, configOf(['tailwind3'], { darkSelector: '.dark' })))
+  assert.deepEqual(palette(latest), ['bg-white --surface'])
+  assert.deepEqual(latest.paletteClasses.top.map((c) => c.name), ['bg-slate-900', 'border-slate-200'])
+})
+
+test('a held palette class names the semantic token ahead of the primitive it aliases', () => {
+  const files = {
+    'src/main.css': 'body { margin: 0; }\n',
+    'src/components/Page.vue': '<template>\n  <p class="text-slate-400">Hi</p>\n</template>\n',
+    'tokens/base.tokens.json': JSON.stringify({ color: { $type: 'color', grey: { 400: { $value: '#94a3b8' } }, text: { muted: { $value: '{color.grey.400}' } } } }),
+  }
+  const latest = audit(repoOf(files, configOf(['tailwind3'], { source: 'tokens/base.tokens.json', outputs: [{ format: 'tailwind3', path: 'tokens.tailwind.cjs' }] })))
+  assert.deepEqual(palette(latest), ['text-slate-400 --color-text-muted'])
+})
+
+test('the palette count leaves out files exempt from the kind, reads a percentage opacity, and says when the kind is on', () => {
+  const files = {
+    'src/main.css': ':root {\n  --color-brand: #123456;\n  --wash: #2563eb59;\n}\n',
+    'src/components/Page.vue': '<template>\n  <p class="text-blue-600/[35%] text-red-500">Hi</p>\n</template>\n',
+    'src/components/Legacy.vue': '<template>\n  <p class="text-red-500 bg-amber-200">Old</p>\n</template>\n',
+  }
+  const exempt = { exempt: { 'tailwind-palette': { files: ['src/components/Legacy.vue'] } } }
+  const latest = audit(repoOf(files, configOf(['tailwind3'], {}, exempt)))
+  assert.deepEqual(palette(latest), ['text-blue-600/[35%] --wash'])
+  assert.deepEqual(latest.paletteClasses, { count: 1, distinct: 1, top: [{ name: 'text-red-500', count: 1 }] })
+
+  // Turned on with no colours of the repo's own, the report says each one
+  // becomes a finding once there are.
+  const none = repoOf({ ...files, 'src/main.css': 'body { margin: 0; }\n' }, configOf(['tailwind3'], {}, { kinds: { 'tailwind-palette': true } }))
+  const on = audit(none)
+  assert.equal(on.paletteClasses.count, 4)
+  const md = read(none.project, 'audits', 'latest.md')
+  assert.match(md, /The palette kind is on in audit\.kinds, so each one becomes a finding once the repo has colours of its own\./)
+  assert.doesNotMatch(md, /unless audit\.kinds turns the palette kind on/)
 })

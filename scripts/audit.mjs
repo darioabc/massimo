@@ -122,7 +122,7 @@ const TAILWIND4_NAMESPACES =
 const DEFAULT_PALETTE =
   'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose'
 const PALETTE_UTILITY = new RegExp(
-  `^-?(?:bg|text|border-[xytrblse]|border|ring-offset|ring|outline|fill|stroke|from|via|to|decoration|divide|placeholder|caret|accent|shadow)-(black|white|(?:${DEFAULT_PALETTE})-(?:50|[1-9]00|950))(?:/[\\w.[\\]]+)?$`,
+  `^-?(?:bg|text|border-[xytrblse]|border|ring-offset|ring|outline|fill|stroke|from|via|to|decoration|divide|placeholder|caret|accent|shadow)-(black|white|(?:${DEFAULT_PALETTE})-(?:50|[1-9]00|950))(?:/[\\w.%[\\]]+)?$`,
 )
 
 const TEXT_SCALE = { xs: 12, sm: 14, base: 16, lg: 18, xl: 20, '2xl': 24, '3xl': 30, '4xl': 36, '5xl': 48, '6xl': 60, '7xl': 72, '8xl': 96, '9xl': 128 }
@@ -356,14 +356,18 @@ function tailwindColorNames(theme) {
 
 // What the repo's own sources say about Tailwind's palette. `replaced`, why
 // Tailwind's default palette is gone, or null: a Tailwind config sets
-// theme.colors (not under extend), literal or computed, or a style file
-// resets the theme's colours (`--color-*: initial`). Every palette-named
-// class is then one of the repo's own colours. `styleColors`: the style
-// files, apart from the token outputs, declare --color-* properties of
-// their own.
+// theme.colors of its own (not under extend), literal or computed, or a
+// style file resets the theme's colours (`--color-*: initial`). Every
+// palette-named class is then one of the repo's own colours. A config that
+// reads tailwindcss/colors builds theme.colors from Tailwind's palette
+// (`gray: colors.gray`, `...colors`), so it keeps it. `styleColors`: the
+// style files, apart from the token outputs, declare --color-* properties
+// of their own.
 function paletteSources(root, config, styleFiles, outputs) {
   const file = config.tokens?.tailwindConfig
-  let replaced = Object.hasOwn(tailwindTheme(root, file) ?? {}, 'colors') ? `${file} sets theme.colors` : null
+  const theme = tailwindTheme(root, file)
+  const keepsPalette = theme !== null && /['"]tailwindcss\/colors(?:\.js)?['"]/.test(stripComments(readFileSync(join(root, file), 'utf8'), file))
+  let replaced = Object.hasOwn(theme ?? {}, 'colors') && !keepsPalette ? `${file} sets theme.colors of its own` : null
   let styleColors = false
   for (const f of styleFiles) {
     if (outputs.has(f)) continue
@@ -728,15 +732,17 @@ function scanFile(file, source, ctx, info) {
   for (const { token, offset } of tokens) {
     const t = ctx.tailwind && TEXT_UTILITY.exec(token)
     if (t) ctx.tailwindText.set(TEXT_SCALE[t[1]], (ctx.tailwindText.get(TEXT_SCALE[t[1]]) ?? 0) + 1)
-    if (ctx.palette) {
+    if (ctx.palette || ctx.paletteCounted) {
       const p = PALETTE_UTILITY.exec(token)
       if (p && !ctx.ownColors.has(p[1])) {
         // A class whose colour a token holds names that token; one no token
-        // holds is a finding only when the kind is strict, else counted.
-        const held = ctx.heldBy(token, p[1])
+        // holds is a finding only when the kind is strict, else counted, as
+        // is every one while the kind waits for colours of the repo's own.
+        // A file that audit.exempt exempts from the kind counts none.
+        const held = ctx.palette ? ctx.heldBy(token, p[1]) : null
         const value = token.replace(/^-/, '')
-        if (held || ctx.paletteStrict) add(offset, 'tailwind-palette', value, held ? { token: held } : {})
-        else {
+        if (ctx.palette && (held || ctx.paletteStrict)) add(offset, 'tailwind-palette', value, held ? { token: held } : {})
+        else if (ctx.paletteCounted && !ctx.paletteExempt?.(file, info)) {
           ctx.paletteCounted.count++
           ctx.paletteCounted.classes.set(value, (ctx.paletteCounted.classes.get(value) ?? 0) + 1)
         }
@@ -874,9 +880,14 @@ function readerColors(root, styleFiles) {
 
 // The colours that can hold the colour a palette class renders, in the
 // default theme: the style files' own, literal or as the CSS reader resolves
-// them, then the token set's.
+// them, then the token set's. A literal counts only where it is the page's
+// default (the root or @theme), never a dark theme's value or one a
+// component's selector scopes.
 function paletteHolders(root, styleFiles, customProps, dtcgTokens) {
-  const literal = customProps.map((p) => ({ name: p.name, parsed: parseColor(p.value) })).filter((t) => t.parsed && t.parsed.a > 0 && !t.name.startsWith('--tw-'))
+  const literal = customProps
+    .filter((p) => p.mode === 'default' && (p.scope === 'root' || p.scope === 'theme'))
+    .map((p) => ({ name: p.name, parsed: parseColor(p.value) }))
+    .filter((t) => t.parsed && t.parsed.a > 0 && !t.name.startsWith('--tw-'))
   return [...literal, ...readerColors(root, styleFiles), ...themeColors(dtcgTokens)].filter((t) => !t.theme)
 }
 
@@ -1293,7 +1304,9 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // are counted, never ratcheted, until a token holds their colour.
   const paletteStrict = turnedOn('tailwind-palette') || (styling.includes('tailwind4') && sources.styleColors)
   const paletteVersion = styling.includes('tailwind3') && !styling.includes('tailwind4') ? 'tailwind3' : 'tailwind4'
-  const holders = palette ? paletteHolders(root, styleFiles, customProps, dtcgTokens) : []
+  // A token the primitive-read kind leaves alone comes before a primitive,
+  // so the token a palette class names is never itself a primitive read.
+  const holders = palette ? paletteHolders(root, styleFiles, customProps, dtcgTokens).sort((a, b) => primitives.has(a.name) - primitives.has(b.name)) : []
   const heldCache = new Map()
   const heldBy = (token, name) => {
     const key = `${name}${/\/[^/]+$/.exec(token)?.[0] ?? ''}`
@@ -1332,7 +1345,10 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
     ownColors,
     paletteStrict,
     heldBy,
-    paletteCounted: { count: 0, classes: new Map() },
+    // The palette classes that are not findings, counted for the report
+    // unless Tailwind's palette is replaced or the kind is off.
+    paletteCounted: hasTailwind && !sources.replaced && !off.has('tailwind-palette') ? { count: 0, classes: new Map() } : null,
+    paletteExempt: exemptions(config).get('tailwind-palette') ?? null,
     tailwind: hasTailwind,
     tailwindText: new Map(),
     colorClasses: hasTailwind ? { count: 0, dark: 0, classes: new Map() } : null,
@@ -1468,9 +1484,10 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   }
   // The token nearest a cluster: the nearest at its opacity (within 0.05, as
   // clusters are made), else the nearest at any opacity, ranked by colour
-  // and opacity together. A token at another opacity never reads as an exact
-  // or near match: within the cluster distance, its distance is the opacity
-  // difference.
+  // and opacity together. Its distance is the larger of the colour and
+  // opacity differences, so a token at another opacity never reads as an
+  // exact match. The nearest at any opacity keeps its colour distance when
+  // that is past the cluster distance.
   const sameOpacity = (a, b) => Math.abs(a.a - b.a) < 0.05
   const colorClusters = clusters
     .map((cl) => {
@@ -1482,9 +1499,14 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
           const d = deltaE(c, t.parsed)
           const opacity = Math.abs(c.a - t.parsed.a)
           const rank = matched.length > 0 ? d : Math.hypot(d, opacity)
-          if (!nearest || rank < nearest.rank) nearest = { name: t.name, value: t.value, distance: d, rank, opacity, theme: t.theme }
+          if (!nearest || rank < nearest.rank) nearest = { name: t.name, value: t.value, distance: d, rank, alpha: t.parsed.a, theme: t.theme }
         }
-        if (nearest && matched.length === 0 && nearest.distance <= cluster) nearest.distance = Math.max(nearest.distance, nearest.opacity)
+        if (nearest && (matched.length > 0 || nearest.distance <= cluster)) {
+          // Two opacities a hex colour writes with the same alpha byte are
+          // the same, so `rgba(0, 0, 0, 0.08)` and `#00000014` differ by nothing.
+          const byte = (a) => Math.round(a * 255)
+          nearest.distance = Math.max(nearest.distance, byte(c.a) === byte(nearest.alpha) ? 0 : Math.abs(c.a - nearest.alpha))
+        }
       }
       if (nearest?.theme) nearestThemes.set(cl.rep.value, nearest.theme)
       // What the cluster's colours are used for, most-used job first.
@@ -1534,7 +1556,7 @@ export function runAudit(root, config, { cluster = 0.03, projectDir = join(root,
   // The palette classes that are not findings, counted for the report: every
   // one while the kind waits for colours of the repo's own, else the ones no
   // token holds while the kind is not strict. Never ratcheted.
-  const notFindings = !hasTailwind || sources.replaced || off.has('tailwind-palette') ? null : palette ? ctx.paletteCounted : ctx.colorClasses
+  const notFindings = ctx.paletteCounted
   const paletteClasses = notFindings?.count > 0
     ? {
         count: notFindings.count,
@@ -1653,7 +1675,13 @@ function renderMarkdown(result, date, command) {
     out.push('## Tailwind palette classes', '')
     if (skipped['tailwind-palette']) {
       out.push(`The code uses ${many(palette.count)}, ${palette.distinct} distinct. ${top}`, '')
-      out.push("They are not findings while the repo has no colour tokens of its own. Once it has, a palette class whose colour a token holds is a finding, with that token as its fix. The others stay counted here, out of the baseline, unless audit.kinds turns the palette kind on or a Tailwind 4 app's style files declare --color-* colours of their own: then each one is a finding.", '')
+      // Turned on in audit.kinds, every one becomes a finding with the
+      // repo's first colours; otherwise only the ones a token holds do.
+      if (/^turned on in audit\.kinds/.test(skipped['tailwind-palette'])) {
+        out.push("They are not findings while the repo has no colours of its own. The palette kind is on in audit.kinds, so each one becomes a finding once the repo has colours of its own.", '')
+      } else {
+        out.push("They are not findings while the repo has no colour tokens of its own. Once it has, a palette class whose colour a token holds is a finding, with that token as its fix. The others stay counted here, out of the baseline, unless audit.kinds turns the palette kind on or a Tailwind 4 app's style files declare --color-* colours of their own: then each one is a finding.", '')
+      }
     } else {
       out.push(`${many(palette.count)}, ${palette.distinct} distinct, use a colour no token holds. ${top}`, '')
       out.push('They are counted here, not findings, so the baseline leaves them out. Once a token holds a class\'s colour, the class is a finding with that token as its fix. To make every palette class a finding, turn the palette kind on in audit.kinds.', '')

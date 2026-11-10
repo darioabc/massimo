@@ -1123,8 +1123,10 @@ export function buildGraph(root, config, command = "graph.mjs") {
   // The names a call site's markup gives a node: the local names of the
   // file's imports that reach it (`import UiButton from './button.vue'`),
   // and in a Nuxt app the names Nuxt registers it under, unless the file
-  // binds that name to a module other than "#components". Empty when
-  // neither names it; callSiteUsage then reads tags named after its file.
+  // binds that name to a module other than "#components". A namespace
+  // import (`import * as UI`) names no tag, since its tags (`<UI.Card>`)
+  // name a member, not the namespace. Empty when neither names it;
+  // callSiteUsage then reads tags named after its file.
   const registered = new Map()
   for (const [name, entries] of nuxt?.autoImports ? nuxt.components : []) {
     for (const e of entries) registered.set(e.file, [...(registered.get(e.file) ?? []), name, `Lazy${name}`])
@@ -1135,7 +1137,7 @@ export function buildGraph(root, config, command = "graph.mjs") {
       bindingsOf.set(importer, importBindings(text(importer), importer).map((b) => ({ ...b, file: resolveImport(importer, b.spec).file })))
     }
     const bindings = bindingsOf.get(importer)
-    const names = new Set(bindings.filter((b) => b.file && reach(b.file, [b.imported]).has(target)).map((b) => b.local))
+    const names = new Set(bindings.filter((b) => b.file && b.imported !== '*' && reach(b.file, [b.imported]).has(target)).map((b) => b.local))
     for (const name of registered.get(target) ?? []) {
       if (!bindings.some((b) => b.local === name && b.spec !== '#components')) names.add(name)
     }

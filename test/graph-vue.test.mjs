@@ -425,11 +425,27 @@ test('in a Nuxt app, a call site is read from the name Nuxt registers, in Pascal
     {
       'nuxt.config.ts': 'export default defineNuxtConfig({})\n',
       'app/components/base/Card.vue': '<script setup lang="ts">\ndefineProps<{ title: string }>()\n</script>\n<template><section><slot /></section></template>\n',
-      'app/pages/index.vue': '<template>\n  <base-card title="Hello" />\n  <BaseCard title="Again" />\n  <card title="Native" />\n</template>\n',
+      'app/pages/index.vue': '<template>\n  <base-card title="Hello" />\n  <BaseCard title="Again" />\n  <card title="Unregistered" />\n</template>\n',
       'app/pages/about.vue': '<script setup lang="ts">\nimport { BaseCard } from "#components"\n</script>\n<template>\n  <BaseCard title="Imported" />\n</template>\n',
     },
     { ...vueConfig(), framework: 'nuxt', components: { include: ['app/components/**/*.vue'], exclude: [] }, consumers: ['app/**/*.vue'] },
   )
   assert.equal(g.node('Card').usage, 2)
   assert.deepEqual(g.node('Card').props, [{ name: 'title', from: 'type', usage: { Hello: 1, Again: 1, Imported: 1 } }])
+})
+
+test('a namespace import of a barrel gives its components no call-site props of the tags under it', () => {
+  const g = graphOf(
+    {
+      'src/styles.css': '@import "tailwindcss";\n',
+      'src/components/ui/Button.vue': '<script setup lang="ts">\ndefineProps<{ variant?: string }>()\n</script>\n<template><button /></template>\n',
+      'src/components/ui/Card.vue': '<script setup lang="ts">\ndefineProps<{ tone?: string }>()\n</script>\n<template><div /></template>\n',
+      'src/components/ui/index.ts': "export { default as Button } from './Button.vue'\nexport { default as Card } from './Card.vue'\n",
+      'src/app/page.vue': '<script setup lang="ts">\nimport * as UI from \'../components/ui\'\nimport { Card } from \'../components/ui\'\n</script>\n<template>\n  <UI.Card tone="raised" />\n  <UI.Button variant="ghost" />\n  <Card tone="flat" />\n</template>\n',
+      'src/app/panel.tsx': "import * as UI from '../components/ui'\n\nexport const Panel = () => <><UI.Card tone=\"raised\" /><UI.Button variant=\"ghost\" /></>\n",
+    },
+    vueConfig({ consumers: ['src/**/*.{vue,ts,tsx}'] }),
+  )
+  assert.deepEqual(g.node('Button').props, [{ name: 'variant', optional: true, from: 'type' }])
+  assert.deepEqual(g.node('Card').props, [{ name: 'tone', optional: true, from: 'type', usage: { flat: 1 } }])
 })
