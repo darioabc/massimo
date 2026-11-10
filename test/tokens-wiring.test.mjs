@@ -165,9 +165,10 @@ test("the tailwind4 output keeps Tailwind's own text-* classes as they render: n
     assert.doesNotMatch(tw4, /--text-(?:sm|lg|2xl)--(?:font-weight|letter-spacing)/)
     // The design's own step is no class of Tailwind's, so it keeps every part.
     for (const part of ['line-height', 'letter-spacing', 'font-weight']) assert.match(tw4, new RegExp(`--text-lead--${part}: var\\(--typography-lead-${part}\\);`))
-    // Tailwind 3's fontSize keeps its parts, as before.
+    // Tailwind 3's fontSize follows the same rule, with Tailwind 3's own line height for its steps.
     const exported = new Function('module', `${read(t.root, 'src', 'styles', 'tokens.tailwind.cjs')}; return module.exports`)({ exports: {} })
-    assert.equal(exported.fontSize['2xl'][1].fontWeight, 'var(--typography-2xl-font-weight)')
+    assert.deepEqual(exported.fontSize['2xl'], ['var(--typography-2xl-font-size)', { lineHeight: '2rem' }])
+    assert.deepEqual(Object.keys(exported.fontSize.lead[1]), ['fontWeight', 'lineHeight', 'letterSpacing'])
   } finally {
     t.cleanup()
   }
