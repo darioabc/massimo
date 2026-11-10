@@ -103,10 +103,37 @@ test('primitive reads wait for a token set with aliases, and the audit says why'
   assert.deepEqual(unread.findings.filter((f) => f.kind === 'primitive-read'), [])
   assert.match(unread.skipped['primitive-read'], /^the token set has no aliases yet/)
   assert.match(read(ctx.project, 'audits', 'latest.md'), /- primitive-read: skipped \(the token set has no aliases yet, so it has no semantic tokens to read instead of its primitives\)/)
-  // One semantic token that aliases a primitive: the reads of primitives count again.
+  // One semantic token that aliases a primitive: the reads of that primitive
+  // count again. No token aliases the background, so it is a role of its own.
   const aliased = { color: { ...flat.color, fg: { $value: '{color.text}' } } }
   writeFileSync(join(ctx.root, 'design-system', 'tokens', 'tokens.json'), JSON.stringify(aliased))
   const counted = audit(ctx)
-  assert.deepEqual(counted.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value), ['--color-bg', '--color-text'])
+  assert.deepEqual(counted.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value), ['--color-text'])
   assert.equal(counted.skipped['primitive-read'], undefined)
+})
+
+test('one alias elsewhere in the set leaves the colours no token aliases out of the primitives', () => {
+  // Colours that are roles of their own beside a radius scale with one alias,
+  // as an adopted shadcn draft has them, and a ramp a theme aliases.
+  const srgb = (components) => ({ colorSpace: 'srgb', components })
+  const doc = {
+    color: {
+      $type: 'color',
+      primary: { $value: srgb([0.09, 0.09, 0.09]) },
+      border: { $value: srgb([0.9, 0.9, 0.9]) },
+      ink: { $value: srgb([0, 0, 0]) },
+      page: { $value: srgb([1, 1, 1]), $extensions: { massimo: { modes: { dark: '{color.ink}' } } } },
+    },
+    radius: { $type: 'dimension', base: { $value: { value: 0.625, unit: 'rem' } }, lg: { $value: '{radius.base}' } },
+  }
+  const ctx = fresh(withTokens(doc))
+  writeFileSync(
+    join(ctx.root, 'src', 'reads.tsx'),
+    "export const R = () => <p style={{ color: 'var(--color-primary)', borderColor: 'var(--color-border)', background: 'var(--color-ink)', borderRadius: 'var(--radius-base)' }} />\n",
+  )
+  const latest = audit(ctx)
+  // The radius has an alias to read instead, and so has the ink, through the
+  // dark theme of the page colour. The primary and border colours have none.
+  assert.deepEqual(latest.findings.filter((f) => f.kind === 'primitive-read' && f.file === 'src/reads.tsx').map((f) => f.value), ['--color-ink', '--radius-base'])
+  assert.equal(latest.skipped['primitive-read'], undefined)
 })
