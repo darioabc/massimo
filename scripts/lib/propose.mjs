@@ -228,9 +228,12 @@ function proposeColors(existing, audit, report, outliers, minCount) {
 
   // Primitives: clusters the code uses with no token near them, in a group
   // no token already holds (DaisyUI's color.neutral is a token: its greys
-  // go in gray).
+  // go in gray), never at a CSS variable a token already has (a Tailwind 4
+  // --color-orange-400 is the token color.orange-400, so color.orange.400
+  // would take its variable).
   const names = new Set(existing.map((t) => key(t.path)))
-  const groupFor = (family) => [family, ...(family === 'neutral' ? ['gray'] : []), `${family}-scale`].find((g) => !names.has(`color.${g}`))
+  const owned = new Set(existing.map((t) => t.cssVar ?? cssVarFor(t.path.filter((p) => p !== '$root'))))
+  const groupFor = (family) => [family, ...(family === 'neutral' ? ['gray'] : []), `${family}-scale`].find((g) => !names.has(`color.${g}`) && !owned.has(cssVarFor(['color', g])))
   const used = new Map()
   const proposed = []
   for (const cl of audit?.colorClusters ?? []) {
@@ -244,9 +247,13 @@ function proposeColors(existing, audit, report, outliers, minCount) {
       outliers.push({ family: 'color', value: cl.representative, count: cl.count, note: `only in data or scripts, never as a style${mostIn(cl.representative) ? `, most in ${mostIn(cl.representative)}` : ''}` })
       continue
     }
-    const match = near(c)
+    // A cluster is covered when any colour in it is near a token, not only
+    // the one that names it.
+    const byRepresentative = near(c)
+    const match = byRepresentative ?? cl.members.map((m) => parseColor(m.value)).filter(Boolean).map(near).find(Boolean)
     if (match) {
-      noteOn(report, key(match.t.path), `covers ${cl.representative}, used ${cl.count}× in code`)
+      const covered = byRepresentative ? cl.representative : cl.members.map((m) => m.value).join(', ')
+      noteOn(report, key(match.t.path), `covers ${covered}, used ${cl.count}× in code`)
       cl.token = key(match.t.path)
       continue
     }
@@ -261,21 +268,22 @@ function proposeColors(existing, audit, report, outliers, minCount) {
     const family = groupFor(c.a < 1 ? 'overlay' : familyOf(c))
     const { L } = oklch(c)
     const taken = used.get(family) ?? new Set()
+    const free = (s) => !taken.has(s) && !owned.has(cssVarFor(['color', family, s]))
     let step
     if (family.startsWith('overlay')) {
       const solid = { ...c, a: 1 }
       const base = familyOf(solid) !== 'neutral' ? familyOf(solid) : oklch(solid).L > 0.9 ? 'white' : oklch(solid).L < 0.25 ? 'black' : 'neutral'
       const name = `${base}-${Math.round(c.a * 100)}`
       step = name
-      for (let i = 2; taken.has(step); i++) step = `${name}-${i}`
+      for (let i = 2; !free(step); i++) step = `${name}-${i}`
     } else {
       const nearest = String(STEPS.slice().sort((x, y) => Math.abs(x[1] - L) - Math.abs(y[1] - L))[0][0])
-      if (!taken.has(nearest)) {
+      if (free(nearest)) {
         step = nearest
       } else {
         let n = Math.min(995, Math.max(5, Math.round(stepAt(L) / 5) * 5))
-        while (taken.has(String(n)) && n < 995) n += 5
-        while (taken.has(String(n))) n -= 5
+        while (!free(String(n)) && n < 995) n += 5
+        while (!free(String(n))) n -= 5
         step = String(n)
       }
     }

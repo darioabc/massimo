@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { colorModes, parseColor } from './color.mjs'
 import { stripJsonComments } from './project.mjs'
-import { isAlias, parseCustomProperties } from './source.mjs'
+import { aliasPath, isAlias, parseCustomProperties } from './source.mjs'
 import { cssVarOf } from './figma.mjs'
 import { findObject, leaves } from './jsobject.mjs'
 import { natural } from './text.mjs'
@@ -80,8 +80,20 @@ const CLAMP = /^clamp\(\s*(-?\d*\.?\d+(?:px|rem))\s*,[^,]+,\s*(-?\d*\.?\d+(?:px|
 // (`--h1-size`, `--h1-leading`) come back as type steps. `parse` reads one
 // file's properties; the token mirror passes one that places each selector
 // by the config's theme selectors instead of by the names themes usually have.
-export function readCss(root, files, parse = parseCustomProperties) {
+//
+// Two places that set one property for the same mode with different values
+// (a dark :root and its :root[data-theme='light'] override, which both read
+// as the default theme, or two files): the token keeps the first value, from
+// its own file, and a note names both selectors and files. The same selector
+// again in the same file is the cascade's own override, so the later value
+// replaces the earlier one. `cascade` makes every later value replace the
+// earlier one, for the mirror, which has already chosen one selector per theme.
+export function readCss(root, files, parse = parseCustomProperties, { cascade = false } = {}) {
   const entries = new Map()
+  // Where each mode's value of a property was set, and the later values that
+  // differed from it, by the two places.
+  const setBy = new Map()
+  const clashes = new Map()
   // Values set only inside a component's scope or under a condition: said in
   // a note when the same property is a token, never taken as its value. A
   // property set only under a condition takes that value, with a note.
@@ -107,18 +119,39 @@ export function readCss(root, files, parse = parseCustomProperties) {
       }
       const e = entries.get(p.name) ?? { default: undefined, modes: {}, source: file }
       const split = colorModes(p.value)
-      if (split && p.mode === 'default') {
-        e.default = split.light
-        e.modes.dark ??= split.dark
-      } else if (p.mode === 'default') {
-        e.default = p.value
-      } else {
-        e.modes[p.mode] = p.value
+      // light-dark()'s dark side gives way to a value the dark theme sets itself.
+      const values = split && p.mode === 'default' ? [['default', split.light], ['dark', split.dark, true]] : [[p.mode, p.value]]
+      for (const [mode, value, half] of values) {
+        const at = `${p.name}\n${mode}`
+        const first = setBy.get(at)
+        const kept = mode === 'default' ? e.default : e.modes[mode]
+        if (half) {
+          if (kept === undefined) {
+            e.modes.dark = value
+            setBy.set(at, { half: true })
+          }
+          continue
+        }
+        if (!first || first.half || cascade || (first.selector === p.selector && first.file === file)) {
+          if (mode === 'default') Object.assign(e, { default: value, source: file })
+          else e.modes[mode] = value
+          setBy.set(at, { selector: p.selector, file })
+        } else if (value !== kept) {
+          const pair = `${mode}\n${first.selector}\n${first.file}\n${p.selector}\n${file}`
+          const c = clashes.get(pair) ?? { mode, first, later: { selector: p.selector, file }, names: new Set() }
+          c.names.add(p.name)
+          clashes.set(pair, c)
+        }
       }
       entries.set(p.name, e)
     }
   }
   const notes = []
+  for (const { mode, first, later, names } of clashes.values()) {
+    const list = [...names].sort(natural)
+    const named = list.length === 1 ? `${list[0]} is` : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]} are`
+    notes.push(`${named} set under ${first.selector} in ${first.file} and again, differently, under ${later.selector} in ${later.file}, which massimo reads as the same ${mode} theme; ${list.length === 1 ? 'its token keeps the first value' : 'the tokens keep the first values'}`)
+  }
   for (const [name, e] of [...onlyUnder].sort((a, b) => natural(a[0], b[0]))) {
     if (entries.has(name)) continue
     entries.set(name, e)
@@ -429,8 +462,10 @@ const STUDIO_TYPES = {
   lineHeights: 'number', opacity: 'number', number: 'number', boxShadow: 'shadow', typography: 'typography', border: 'border',
 }
 
-// A Tokens Studio file (values and types without a $), as DTCG. Token sets
-// merge in $metadata.tokenSetOrder; $themes, which pick sets, are named in the notes.
+// A Tokens Studio file, as DTCG. A token has `value` and `type` (the older
+// form) or `$value` and `$type` (the W3C form), and a description in either
+// form. Token sets merge in $metadata.tokenSetOrder; $themes, which pick
+// sets, are named in the notes.
 export function fromTokensStudio(doc, notes = [], file = '') {
   // A file with $metadata or $themes holds token sets; any other is one set.
   const order = Array.isArray(doc.$metadata?.tokenSetOrder)
@@ -438,19 +473,42 @@ export function fromTokensStudio(doc, notes = [], file = '') {
     : Array.isArray(doc.$themes)
       ? Object.keys(doc).filter((k) => !k.startsWith('$'))
       : null
-  const sets = order ? order.filter((k) => isObject(doc[k])).map((k) => doc[k]) : [doc]
+  const names = order ? order.filter((k) => isObject(doc[k])) : [null]
   if (Array.isArray(doc.$themes) && doc.$themes.length > 0) notes.push(`${file}: Tokens Studio themes (${doc.$themes.map((t) => t.name).join(', ')}) choose sets; the sets were read in order, the themes were not`)
   const convert = (node) => {
     if (!isObject(node)) return node
-    if ('value' in node && ('type' in node || !Object.values(node).some(isObject))) {
-      const out = { $value: shadowFromStudio(node.value) }
-      if (node.type) out.$type = STUDIO_TYPES[node.type] ?? node.type
-      if (node.description) out.$description = node.description
+    if ('$value' in node || ('value' in node && ('type' in node || !Object.values(node).some(isObject)))) {
+      const out = { $value: shadowFromStudio('$value' in node ? node.$value : node.value) }
+      const type = node.$type ?? node.type
+      const description = node.$description ?? node.description
+      if (type) out.$type = STUDIO_TYPES[type] ?? type
+      if (description) out.$description = description
       return out
     }
     return Object.fromEntries(Object.entries(node).filter(([k]) => !k.startsWith('$')).map(([k, v]) => [k, convert(v)]))
   }
-  return sets.map(convert).reduce((a, b) => ({ ...a, ...b }), {})
+  // Sets merge deeply: a group merges key by key, and a token replaces the
+  // token of its path in an earlier set whole. A token whose value refers to
+  // its own path means the token of that path in an earlier set, as Tokens
+  // Studio reads it, so the earlier one stays.
+  const isToken = (node) => isObject(node) && '$value' in node
+  const merge = (into, from, path, set) => {
+    for (const [k, v] of Object.entries(from)) {
+      const at = [...path, k].join('.')
+      const prev = into[k]
+      if (isToken(v) && isToken(prev) && isAlias(v.$value) && aliasPath(v.$value) === at) {
+        const gave = !prev.$description && v.$description
+        if (gave) prev.$description = v.$description
+        notes.push(`${file}: ${at} in ${set} refers to itself, which Tokens Studio reads as the same path in an earlier set; kept the earlier token${gave ? ", with this one's description" : ''}`)
+      } else if (isObject(v) && !isToken(v) && isObject(prev) && !isToken(prev)) {
+        merge(prev, v, [...path, k], set)
+      } else {
+        into[k] = v
+      }
+    }
+    return into
+  }
+  return names.reduce((out, name) => merge(out, convert(name === null ? doc : doc[name]), [], name), {})
 }
 
 // Tokens Studio writes a shadow as { x, y, blur, spread, color, type }.
