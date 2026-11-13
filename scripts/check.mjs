@@ -9,6 +9,7 @@
 //   tokens   tokens.mjs check, when the token set exists; a contrast pair below
 //            its bar is a warning, shown under the passing line
 //   docs     docs.mjs --check, when <project>/README.md has the massimo:docs markers
+//   pages    artifact.mjs pages --check, when <project>/components/ or <project>/sections/ exists
 //   then each guard.extraChecks entry, { name, run }, run through a shell
 //   from the repo root
 //
@@ -40,6 +41,7 @@ export function checksFor({ root, config, projectDir }) {
     existsSync(join(projectDir, 'audits', 'baseline.json')) ? script('audit', 'audit', ['--check']) : { name: 'audit', skip: 'no audit baseline yet' },
     existsSync(join(root, config.tokens.source)) ? script('tokens', 'tokens', ['check']) : { name: 'tokens', skip: 'no token set yet' },
     existsSync(readme) && readFileSync(readme, 'utf8').includes(DOCS_START) ? script('docs', 'docs', ['--check']) : { name: 'docs', skip: 'no generated README yet' },
+    existsSync(join(projectDir, 'components')) || existsSync(join(projectDir, 'sections')) ? script('pages', 'artifact', ['pages', '--check']) : { name: 'pages', skip: 'no component pages yet' },
   ]
   const extra = config.guard?.extraChecks ?? []
   ;(Array.isArray(extra) ? extra : [extra]).forEach((c, i) => {

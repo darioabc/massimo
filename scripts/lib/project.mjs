@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const CONFIG_FILE = 'massimo.config.json'
-export const SCRIPTS_VERSION = '0.4.1'
+export const SCRIPTS_VERSION = '0.5.0'
 
 export const DEFAULTS = {
   version: 1,
@@ -151,6 +151,20 @@ export const DEFAULTS = {
   },
   ticketPattern: null,
   figma: { fileKey: null },
+  artifact: {
+    // The name on the folder's report and in its token file; the repo folder's name when null.
+    title: null,
+    // The tiers or groups whose nodes get a page ("Primitives", "Primitives / Forms"). Null takes every node with a story.
+    components: null,
+    // A static build of the story lane, for the previews. Null falls back to stories.outDir.
+    built: null,
+    // One element of a story page to keep as the preview (`#id`, `.class` or `[attr]`), where the page has chrome around its states.
+    previewSelect: null,
+    // The height a preview opens at, in px. It grows to fit.
+    previewHeight: 320,
+    // Repo files copied under assets/<Group>/, as [{ group, include }], beside what <project>/assets/ already keeps.
+    assets: [],
+  },
 }
 
 // The stories keys 0.4.0 added. A config that sets one to a non-default value,
@@ -170,7 +184,7 @@ export function needsScripts(raw) {
 
 // Flags that never take a value, so `--strict build` keeps `build` as a
 // positional instead of reading it as the flag's value.
-export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'freeze', 'reduced-motion', 'settle', 'legacy'])
+export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'no-agents-file', 'freeze', 'reduced-motion', 'settle', 'legacy'])
 
 // Parse argv into positionals and flags. `--a b`, `--a=b`, and a bare `--a`
 // (true) all work; a repeated flag collects into an array.

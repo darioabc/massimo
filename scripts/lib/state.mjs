@@ -19,6 +19,7 @@ export const PHASES = [
   { id: 'tidy', title: 'Tidy raw values and duplicates', skill: 'tidy' },
   { id: 'guard', title: 'Rules, docs and CI guard', skill: 'guard' },
   { id: 'figma', title: 'Mirror to Figma', skill: 'figma' },
+  { id: 'artifact', title: 'Publish the design system folder', skill: 'artifact', optional: true, whenMissing: 'skipped' },
 ]
 
 export const STATUSES = ['todo', 'in_progress', 'done', 'skipped']

@@ -59,6 +59,7 @@ In a monorepo, the project lives at the root or in one package. Keep it at the r
 | Tidy | `/massimo:tidy` | raw values and duplicate components moved onto the system in batches, each with before/after screenshots and its own commit |
 | Guard | `/massimo:guard` | usage rules on primitives, `npm run ds:check` in CI, a design-system README that stays current |
 | Figma | `/massimo:figma` | tokens as Figma variables with their themes as modes, text and effect styles, primitives as components bound to them, and a drift report that says whether code or Figma moved |
+| Artifact | `/massimo:artifact` | the design system as one folder a reader can open: a brand book, tokens as lists, a page and a still preview per component, fonts and assets, in the layout of a Claude design system artifact, ready for one, for a static host or for another agent |
 
 Skip any phase you do not need. `/massimo:status` shows where things stand.
 
@@ -77,6 +78,12 @@ A repo whose stories are CSF files for Ladle can go one step further, if you opt
 #### Keeping Storybook
 
 A team that keeps its Storybook keeps it as the story lane. `/massimo:start` sets the stories keys from it: the globs of the stories list in `.storybook/main`, the script that runs `storybook dev` and its port, and each story's address, `iframe.html?id={id}&viewMode=story`. When Storybook is all there is to adopt, start recommends skipping adopt. `node <project>/scripts/stories.mjs storybook <component>` names each of a component's stories by Storybook's own id rule, with its URL, without running Storybook; with Storybook running, `--against <url>` checks the ids against its index. New stories are CSF files beside the existing ones, and the design loop, tidy's before and after shots and the Figma mirror open stories at those URLs.
+
+### The design system as a folder to publish
+
+`/massimo:artifact` gives the system a reader's side. The project folder keeps it in the shape it is published in: `README.md` as the brand book, `sections/` for further sections, a `components/<Name>/README.md` per component written from the graph, `assets/` and `fonts/`. `artifact.mjs build` then adds what differs in form: the tokens as lists (the W3C token set stays the source), a still preview per component taken from a static build of your story lane, and the stylesheets, fonts and pictures those previews load. A token the lists cannot hold, such as a duration or an easing, is written as a section instead of being dropped.
+
+The folder follows the layout of a Claude design system artifact, so it publishes to one as it is, and it is plain Markdown, JSON, HTML and CSS with relative paths, so it also opens from a static host or from disk. The script never publishes: it builds, and `artifact.mjs status` says when a published copy has fallen behind the tokens or the graph.
 
 ### The design loop
 
@@ -101,14 +108,38 @@ design-system/
   explorations/<topic>/  design rounds: brief, mockups, canvas
   handoffs/              build-ready specs from the design loop
   adopt/                 what the repo already had, and the ledger of what becomes of it (adopt only)
+  README.md              the brand book: how the system is used, as rules that name tokens and components
+  sections/              further sections of the brand book (motion, and any you write)
+  components/<Name>/     a page per component, written from the graph
+  assets/, fonts/        logos, icons, illustrations and font files
+  artifact/              the folder to publish (built, not committed) and the record of where it went
+  playbooks/             every phase's steps, copied from the plugin so any coding agent can follow them
   scripts/               zero-dependency Node scripts, vendored so CI and teammates without the plugin can run them
 ```
 
 Everything is plain Markdown, JSON and HTML, committed with your code. `npm run ds:serve` (or `node design-system/scripts/serve.mjs` in a repo with no `package.json`) opens the folder in a browser: the project's status first, with the graph, audits, handoffs and token preview one click away.
 
+## Using massimo with another coding agent
+
+Massimo is a Claude Code plugin, and a repo set up with it needs no plugin to keep going. `init.mjs` copies two things into the project folder: the scripts, which are plain Node with no dependencies, and the playbooks, which are each phase's steps as Markdown. It also keeps a short block in `AGENTS.md` at the repo root that tells an agent where to start: read `STATUS.md`, then follow the playbook for the work in hand.
+
+So Codex, Cursor or any agent that reads `AGENTS.md` can run a phase or the design loop from the repo alone. Three things are Claude Code's own and are replaced by plain steps elsewhere: the `/massimo:<name>` commands (read the playbook of that name), the fresh workers the design loop dispatches (an agent that cannot start one follows the worker's instructions itself, one at a time), and the hook that keeps reviewers from writing (the playbook states the rule instead).
+
+To set a repo up without Claude Code, clone massimo anywhere and run `node <massimo>/scripts/init.mjs --root <your repo>`. `--no-agents-file` leaves `AGENTS.md` alone.
+
 ## Supported stacks
 
 Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. Extraction reads CSS (including `@theme`, DaisyUI themes, `light-dark()` and channel triplets) and Sass custom properties, Tailwind 3 configs, CSS-in-JS and JS theme objects, Tokens Studio and DTCG files, and Figma variable exports. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases (`tsconfig.base.json` included) and imports of the repo's own workspace packages (npm, Yarn or pnpm workspaces). In a Nuxt app it also reads Nuxt's aliases, its layers and the components it auto-imports. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript, JSON and [DESIGN.md](https://github.com/google-labs-code/design.md) for coding agents. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
+
+## Updating from 0.4
+
+Update the plugin, then bring the vendored scripts forward:
+
+```bash
+node <plugin-root>/scripts/init.mjs --update-scripts
+```
+
+Nothing in a project's files changes shape. The update also copies the playbooks to `<project>/playbooks/` and adds a massimo block to `AGENTS.md`, creating the file if the repo has none; pass `--no-agents-file` to leave it alone. `state.json` gains an `artifact` phase, skipped until you want it. Nothing is written under `components/` or `sections/` until `artifact.mjs pages` runs, and `ds:check` checks those pages only once they exist.
 
 ## Updating from 0.4.0
 

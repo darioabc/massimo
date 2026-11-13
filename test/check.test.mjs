@@ -31,7 +31,7 @@ test('a project with every phase done runs all four checks, and each one can fai
   }
   const ok = run('check', ctx)
   assert.equal(ok.status, 0, ok.stdout)
-  assert.deepEqual(lines(ok).filter((l) => !/^ /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass audit', 'pass tokens', 'pass docs', 'massimo check:'])
+  assert.deepEqual(lines(ok).filter((l) => !/^ /.test(l)).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass audit', 'pass tokens', 'pass docs', 'skip pages', 'massimo check:'])
   assert.match(ok.stdout, /^pass {2}graph {3}node \.\.\/project\/scripts\/graph\.mjs --check$/m)
   assert.match(ok.stdout, /massimo check: 4 checks passed/)
 
@@ -110,6 +110,7 @@ test('a check that does not apply yet is skipped, and the project\'s own checks 
     'skip | audit | no audit baseline yet',
     'skip | tokens | no token set yet',
     'skip | docs | no generated README yet',
+    'skip | pages | no component pages yet',
     'pass | shipped images | node -e "process.exit(0)"',
     'fail | licence headers | node -e "console.log(\'missing in src/x.ts\'); process.exit(3)"',
     ' | missing in src/x.ts',
@@ -134,7 +135,7 @@ test('a csf lane adds a stories check after graph, and no other lane does', () =
   assert.equal(run('graph', ctx).status, 0)
   const ok = run('check', ctx)
   assert.equal(ok.status, 0, ok.stdout)
-  assert.deepEqual(lines(ok).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass stories', 'skip audit', 'skip tokens', 'skip docs', 'massimo check:'])
+  assert.deepEqual(lines(ok).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['pass graph', 'pass stories', 'skip audit', 'skip tokens', 'skip docs', 'skip pages', 'massimo check:'])
   assert.match(ok.stdout, /^pass {2}stories {2}node \.\.\/project\/scripts\/stories\.mjs --check$/m)
 
   // A second story with an id that is taken fails the stories line, and its output shows under it.

@@ -10,7 +10,7 @@
     {
       "name": "massimo",
       "description": "Design-system automation for any front-end repo: extract a full system, component graph, native story lane, W3C design tokens, guided tidy-up, iterative UX loop, optional Figma mirror.",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "source": "./",
       "category": "design",
       "homepage": "https://github.com/darioabc/massimo#readme"

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0
+
+The design system as a folder to publish, in the layout of a Claude design system artifact, and a way for any coding agent to run massimo from the repo. After updating, run `init.mjs --update-scripts`: it also copies the playbooks into the project folder and adds a block to `AGENTS.md`. No file format changes. `state.json` gains an optional `artifact` phase, which a project without it reads as skipped.
+
+### Added
+
+- The artifact phase and its skill, `/massimo:artifact`: the design system as one folder a reader can open, with a brand book, tokens as lists, a page and a still preview per component, fonts and assets. The folder follows the layout of a Claude design system artifact, so it publishes to one as it is, and every file is plain Markdown, JSON, HTML or CSS with relative paths, so it also opens from a static host or from disk. The scripts never publish: the skill does, with whichever tool the host has.
+- `artifact.mjs pages` writes the reader's pages into the project folder: `components/<Name>/README.md` for every storied component, from its graph node (the rule as its first sentence, then its rules, props, states, what it is built from and who uses it), and `sections/<name>.md` for the tokens the token lists cannot hold. `pages --check` exits 1 when a page is out of date, and `ds:check` runs it once the pages exist. A page the team wrote is never touched, and a generated page whose component left the graph is removed.
+- `artifact.mjs plan` and `build` make `<project>/artifact/project/`, with `files.json` (each file with its size and media type, and `"upload": true` on the pictures, videos and PDFs under `assets/`) and `report.md` (what the folder holds, what it leaves out and why, and how to publish it). The same inputs give the same bytes.
+- Tokens as lists: the token set as the lists a Claude design system reads, a value per theme with references kept between colours, type styles from typography tokens, and a family per kind of length. The W3C token set stays the source. Nothing is dropped silently: a duration, an easing, a transition, a border, a gradient, a CSS-only value or a colour that is not a plain colour is written as a section of the brand book (`motion.md`, `borders.md`, `gradients.md`, `more-tokens.md`) and listed in the report with the reason.
+- Previews from the story lane, on any framework: a component's preview is its story's page from a static build of the lane, without its scripts, with the stylesheets, fonts and pictures it loads copied beside it and every path made relative. `artifact.previewSelect` keeps one element of the page where the page has chrome around its states, and a small script follows the repo's own theme switch (`tokens.darkSelector`). A lane that draws its states in the browser gets pages and a note. Fonts the built stylesheets declare are listed in the type view.
+- `artifact.mjs record --url <url>` and `status`: where the folder was published and from which tokens and graph, in `<project>/artifact/mirror.json`, and whether that copy is now behind either.
+- `<project>/artifact/kept/` holds files copied over every build as they are: an index, a cover, anything the tool that publishes needs.
+- The project folder takes the same shape as the published folder: `README.md` as the brand book, `sections/`, `components/<Name>/`, `assets/<Group>/` and `fonts/`. `artifact.assets` copies repo files in at build time, and `artifact.components` narrows the folder to tiers or groups.
+- Any coding agent can run massimo from the repo. `init.mjs` copies the playbooks (the plugin's skills, agents, references and templates) to `<project>/playbooks/` with the scripts, and keeps a block between `massimo:agents` markers in `AGENTS.md` at the repo root: where the project stands, which playbook to read for which work, how a playbook's `<plugin>` paths and `/massimo:<name>` commands map onto the repo, and what an agent that cannot start a fresh worker does instead. The file is created when the repo has none, and everything outside the markers is left as it is. `--no-agents-file` skips it.
+
+### Changed
+
+- The guard skill writes the hand-written part of `<project>/README.md` as a brand book: content fundamentals, visual foundations and iconography around the generated block, as rules that name tokens and components. `docs.mjs` writes the same bytes as before.
+- `state.json` tracks nine phases. The artifact phase is optional and skipped until the user wants it, so the session hook and STATUS.md do not name it as next.
+
 ## 0.4.1
 
 Fixes from running massimo on public repos it had never seen, among them Nuxt 3 and 4 apps, monorepos, a Capacitor app and repos that keep Storybook. After updating, run `init.mjs --update-scripts`, then `adopt.mjs scan` before the next `plan`, and rebuild the token outputs (`tokens.mjs build`): in a Tailwind 3 project the tailwind3 output writes colours in a new form. No file format changes: the inventory gains a few fields (`widths` on a story file that sets `meta.width`, and Ladle's `previewPort` and `notLiteral`) that older scripts ignore.

@@ -1669,6 +1669,35 @@ function figmaCommand({ root, config, projectDir, flags, shown, tokens }) {
   process.stdout.write(`massimo tokens figma: ${total} ${total === 1 ? 'difference' : 'differences'} since the mirror; wrote ${shown(out)}\n`)
 }
 
+// The token set as plain entries, for an output that lives outside this file
+// (artifact.mjs): each token's CSS variable, type and description, and per
+// mode its value as CSS text (what the token says, without a CSS override)
+// and the CSS variable of the token it points at. A typography token also
+// gives its parts in the default mode. Null when the repo has no token set.
+export function tokenEntries(root, config) {
+  const tokens = loadTokens(root, config)
+  if (!tokens || tokens.tokens.length === 0) return null
+  const model = modelOf(tokens, config)
+  const entries = model.tokens.map((t) => {
+    const type = model.typeOf(t)
+    const values = {}
+    const aliases = {}
+    for (const mode of model.modes) {
+      const label = model.modeLabel(mode)
+      values[label] = valueText(model, t, mode)
+      aliases[label] = model.target(t, mode)?.cssVar ?? null
+    }
+    const entry = { name: t.name, cssVar: t.cssVar, type, description: t.description ?? '', values, aliases }
+    if (t.cssOnly) entry.cssOnly = true
+    if (type === 'typography') {
+      const own = declarations(model, t, 'default', false)
+      entry.parts = Object.fromEntries(typographyParts(model, t).map(([key, css]) => [key, own.find(([name]) => name === `${t.cssVar}-${css}`)?.[1]]).filter(([, v]) => v !== undefined))
+    }
+    return entry
+  })
+  return { modes: model.modes.map(model.modeLabel), files: tokens.files, hash: tokensHash(root, tokens.files), entries }
+}
+
 const warnAll = (model) => {
   for (const p of model.problems.filter((x) => x.level === 'warning')) process.stderr.write(`massimo: warn: ${p.path}: ${p.message}\n`)
 }
