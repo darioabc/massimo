@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 // Set up a massimo project in a repo: massimo.config.json, the project
-// folder with its templates and state, vendored scripts, and npm scripts.
-// Never overwrites a file that exists; re-running is safe and reports what
-// it skipped. Run from the plugin (first time) or from the vendored copy.
+// folder with its templates and state, vendored scripts and playbooks, npm
+// scripts, and a block in AGENTS.md that tells any coding agent how to run
+// them. Never overwrites a file that exists; re-running is safe and reports
+// what it skipped. Run from the plugin (first time) or from the vendored copy.
 //
-//   init.mjs [--root <dir>] [--config-json '<json overrides>'] [--update-scripts] [--no-npm-scripts] [--dry-run]
+//   init.mjs [--root <dir>] [--config-json '<json overrides>'] [--update-scripts] [--no-npm-scripts] [--no-agents-file] [--dry-run]
+//
+// The playbooks are the plugin's skills, agents, references and templates,
+// copied to <project>/playbooks/ with the scripts, so an agent with no plugin
+// follows the same steps. --update-scripts refreshes both and the AGENTS.md
+// block; --no-agents-file leaves AGENTS.md alone.
 
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compare, globToRegExp } from './lib/glob.mjs'
@@ -147,6 +153,68 @@ if (sameDir) {
   report.warnings.push(`vendored scripts are ${vendoredVersion}, the plugin has ${SCRIPTS_VERSION}: re-run init with --update-scripts`)
 } else {
   report.skipped.push(`${projectRel}/scripts (already ${SCRIPTS_VERSION})`)
+}
+
+// 3b. Playbooks: the plugin's skills, agents, references and templates, so an
+// agent that has no plugin reads the same steps from the repo. They travel
+// with the scripts: copied the first time and on --update-scripts.
+const PLAYBOOK_DIRS = ['skills', 'agents', 'reference', 'templates']
+const playbooksDir = join(projectDir, 'playbooks')
+const refresh = !sameDir && (vendoredVersion === null || Boolean(flags['update-scripts']))
+function copyTree(from, to) {
+  for (const name of readdirSync(from).sort(compare)) {
+    const src = join(from, name)
+    if (statSync(src).isDirectory()) copyTree(src, join(to, name))
+    else {
+      const dest = join(to, name)
+      ;(existsSync(dest) ? report.updated : report.created).push(rel(root, dest))
+      if (!dry) {
+        mkdirSync(dirname(dest), { recursive: true })
+        copyFileSync(src, dest)
+      }
+    }
+  }
+}
+if (refresh) for (const dir of PLAYBOOK_DIRS) if (existsSync(join(pluginRoot, dir))) copyTree(join(pluginRoot, dir), join(playbooksDir, dir))
+
+// 3c. AGENTS.md: where any agent starts. The block between the markers is
+// massimo's; everything around it is the repo's own and is never touched.
+const AGENTS_START = '<!-- massimo:agents:start -->'
+const AGENTS_END = '<!-- massimo:agents:end -->'
+function agentsBlock() {
+  const from = existsSync(join(playbooksDir, 'skills')) ? join(playbooksDir, 'skills') : join(pluginRoot, 'skills')
+  const names = existsSync(from) ? readdirSync(from).filter((n) => existsSync(join(from, n, 'SKILL.md'))).sort(compare) : []
+  return [
+    AGENTS_START,
+    '## Design system (massimo)',
+    '',
+    `This repo keeps its design system with massimo, in \`${projectRel}/\`. Any coding agent can run it: the scripts are plain Node with no dependencies, and each piece of work has a playbook written as steps.`,
+    '',
+    `- Start with \`${projectRel}/STATUS.md\`: where the project stands and the next step.`,
+    `- To run a phase or to design something, read its playbook and follow it: \`${projectRel}/playbooks/skills/<name>/SKILL.md\`${names.length > 0 ? `, where \`<name>\` is one of ${names.join(', ')}` : ''}. \`ux\` is the design loop: reviews, rounds of mockups, a pick, then a story and a handoff.`,
+    `- In a playbook, \`<plugin>\` is \`${projectRel}/playbooks\`, and a script it names under \`<plugin>/scripts/\` is the same file under \`${projectRel}/scripts/\`. A \`/massimo:<name>\` command means the playbook of that name.`,
+    `- Where a playbook dispatches a worker such as \`massimo:reviewer\`, start a fresh agent with \`${projectRel}/playbooks/agents/<name>.md\` as its instructions if your tool can; otherwise follow that file yourself, one worker at a time. A reviewer writes nothing, and the ideator writes only under \`${projectRel}/explorations/\`.`,
+    '- Where a playbook names a tool your host lacks (a question prompt, a browser pane), do the same job in plain text: ask in words, give the URL to open.',
+    `- \`node ${projectRel}/scripts/check.mjs\` runs every check CI runs.`,
+    AGENTS_END,
+  ].join('\n')
+}
+if (refresh && !flags['no-agents-file']) {
+  const agentsPath = join(root, 'AGENTS.md')
+  const current = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : null
+  const block = agentsBlock()
+  let next
+  if (current === null) next = `# Agents\n\n${block}\n`
+  else {
+    const s = current.indexOf(AGENTS_START)
+    const e = current.indexOf(AGENTS_END)
+    next = s !== -1 && e > s ? current.slice(0, s) + block + current.slice(e + AGENTS_END.length) : `${current.trimEnd()}\n\n${block}\n`
+  }
+  if (next === current) report.skipped.push('AGENTS.md (the massimo block is current)')
+  else {
+    ;(current === null ? report.created : report.updated).push('AGENTS.md')
+    if (!dry) writeFileSync(agentsPath, next)
+  }
 }
 
 // 4. npm scripts. Phases add their own later (ds:stories, ds:tokens, ds:check).
