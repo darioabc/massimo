@@ -18,7 +18,8 @@ massimo.config.json            where things are: framework, component globs, sty
 ├── audits/                    latest.md, latest.json, baseline.json (audit.mjs)
 ├── tokens/                    the token set in W3C Design Tokens 2025.10: tokens.resolver.json (the entry point), base.tokens.json,
 │                              theme/<context>.tokens.json; draft/ from extract; preview.html, figma-variables.json;
-│                              resolved.json, the inventory of every custom property per selector (tokens.mjs resolved)
+│                              resolved.json, the inventory of every custom property per selector (tokens.mjs resolved);
+│                              mobile-outputs.json, the mobile files massimo wrote (tokens.mjs build)
 ├── kit/kit.css                generated token stylesheet that mockups link to
 ├── explorations/<topic>/      one folder per design topic in the ux loop (brief.md, round-N/, index.html)
 ├── handoffs/<topic>.md        translate specs ready to build
@@ -49,6 +50,28 @@ Config keys beyond the paths: `tokens.darkSelector`, `tokens.darkMedia`, `tokens
 In a git checkout, every file list the scripts read from leaves out what git ignores, as `git ls-files` does, so build output and a copy of the web build inside a native project are never read as source. The audit still reads those files for the custom properties they define, and for nothing else, so a variable set in a token stylesheet that a build generates and git ignores is not undefined. `detect.mjs` also suggests an `audit.exclude` for folders that hold no UI styling, and suggests no token source from them: a Nuxt app's `server/` folder, and Capacitor's `android/`, `ios/` and its `webDir`. The audit never reads a Tailwind config (`tokens.tailwindConfig`, or any `tailwind.config` file) for raw values: it is a token source, where every value belongs.
 
 In a Nuxt app (`framework` is `nuxt`, or a `nuxt.config` sits at the root), the graph also reads what Nuxt resolves for itself, from the app's and its layers' `nuxt.config` (literal values only): the aliases (`~`, `@`, `~~`, `@@`, `#shared`, `#layers/<name>` and the `alias` option) for an import that neither `aliases` nor a tsconfig path matches, and the components Nuxt auto-imports from each layer's components folders, the `components` option and shadcn-nuxt's `shadcn.componentDir`. A template tag, a `resolveComponent()` call or an import from `#components` that names one is an edge, like an import. `graph.edges: ["!nuxt"]` turns those edges off; the aliases stay. A remote or package layer is a warning. In every project, an import that starts with `@/` or `~/` and resolves to nothing is unresolved, never a package.
+
+## Platforms
+
+A project declares the platforms it builds for in `platforms`, a map from id to block: `web`, `ios` and `android`. A config without `platforms` is web only and reads the top-level keys, exactly as before 0.6.0; every web key, file and output stays as it was. Once `platforms` is set, web is one of them only when it is listed (`"web": {}`, which keeps reading the top-level keys), so a project that is an iOS or Android app alone runs no web graph: `check.mjs` skips it and says why. Key names and docs say "mobile", never "native", since `native` is the web story lane.
+
+```json
+"platforms": {
+  "ios": { "root": "ios", "ui": ["swiftui"], "project": { "kind": "xcodegen", "path": "project.yml" }, "components": { "include": ["Packages/DesignSystem/Sources/**/*.swift"] }, "consumers": ["**/*.swift"] },
+  "android": { "root": "android", "ui": ["compose", "views"], "components": { "include": ["core/designsystem/src/main/**/*.kt"] } }
+}
+```
+
+- `root` is the folder the platform lives in, and every glob in its block is relative to it. `ui` names its UI kinds: `swiftui` and `uikit` for iOS, `compose` and `views` for Android. `project` (iOS) records how the app is built: `tuist`, `xcodegen`, `swiftpm`, `xcworkspace` or `xcodeproj`, with its path. massimo reads these files as text and never edits a `.xcodeproj`, `Package.swift`, `Project.swift`, `project.yml` or Gradle file.
+- A block merges over its platform's own defaults, never over the web top-level keys, so a web glob never reaches an iOS or Android run. Its lists keep every default: `ignore`, `components.exclude` and `audit.exclude` are the union of massimo's defaults, the platform's (Pods, .build, DerivedData; build, .gradle) and the block's own.
+- `detect.mjs` proposes the block: it recognises a Tuist, XcodeGen, Swift package, workspace or Xcode project (a generator before the project it makes), and a Gradle project from its settings file, with or without a package.json; it reports each with its confidence and reasons, its modules, the design-system module (one named designsystem, ui, components or *DesignSystem) as the components and every Swift or Kotlin file as a consumer, its preview and snapshot tools, where its colours live and where token outputs would go. A web app's mobile shell is not a platform: Capacitor's `ios/` and `android/`, and the iOS and Android folders of a React Native, Expo, NativeScript, Cordova, Tauri or Flutter app.
+- `tokens.mobile` holds the mobile outputs' options: `remBase` (16), `fontUnit` (`sp`, or `dp`), `namespace` (`DesignTokens`), `package` (the Kotlin package, else the one the compose output's path names), `uikit` (also write UIColor twins), `colors` (`catalog` or `tokens`, below) and `textStyles` (a token path to an iOS text style, or `"fixed"`).
+- `tokens.mobileSources` lists where a mobile app keeps its own values, for `tokens.mjs extract`: `{ "kind": "xcassets", "path": "<catalog, or a glob of catalogs>" }` and `{ "kind": "android-values", "include": ["<globs of res/values*/ XML files>"] }`. `tokens.importFiles` stays JSON only.
+- `tokens.outputs[].format` adds `swift`, `xcassets`, `compose` and `android-xml`, and `tokens.outputs[].platform` names the platform an output serves (from its format when unset). `<plugin>/reference/mobile.md` says what each writes.
+
+Every key above needs scripts 0.6.0: a config that sets one also sets `"minScripts": "0.6.0"`. `init.mjs` and `detect.mjs` set it themselves, and `state.mjs` and `check.mjs` warn when a hand-edited config uses a key its `minScripts` does not cover. Scripts older than 0.6.0 refuse such a config by name instead of ignoring the keys.
+
+`<project>/tokens/mobile-outputs.json` (format 1) lists every mobile file `tokens.mjs build` wrote, with its hash and the scripts version that wrote it. A build writes over only those files (or a file that opens with massimo's header, or a `Contents.json` whose author is massimo) and refuses any other. `tokens.mjs check` fails on a file it lists that the build no longer makes; `build` lists such files and removes them only with `--prune`. `check` never compares the list itself.
 
 Keys for the artifact phase: `artifact.title` (the name on the folder; the repo folder's name when null), `artifact.components` (the tiers or groups whose nodes get a page, as `["Primitives", "Foundations / Brand"]`; null takes every node with a story), `artifact.built` (a static build of the story lane for the previews; null falls back to `stories.outDir`), `artifact.previewSelect` (one element of a story page to keep as the preview, `#id`, `.class` or `[attr]`), `artifact.previewHeight` (px, 320) and `artifact.assets` (`[{ group, include }]`, repo files copied under `assets/<Group>/`).
 

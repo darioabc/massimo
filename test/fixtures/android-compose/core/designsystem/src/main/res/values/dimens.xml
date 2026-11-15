@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="spacing_small">4dp</dimen>
+    <dimen name="spacing_large">16dp</dimen>
+    <dimen name="corner_radius">8dp</dimen>
+    <dimen name="body_text">16sp</dimen>
+    <dimen name="hairline">1px</dimen>
+</resources>

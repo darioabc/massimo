@@ -11,7 +11,7 @@
 //
 // Shared flags: --root, --config, --project-dir.
 
-import { fail, loadConfig, parseArgs, rel } from './lib/project.mjs'
+import { fail, loadConfig, minScriptsWarning, parseArgs, rel } from './lib/project.mjs'
 import {
   appendDecision,
   loadState,
@@ -29,8 +29,11 @@ helpAndExit(import.meta.url)
 
 const { _: args, flags } = parseArgs()
 const [command = 'show', ...rest] = args
-const { root, projectDir } = loadConfig(flags)
+const { root, projectDir, raw } = loadConfig(flags)
 const projectRel = rel(root, projectDir) || '.'
+// A config edited by hand may use keys its minScripts does not cover.
+const tooLow = minScriptsWarning(raw)
+if (tooLow) process.stderr.write(`massimo: warn: ${tooLow}\n`)
 
 const state = loadState(projectDir)
 if (!state) fail(`no project at ${projectRel}/state.json. Run /massimo:start to set one up.`, 2)

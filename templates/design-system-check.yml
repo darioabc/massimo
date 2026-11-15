@@ -33,4 +33,8 @@ jobs:
       # is "csf", so ds:check covers the check. The lane build and leak check
       # run only in the shadow job's story step; copy that step here to keep
       # them in CI.
+      # A repo with no package.json (an iOS or Android app, say) has no
+      # ds:check script, and check.mjs needs nothing but Node: put the
+      # command in place of the line below, as
+      #   - run: node {{projectDir}}/scripts/check.mjs
       - run: npm run ds:check

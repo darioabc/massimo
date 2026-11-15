@@ -1,0 +1,28 @@
+massimo tokens build: 22 tokens; wrote ios/App/DesignTokens.swift, ios/App/MassimoTokens.xcassets, android/core/src/main/kotlin/com/example/tokens/DesignTokens.kt, android/core/src/main/res, ds/tokens/figma-variables.json, ds/kit/kit.css
+  not carried over to the mobile outputs: motion.fade is a transition, which has no single value on a phone: use its duration and curve tokens
+  not carried over to ios/App/DesignTokens.swift: text.display has no iOS text style to scale with, so its size would not follow Dynamic Type: map it in tokens.mobile.textStyles (or name it body, caption…), or set it to "fixed" there
+  not carried over to android/core/src/main/res: font.family.sans is a fontFamily, which has no Android value resource; the compose output carries it
+  not carried over to android/core/src/main/res: font.weight.bold is a fontWeight, which has no Android value resource; the compose output carries it
+  not carried over to android/core/src/main/res: motion.ease.standard is a cubicBezier, which has no Android value resource; the compose output carries it
+  not carried over to android/core/src/main/res: shadow.card is a shadow, which has no Android value resource; the compose output carries it
+  note: color.default: "default" is a reserved word, so it is defaultColor in Swift
+  note: spacing.2: starts with a digit, so it is spacing2 in Swift
+  note: spacing.2: starts with a digit, so it is spacing2 in Kotlin
+  note: font.family.sans: the family Inter must be bundled with the app and registered (UIAppFonts) before SwiftUI can use it
+  note: text.body: the family Inter must be bundled with the app and registered (UIAppFonts) before SwiftUI can use it
+  note: text.caption: the system font takes the size of the caption text style and scales with it; the token's 12pt is kept in size
+  note: spacing.gap-em: its exact CSS (0.5em) is the web's; the mobile outputs use its value
+  note: color.vivid: converted from oklch to sRGB for the catalog
+  note: color.vivid: converted from oklch to sRGB
+  note: font.family.sans: the family Inter must be added as a font resource before Compose can use it
+  note: text.body: the family Inter is written as FontFamily.Default; add it as a font resource and swap it in
+  note: text.display: the family Inter is written as FontFamily.Default; add it as a font resource and swap it in
+  note: color.accent: Android colour resources are sRGB, so its Display P3 value was converted and clipped
+  note: color.vivid: Android colour resources are sRGB, so its oklch value was converted and clipped
+  note: text.body: Android resources carry its size and line height; its family, weight and letter spacing are in the compose output
+  note: text.caption: Android resources carry its size and line height; its family, weight and letter spacing are in the compose output
+  note: text.display: Android resources carry its size and line height; its family, weight and letter spacing are in the compose output
+  wire: In Xcode, add ios/App/DesignTokens.swift to the app's target: drag it into the project navigator, or File > Add Files, and tick the target. Once; massimo rewrites it in place from then on
+  wire: In Xcode, add ios/App/MassimoTokens.xcassets to the app's target: drag it into the project navigator, or File > Add Files, and tick the target. Once; massimo rewrites it in place from then on
+  wired: android/core/src/main/kotlin/com/example/tokens/DesignTokens.kt: Gradle compiles everything under android/core/src/main, so nothing to add. The file imports from androidx.compose.animation, androidx.compose.foundation, androidx.compose.material3, androidx.compose.runtime, androidx.compose.ui; the module's build file must depend on them (a Compose module usually does).
+  wired: android/core/src/main/res: Gradle compiles everything under android/core/src/main, so nothing to add.

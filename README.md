@@ -131,6 +131,18 @@ To set a repo up without Claude Code, clone massimo anywhere and run `node <mass
 
 Native story lanes for Vite (React, Preact, Vue, Svelte, Solid), Next.js (App and Pages Router), Astro, SvelteKit and Nuxt, plus guidance for anything else. Extraction reads CSS (including `@theme`, DaisyUI themes, `light-dark()` and channel triplets) and Sass custom properties, Tailwind 3 configs, CSS-in-JS and JS theme objects, Tokens Studio and DTCG files, and Figma variable exports. The graph understands TS/JS, JSX, Vue, Svelte and Astro, with tsconfig path aliases (`tsconfig.base.json` included) and imports of the repo's own workspace packages (npm, Yarn or pnpm workspaces). In a Nuxt app it also reads Nuxt's aliases, its layers and the components it auto-imports. Tokens build into plain CSS custom properties, Tailwind 4 `@theme`, Tailwind 3 config, SCSS, TypeScript, JSON and [DESIGN.md](https://github.com/google-labs-code/design.md) for coding agents. In a DaisyUI app, the theme block maps DaisyUI's colour names onto the tokens by hand, once.
 
+Tokens for SwiftUI, UIKit, Jetpack Compose and Android XML (preview). massimo recognises an Xcode, Swift package, Tuist or XcodeGen project and a Gradle Android project, with or without a `package.json`, reads an app's asset-catalog colours and its `res/values` colours and dimensions into tokens, and builds tokens into Swift, an asset catalog it owns, Compose and Android resource files, never over a file the team wrote. An app's own asset catalog can stay the colour source, with Swift accessors that read it by name. It also counts the colours the Swift and Kotlin code hard-codes, read only. The component graph, previews, the audit's ratchet and tidy read web code only for now. [reference/mobile.md](reference/mobile.md) has the details.
+
+## Updating from 0.5
+
+Update the plugin, then bring the vendored scripts forward:
+
+```bash
+node <plugin-root>/scripts/init.mjs --update-scripts
+```
+
+Nothing in a web project's files changes shape, and every web output builds the same bytes. An iOS or Android project is new in 0.6.0: run `/massimo:start` in it, or `detect.mjs` to see what massimo finds. Its config needs scripts 0.6.0 and says so in `minScripts`, and its token build adds `<project>/tokens/mobile-outputs.json`, the list of mobile files massimo owns.
+
 ## Updating from 0.4
 
 Update the plugin, then bring the vendored scripts forward:
