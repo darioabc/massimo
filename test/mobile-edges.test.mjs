@@ -167,7 +167,7 @@ test('an hsl colour keeps its alpha in every mobile output', () => {
   const r = tokensRun(root, ['build'])
   assert.equal(r.status, 0, r.stderr)
   assert.match(read(root, `${XML_OUT.path}/values/massimo_tokens.xml`), /<color name="color_scrim">#80000000<\/color>/)
-  assert.match(read(root, COMPOSE_OUT.path), /scrim = Color\(0x80000000\)/)
+  assert.match(read(root, COMPOSE_OUT.path), /scrim = Color\(red = 0f, green = 0f, blue = 0f, alpha = 0\.5f\)/)
   assert.equal(JSON.parse(read(root, `${XCASSETS_OUT.path}/Scrim.colorset/Contents.json`)).colors[0].color.components.alpha, '0.500')
   assert.match(read(root, SWIFT_OUT.path), /static let scrim = Color\("Scrim", bundle: designTokensBundle\)/)
 })

@@ -143,10 +143,13 @@ export function colorValue(v, parseColor) {
       return { space: 'srgb', r, g, b, a, converted: v.colorSpace }
     }
   }
+  // Any other space (hsl, hwb, lab, lch…) through its hex, which never holds
+  // the alpha: a DTCG colour keeps that apart, in `alpha`.
   const css = typeof v === 'string' ? v : v && typeof v === 'object' && typeof v.hex === 'string' ? v.hex : null
   const c = css ? parseColor(css) : null
   if (!c) return null
-  return { space: 'srgb', r: c.r, g: c.g, b: c.b, a: c.a ?? 1, converted: typeof v === 'object' ? v.colorSpace : null }
+  const a = v && typeof v === 'object' && typeof v.alpha === 'number' ? v.alpha : c.a ?? 1
+  return { space: 'srgb', r: c.r, g: c.g, b: c.b, a, converted: typeof v === 'object' ? v.colorSpace : null }
 }
 
 // A colour in sRGB, for the outputs that hold nothing else, with whether its
