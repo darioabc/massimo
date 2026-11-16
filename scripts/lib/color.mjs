@@ -379,7 +379,8 @@ export function colorFromCss(input) {
   }
   const slash = m[2].indexOf('/')
   let parts = (slash === -1 ? m[2] : m[2].slice(0, slash)).split(/[\s,]+/).filter(Boolean)
-  if (slash === -1 && parts.length === 4) parts = parts.slice(0, 3)
+  // The legacy comma form's fourth value is its alpha; color()'s first part is its space.
+  if (slash === -1 && parts.length === 4 && m[1] !== 'color') parts = parts.slice(0, 3)
   const value = (p, pctScale) => (p === 'none' ? 'none' : p.endsWith('%') ? r6((parseFloat(p) / 100) * pctScale) : r6(parseFloat(p)))
   const hue = (p) => (p === 'none' ? 'none' : r6(((hueToDeg(p) % 360) + 360) % 360))
   let space = m[1].replace(/a$/, '')
