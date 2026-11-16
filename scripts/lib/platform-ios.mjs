@@ -63,16 +63,39 @@ export function packageTargetOf(path, files, read) {
   return null
 }
 
-// Targets an XcodeGen project.yml declares: the keys indented one step under `targets:`.
+// Targets an XcodeGen project.yml declares, the keys indented one step under
+// `targets:`, each with the folder of its first source (`sources: [A]`,
+// `sources: A`, or a list of paths or `- path: A`), or null.
 function xcodegenTargets(text) {
   const lines = text.split(/\r?\n/)
   const at = lines.findIndex((l) => /^targets\s*:/.test(l))
   if (at === -1) return []
   const out = []
+  let inSources = false
+  const clean = (v) => v.trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '') || null
   for (const line of lines.slice(at + 1)) {
     if (/^\S/.test(line)) break
     const m = /^ {2}([A-Za-z0-9_.-]+)\s*:/.exec(line)
-    if (m) out.push(m[1])
+    if (m) {
+      out.push({ name: m[1], path: null })
+      inSources = false
+      continue
+    }
+    const target = out[out.length - 1]
+    if (!target) continue
+    const sources = /^\s+sources\s*:\s*(.*)$/.exec(line)
+    if (sources) {
+      const rest = sources[1].trim()
+      if (rest.startsWith('[')) target.path ??= clean(rest.slice(1).split(/[,\]]/)[0])
+      else if (rest) target.path ??= clean(rest)
+      inSources = !rest
+      continue
+    }
+    if (inSources) {
+      const item = /^\s+-\s*(?:path\s*:\s*)?(.+)$/.exec(line)
+      if (item) target.path ??= clean(item[1])
+      else if (!/^\s{6,}/.test(line)) inSources = false
+    }
   }
   return out
 }
@@ -129,10 +152,11 @@ export function detectIos(files, read) {
     for (const t of packageTargets(read(pkg) ?? '').filter((x) => !x.test)) modules.push({ name: t.name, path: join(dirOf(pkg), t.path ?? `Sources/${t.name}`), from: 'Package.swift' })
   }
   const yml = here.find((m) => m.kind === 'xcodegen')
-  if (yml) for (const name of xcodegenTargets(read(yml.path) ?? '')) modules.push({ name, path: null, from: 'project.yml' })
+  if (yml) for (const t of xcodegenTargets(read(yml.path) ?? '')) modules.push({ name: t.name, path: t.path ? join(dirOf(yml.path), t.path) : null, from: 'project.yml' })
   const pbx = own.find((f) => f.endsWith('.xcodeproj/project.pbxproj') && under(root, f) !== null)
   const pbxInfo = pbx ? pbxprojInfo(read(pbx) ?? '') : { targets: [], synced: [] }
-  for (const name of pbxInfo.targets) modules.push({ name, path: null, from: pbx })
+  // A target whose name is a folder Xcode keeps in sync has its code there.
+  for (const name of pbxInfo.targets) modules.push({ name, path: pbxInfo.synced.includes(name) ? join(dirOf(dirOf(pbx)), name) : null, from: pbx })
   const designSystem = modules.find((m) => m.path && DS_NAME.test(m.name)) ?? null
   // Catalogs that hold colours, the app's own first.
   const catalogs = new Map()
