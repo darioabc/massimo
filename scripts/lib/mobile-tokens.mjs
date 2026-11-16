@@ -28,7 +28,7 @@ const ROBOTO = /^roboto$/i
 
 // CSS's generic families that name a design of the system font: SwiftUI's
 // Font.Design, and Compose's FontFamily where Android has one.
-const GENERIC_DESIGNS = { 'ui-monospace': 'monospaced', monospace: 'monospaced', 'ui-serif': 'serif', serif: 'serif', 'ui-rounded': 'rounded' }
+const GENERIC_DESIGNS = new Map([['ui-monospace', 'monospaced'], ['monospace', 'monospaced'], ['ui-serif', 'serif'], ['serif', 'serif'], ['ui-rounded', 'rounded'], ['cursive', 'cursive'], ['fantasy', 'fantasy']])
 
 // A family list as its first family, whether that is the system font, and
 // the system font's design a generic family names (monospaced, serif,
@@ -36,7 +36,7 @@ const GENERIC_DESIGNS = { 'ui-monospace': 'monospaced', monospace: 'monospaced',
 export function familyOf(value) {
   const list = Array.isArray(value) ? value : String(value ?? '').split(',')
   const first = String(list[0] ?? '').trim().replace(/^(['"])(.*)\1$/, '$2')
-  const design = GENERIC_DESIGNS[first.toLowerCase()] ?? null
+  const design = GENERIC_DESIGNS.get(first.toLowerCase()) ?? null
   return { name: first, system: Boolean(design) || SYSTEM_FAMILIES.test(first), roboto: ROBOTO.test(first), design }
 }
 
@@ -121,8 +121,8 @@ function plainValue(model, t, type, mode, options) {
 }
 
 // Every token the mobile outputs may carry, as entries:
-//   { t, group, swift, kotlin, type, value, dark, notes }
-// in the token set's order. `value` and `dark` are plain values (see
+//   { t, group, swift, kotlin, type, value, dark, target, notes }
+// in the token set's order. `target` is the token a colour alias ends at. `value` and `dark` are plain values (see
 // plainValue); `dark` is set only for a colour that changes in dark mode.
 // Tokens that cannot be carried are in `skipped` as { token, why }, and
 // renames in `renamed`. Two tokens that would share a name are `collisions`.
@@ -174,7 +174,8 @@ export function mobileEntries(model, options) {
     const kotlin = memberName(t.path, type, KOTLIN_RESERVED)
     if (swift.renamed) renamed.push({ token: t.name, language: 'Swift', name: swift.name, why: swift.renamed })
     if (kotlin.renamed) renamed.push({ token: t.name, language: 'Kotlin', name: kotlin.name, why: kotlin.renamed })
-    entries.push({ t, group, swift: swift.name, kotlin: kotlin.name, type, value, dark: darkValue, notes })
+    const end = type === 'color' ? model.final(t, day) : t
+    entries.push({ t, group, swift: swift.name, kotlin: kotlin.name, type, value, dark: darkValue, target: end === t ? null : end, notes })
   }
   const clash = (lang) =>
     [...new Set(entries.map((e) => e.group))].flatMap((group) => collisions(entries.filter((e) => e.group === group).map((e) => ({ name: e[lang], token: e.t.name }))).map((c) => ({ ...c, group, language: lang === 'swift' ? 'Swift' : 'Kotlin' })))

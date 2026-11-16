@@ -139,8 +139,8 @@ test('a colour outside the color group keeps its group word in the shared Colors
   const r = tokensRun(root, ['build'])
   assert.equal(r.status, 0, r.stderr)
   const swift = read(root, SWIFT_OUT.path)
-  // Once in the UIKit branch of the #if each colour built from its components has.
-  for (const name of ['textPrimary', 'borderPrimary', 'textDefault', 'borderDefault']) assert.equal(swift.split(`static let ${name} = Color(uiColor:`).length - 1, 1, name)
+  // Once: a colour with no dark value is the same on every platform.
+  for (const name of ['textPrimary', 'borderPrimary', 'textDefault', 'borderDefault']) assert.equal(swift.split(`static let ${name} = Color(`).length - 1, 1, name)
   assert.doesNotMatch(swift, /static let primary =/)
   const kt = read(root, COMPOSE_OUT.path)
   for (const name of ['textPrimary', 'borderPrimary', 'textDefault', 'borderDefault']) assert.equal(kt.split(`public val ${name}: Color,`).length - 1, 1, name)
@@ -465,7 +465,7 @@ test('Swift colours built from components keep their dark value on macOS too', (
   const root = repo({ config: tokensMode([SWIFT_OUT]), tokens: [tok(['color', 'surface'], 'color', srgb('#ffffff'), { modes: { dark: srgb('#1c1c1e') } })] })
   assert.equal(tokensRun(root, ['build']).status, 0)
   const swift = read(root, SWIFT_OUT.path)
-  assert.match(swift, /#elseif canImport\(AppKit\)\n {8}static let surface = Color\(nsColor: NSColor\(name: nil\) \{ \$0\.bestMatch\(from: \[\.aqua, \.darkAqua\]\) == \.darkAqua \? NSColor\(srgbRed: 0\.1098/)
+  assert.match(swift, /#elseif canImport\(AppKit\)\n {8}static let surface = Color\(NSColor\(name: nil\) \{ \$0\.bestMatch\(from: \[\.aqua, \.darkAqua\]\) == \.darkAqua \? NSColor\(red: 0\.1098/)
 })
 
 // #29

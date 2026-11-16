@@ -61,7 +61,7 @@ export function xcassetsPlan(entries, teamSets = new Map()) {
     const team = teamSets.get(name)
     if (e.t.mobile?.contrast || (team && hasHighContrast(team))) {
       const reason = `has high-contrast entries${team ? ` in ${team.folder}` : ''}, which massimo does not model yet`
-      skipped.push({ token: e.t.name, reason, why: `${reason}; it stays in the app's catalog as it is` })
+      skipped.push({ token: e.t.name, reason, why: `${reason}; it stays in the app's catalog as it is`, asset: name })
       continue
     }
     // Entries a token cannot hold (a Display P3 gamut, another idiom): the
@@ -70,11 +70,21 @@ export function xcassetsPlan(entries, teamSets = new Map()) {
     const variants = team ? team.variants ?? [] : Array.isArray(e.t.mobile?.variants) ? e.t.mobile.variants : []
     if (variants.length > 0) {
       const reason = `has entries massimo does not model yet (${variants.join(', ')})${team ? ` in ${team.folder}` : ''}`
-      skipped.push({ token: e.t.name, reason, why: `${reason}; it stays in the app's catalog as it is` })
+      skipped.push({ token: e.t.name, reason, why: `${reason}; it stays in the app's catalog as it is`, asset: name })
       continue
     }
     if (e.value.color.converted) notes.push(`${e.t.name}: converted from ${e.value.color.converted} to sRGB for the catalog`)
     colors.push({ entry: e, name })
+  }
+  // An alias of a colour left in the app's catalog would lose what that
+  // colour keeps there: it is left out too, and reads that colour's set.
+  const left = new Map(skipped.map((s) => [s.token, s]))
+  for (const c of [...colors]) {
+    const to = c.entry.target ? left.get(c.entry.target.name) : null
+    if (!to) continue
+    colors.splice(colors.indexOf(c), 1)
+    const reason = `points at ${c.entry.target.name}, which ${to.reason}`
+    skipped.push({ token: c.entry.t.name, reason, why: `${reason}; it reads that colour's set in the app's catalog`, asset: to.asset })
   }
   return { colors, skipped, notes, unsafe, collisions: collisions(colors.map((c) => ({ name: c.name, token: c.entry.t.name }))) }
 }

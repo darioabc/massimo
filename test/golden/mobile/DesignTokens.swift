@@ -32,7 +32,7 @@ enum DesignTokens {
     enum Typography {
         static let familySans: String = "Inter"
         static let weightBold: Font.Weight = .bold
-        static let body = DesignTokensTextStyle(font: Font.custom("Inter", size: 16, relativeTo: .body).weight(.regular), size: 16, lineHeight: 24, tracking: 0)
+        static let body = DesignTokensTextStyle(font: { if #available(iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *) { return Font.custom("Inter", size: 16, relativeTo: .body).weight(.regular) } else { return Font.custom("Inter", size: 16).weight(.regular) } }(), size: 16, lineHeight: 24, tracking: 0)
         static let caption = DesignTokensTextStyle(font: Font.system(.caption).weight(.medium), size: 12, lineHeight: 15, tracking: 0.24)
     }
 

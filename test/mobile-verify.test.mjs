@@ -5,11 +5,12 @@
 // what detect proposes, the Android outputs and readers, and config.
 
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { COMPOSE_OUT, OWNED, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
+import { COMPOSE_OUT, EXTRA, OWNED, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
 
 const listed = (root) => JSON.parse(read(root, 'ds/tokens/mobile-outputs.json')).files
 const git = (root, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, encoding: 'utf8' })
@@ -219,4 +220,118 @@ test('after a dedupe, catalog mode never reads a colour set from the catalog mas
   assert.doesNotMatch(swift, /Color\("Brand\/Primary"/)
   assert.match(r.stdout, /color\.Brand\.Primary is not a colour set in the app's catalog/)
   assert.equal(tokensRun(root, ['check']).status, 0)
+})
+
+// ── The Swift output ────────────────────────────────────────────────────────
+
+// Colours built from components (no catalog), with and without a dark value, one out of sRGB.
+const TRAIT_SET = [
+  tok(['color', 'surface'], 'color', srgb('#ffffff'), { modes: { dark: srgb('#1c1c1e') } }),
+  tok(['color', 'ink'], 'color', srgb('#111111')),
+  tok(['color', 'vivid'], 'color', { colorSpace: 'oklch', components: [0.7, 0.3, 30] }, { modes: { dark: srgb('#000000') } }),
+  tok(['color', 'wide'], 'color', { colorSpace: 'display-p3', components: [1, 0.2, 0.1] }, { modes: { dark: { colorSpace: 'display-p3', components: [0.9, 0.1, 0.1] } } }),
+  tok(['text', 'title'], 'typography', { fontFamily: 'Inter', fontSize: px(22), fontWeight: 600, lineHeight: 1.2, letterSpacing: px(0) }),
+  tok(['text', 'note'], 'typography', { fontFamily: 'ui-rounded', fontSize: px(11), fontWeight: 400, lineHeight: 1.2, letterSpacing: px(0) }),
+]
+const traitBuild = () => {
+  const root = repo({ config: tokensMode([SWIFT_OUT], { uikit: true, textStyles: { 'text.title': 'title2', 'text.note': 'caption2' } }), tokens: TRAIT_SET })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  return { root, r, swift: read(root, SWIFT_OUT.path) }
+}
+
+// R2 R3 P7
+test('Swift colours built from components use only what iOS 13 and macOS 10.15 have, keep extended sRGB on macOS, and compile on watchOS', () => {
+  const { swift, r } = traitBuild()
+  assert.doesNotMatch(swift, /Color\(uiColor:|Color\(nsColor:|NSColor\(srgbRed:/)
+  assert.match(swift, /#if canImport\(UIKit\) && !os\(watchOS\)\n {8}static let surface = Color\(UIColor \{ \$0\.userInterfaceStyle == \.dark \?/)
+  assert.match(swift, /#elseif canImport\(AppKit\)\n {8}static let vivid = Color\(NSColor\(name: nil\) \{ \$0\.bestMatch\(from: \[\.aqua, \.darkAqua\]\) == \.darkAqua \? NSColor\(red: 0, green: 0, blue: 0, alpha: 1\) : NSColor\(red: 1\.172538, green: -0\.139477, blue: -0\.128339, alpha: 1\) \}\)/)
+  // A colour with no dark value is the same on every platform.
+  assert.match(swift, /\n {8}static let ink = Color\(\.sRGB, red: 0\.0667, green: 0\.0667, blue: 0\.0667, opacity: 1\)\n/)
+  // The UIKit twins need what watchOS lacks, so they are left out there.
+  assert.match(swift, /#if canImport\(UIKit\) && !os\(watchOS\)\n {4}enum UIColors/)
+  // Text styles iOS 13 lacks, and Font.custom(relativeTo:), fall back where they are missing.
+  assert.match(swift, /if #available\(iOS 14\.0, macOS 11\.0, tvOS 14\.0, watchOS 7\.0, \*\)/)
+  assert.match(r.stdout, /on watchOS, which has no light and dark appearance, colours built from their components take their light value/)
+})
+
+// R2 R3 P7, compiled: only where Xcode is installed.
+const xcrun = spawnSync('xcrun', ['--find', 'swiftc'], { encoding: 'utf8' }).status === 0
+test('the Swift output type-checks for iOS 13 and 17, macOS 10.15 and 12, and watchOS', { skip: !xcrun && 'needs Xcode' }, () => {
+  const { root } = traitBuild()
+  const file = join(root, SWIFT_OUT.path)
+  for (const [sdk, target] of [['iphonesimulator', 'arm64-apple-ios13.0-simulator'], ['iphonesimulator', 'arm64-apple-ios17.0-simulator'], ['macosx', 'x86_64-apple-macos10.15'], ['macosx', 'arm64-apple-macos12.0'], ['watchsimulator', 'arm64-apple-watchos7.0-simulator']]) {
+    const sdkPath = spawnSync('xcrun', ['--sdk', sdk, '--show-sdk-path'], { encoding: 'utf8' })
+    if (sdkPath.status !== 0) continue
+    const c = spawnSync('xcrun', ['--sdk', sdk, 'swiftc', '-typecheck', '-target', target, '-swift-version', '5', file], { encoding: 'utf8', cwd: tmpdir() })
+    assert.equal(c.status, 0, `${target}: ${c.stderr}`)
+  }
+})
+
+// P6
+test('a description with a lone carriage return stays inside its Swift doc comment', () => {
+  const root = repo({ config: tokensMode([SWIFT_OUT]), tokens: [tok(['spacing', 'gutter'], 'dimension', px(16), { description: 'line one\rline two' }), tok(['spacing', 'gap'], 'dimension', px(8), { description: 'cr\r/*x' })] })
+  assert.equal(tokensRun(root, ['build']).status, 0)
+  const swift = read(root, SWIFT_OUT.path)
+  assert.doesNotMatch(swift, /\r/)
+  assert.match(swift, /\/\/\/ line one\n {8}\/\/\/ line two\n/)
+  assert.match(swift, /\/\/\/ cr\n {8}\/\/\/ \/\*x\n/)
+})
+
+// R8
+test('a font family named like a property of every object (constructor, __proto__) is a family to bundle, not a system design', () => {
+  const root = repo({ config: tokensMode([SWIFT_OUT, COMPOSE_OUT], { textStyles: { 'text.body': 'body' } }), tokens: [tok(['font', 'family', 'odd'], 'fontFamily', ['constructor', 'sans-serif']), tok(['text', 'body'], 'typography', { fontFamily: '__proto__', fontSize: px(14), fontWeight: 400, lineHeight: 1.4, letterSpacing: px(0) })] })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(read(root, SWIFT_OUT.path), /static let familyOdd: String = "constructor"/)
+  assert.match(read(root, SWIFT_OUT.path), /Font\.custom\("__proto__", size: 14/)
+  assert.match(read(root, COMPOSE_OUT.path), /familyOdd: String = "constructor"/)
+})
+
+// L10
+test('ui-rounded and cursive say what each platform writes for them, with nothing to bundle', () => {
+  const root = repo({ config: tokensMode([SWIFT_OUT, COMPOSE_OUT], { textStyles: { 'text.fancy': 'body' } }), tokens: [tok(['font', 'family', 'round'], 'fontFamily', ['ui-rounded', 'sans-serif']), tok(['font', 'family', 'script'], 'fontFamily', ['cursive']), tok(['text', 'fancy'], 'typography', { fontFamily: 'cursive', fontSize: px(14), fontWeight: 400, lineHeight: 1.4, letterSpacing: px(0) })] })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /font\.family\.round: Android has no rounded system font, so ui-rounded is written as default/)
+  assert.match(r.stdout, /font\.family\.script: iOS has no cursive system font, so cursive is the system font there/)
+  assert.doesNotMatch(r.stdout, /cursive must be (bundled|added)/)
+  const kt = read(root, COMPOSE_OUT.path)
+  assert.match(kt, /familyScript: String = "cursive"/)
+  assert.match(kt, /fancy: TextStyle = TextStyle\(fontFamily = FontFamily\.Cursive/)
+  assert.match(read(root, SWIFT_OUT.path), /static let fancy = DesignTokensTextStyle\(font: Font\.system\(\.body\)/)
+})
+
+// I6
+test('an alias of a colour with high-contrast entries keeps them: it reads that colour\'s set, or is left out and listed', () => {
+  const alias = (root) => {
+    const file = join(root, 'ds/tokens/base.tokens.json')
+    const doc = JSON.parse(readFileSync(file, 'utf8'))
+    doc.bg = { $type: 'color', surface: { $value: '{color.Surface}' } }
+    writeFileSync(file, JSON.stringify(doc, null, 2))
+  }
+  const swiftOnly = extracted({ colors: 'tokens', outputs: [{ format: 'swift', path: 'Sources/DesignSystem/DesignTokens.swift' }] }).root
+  alias(swiftOnly)
+  const a = tokensRun(swiftOnly, ['build'])
+  assert.equal(a.status, 0, a.stderr)
+  assert.match(read(swiftOnly, 'Sources/DesignSystem/DesignTokens.swift'), /public static let bgSurface = Color\("Surface", bundle: \.module\)/)
+  const both = extracted({ colors: 'tokens', outputs: [{ format: 'xcassets', path: OWNED }, { format: 'swift', path: 'Sources/DesignSystem/DesignTokens.swift' }] }).root
+  alias(both)
+  const b = tokensRun(both, ['build'])
+  assert.equal(b.status, 0, b.stderr)
+  assert.ok(!existsSync(join(both, OWNED, 'Bg/Surface.colorset')))
+  assert.match(b.stdout, /not carried over to Sources\/DesignSystem\/Resources\/MassimoTokens\.xcassets: bg\.surface points at color\.Surface, which has high-contrast entries/)
+  assert.match(read(both, 'Sources/DesignSystem/DesignTokens.swift'), /public static let bgSurface = Color\("Surface", bundle: \.module\)/)
+})
+
+// T6
+test('tokens mode with no catalog holding a high-contrast colour leaves it out and lists it, never building it without those entries', () => {
+  const { root } = extracted({ colors: 'tokens', outputs: [{ format: 'swift', path: 'Sources/DesignSystem/DesignTokens.swift' }] })
+  const config = readConfig(root)
+  config.tokens.mobileSources = [{ kind: 'xcassets', path: EXTRA }]
+  writeConfig(root, config)
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /not carried over to Sources\/DesignSystem\/DesignTokens\.swift: color\.Surface has high-contrast entries, which massimo does not model yet, and no catalog this build reads holds it; it is left out rather than built without them/)
+  assert.doesNotMatch(read(root, 'Sources/DesignSystem/DesignTokens.swift'), /static let surface/)
 })

@@ -1801,7 +1801,9 @@ function buildMobile(root, config, model, outputs, projectDir) {
       const leave = new Map()
       const keptNotes = []
       if (options.colors === 'catalog') {
-        catalog = new Map(plan.entries.filter((e) => e.type === 'color').map((e) => [e.t.name, assetName(e.t)]).filter(([, name]) => teamSets.has(name)))
+        // An alias with no set of its own reads the set of the colour it ends at.
+        const setOf = (e) => (!teamSets.has(assetName(e.t)) && e.target ? assetName(e.target) : assetName(e.t))
+        catalog = new Map(plan.entries.filter((e) => e.type === 'color').map((e) => [e.t.name, setOf(e)]).filter(([, name]) => teamSets.has(name)))
         only = true
       } else {
         // A colour the owned catalog would leave out (high contrast, a variant
@@ -1811,8 +1813,7 @@ function buildMobile(root, config, model, outputs, projectDir) {
         // than built from its light and dark values alone.
         const kept = []
         for (const s of xc.skipped) {
-          const e = plan.entries.find((x) => x.t.name === s.token)
-          const name = assetName(e.t)
+          const name = s.asset
           if (teamSets.has(name)) {
             kept.push([s.token, name])
             if (!ownedCatalog) keptNotes.push(s)

@@ -12,6 +12,13 @@
 // Inside a Swift package target, declarations are `public` and catalogs are
 // read from `.module`; anywhere else from the bundle that holds this file.
 //
+// Everything it writes is in SwiftUI's first release (iOS 13, macOS 10.15,
+// tvOS 13, watchOS 6), so it compiles whatever floor the target declares;
+// what came later (Font.custom relativeTo, the title2 style) is behind
+// #available with the closest older form. watchOS has no light and dark
+// appearance and no dynamic UIColor, so there a colour built from its
+// components takes its light value, as a catalog colour does.
+//
 // Type follows Dynamic Type: a typography token needs an iOS text style to
 // scale with (tokens.mobile.textStyles, or a name such as body or caption).
 // Without one, or an explicit "fixed", it is not written, since a fixed size
@@ -25,7 +32,16 @@ const weightName = (w) => SWIFT_WEIGHTS.reduce((best, [n, name]) => (Math.abs(n 
 
 const n = numberText
 const stringLiteral = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-const doc = (text, pad) => (text ? text.split('\n').map((l) => `${pad}/// ${l}`.trimEnd()) : [])
+// Swift ends a line comment at a carriage return too, so every line break starts a new /// line.
+const doc = (text, pad) => (text ? text.split(/\r\n|\r|\n|\u2028|\u2029/).map((l) => `${pad}/// ${l}`.trimEnd()) : [])
+
+// Font.Design's cases; a generic family with none (cursive) is the system font.
+const SWIFT_DESIGNS = ['monospaced', 'serif', 'rounded']
+// Text styles added in iOS 14, with the iOS 13 style closest to each.
+const LATER_STYLES = { title2: 'title', title3: 'title', caption2: 'caption' }
+const LATER = 'iOS 14.0, macOS 11.0, tvOS 14.0, watchOS 7.0, *'
+// A font that needs iOS 14, with its iOS 13 form behind #available.
+const available = (later, earlier) => (later === earlier ? later : `{ if #available(${LATER}) { return ${later} } else { return ${earlier} } }()`)
 
 function staticColor(c) {
   const a = n(c.a)
@@ -38,9 +54,10 @@ function uiColor(c) {
   return `UIColor(red: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
 }
 
+// NSColor(red:green:blue:alpha:) is extended sRGB, so a component outside 0..1 is kept.
 function nsColor(c) {
   if (c.space === 'display-p3') return `NSColor(displayP3Red: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
-  return `NSColor(srgbRed: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
+  return `NSColor(red: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
 }
 
 // The Swift source, what was left out and what it declares: { text, skipped, notes, names }.
@@ -86,12 +103,18 @@ export function buildSwift(plan, options, ctx, header) {
         add('Colors', [...head, `${pad}${pub}static let ${name} = Color(${stringLiteral(asset)}, bundle: ${bundle})`])
         needs.uikitColors.push({ name, line: `UIColor(named: ${stringLiteral(asset)}, in: ${bundle}, compatibleWith: nil) ?? .clear` })
       } else {
-        traitColors = true
         const dark = e.dark?.color
-        const ui = dark ? `UIColor { $0.userInterfaceStyle == .dark ? ${uiColor(dark)} : ${uiColor(v.color)} }` : uiColor(v.color)
-        // AppKit (a macOS target of the same package) follows the appearance too.
-        const ns = dark ? `NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? ${nsColor(dark)} : ${nsColor(v.color)} }` : nsColor(v.color)
-        add('Colors', [...head, '#if canImport(UIKit)', `${pad}${pub}static let ${name} = Color(uiColor: ${ui})`, '#elseif canImport(AppKit)', `${pad}${pub}static let ${name} = Color(nsColor: ${ns})`, '#else', `${pad}${pub}static let ${name} = ${staticColor(v.color)}`, '#endif'])
+        if (!dark) {
+          add('Colors', [...head, `${pad}${pub}static let ${name} = ${staticColor(v.color)}`])
+          needs.uikitColors.push({ name, line: uiColor(v.color) })
+          continue
+        }
+        // A dynamic provider follows the appearance: UIKit's (iOS, tvOS,
+        // Mac Catalyst), AppKit's (a macOS target of the same package).
+        traitColors = true
+        const ui = `UIColor { $0.userInterfaceStyle == .dark ? ${uiColor(dark)} : ${uiColor(v.color)} }`
+        const ns = `NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? ${nsColor(dark)} : ${nsColor(v.color)} }`
+        add('Colors', [...head, '#if canImport(UIKit) && !os(watchOS)', `${pad}${pub}static let ${name} = Color(${ui})`, '#elseif canImport(AppKit)', `${pad}${pub}static let ${name} = Color(${ns})`, '#else', `${pad}${pub}static let ${name} = ${staticColor(v.color)}`, '#endif'])
         needs.uikitColors.push({ name, line: ui })
       }
       continue
@@ -101,7 +124,8 @@ export function buildSwift(plan, options, ctx, header) {
     else if (v.weight !== undefined) add(e.group, [...head, `${pad}${pub}static let ${name}: Font.Weight = .${weightName(v.weight)}`])
     else if (v.family) {
       if (!v.family.system) notes.push(`${e.t.name}: the family ${v.family.name} must be bundled with the app and registered (UIAppFonts) before SwiftUI can use it`)
-      add(e.group, [...head, `${pad}${pub}static let ${name}: String = ${stringLiteral(v.family.design ?? (v.family.system ? 'system' : v.family.name))}`])
+      if (v.family.design && !SWIFT_DESIGNS.includes(v.family.design)) notes.push(`${e.t.name}: iOS has no ${v.family.design} system font, so ${v.family.design} is the system font there`)
+      add(e.group, [...head, `${pad}${pub}static let ${name}: String = ${stringLiteral(SWIFT_DESIGNS.includes(v.family.design) ? v.family.design : v.family.system ? 'system' : v.family.name)}`])
     } else if (v.ms !== undefined) add(e.group, [...head, `${pad}${pub}static let ${name}: TimeInterval = ${n(v.ms / 1000)}`])
     else if (v.curve) add(e.group, [...head, `${pad}${pub}static let ${name}: (x1: Double, y1: Double, x2: Double, y2: Double) = (${v.curve.map(n).join(', ')})`])
     else if (v.text) {
@@ -117,14 +141,20 @@ export function buildSwift(plan, options, ctx, header) {
       const t = v.text
       const weight = t.weight ? weightName(t.weight) : null
       let font
+      const w = weight ? `.weight(.${weight})` : ''
       if (!t.family || t.family.system) {
-        const design = t.family?.design ? `, design: .${t.family.design}` : ''
-        font = style.style ? `Font.system(.${style.style}${design})${weight ? `.weight(.${weight})` : ''}` : `Font.system(size: ${n(t.size)}${weight ? `, weight: .${weight}` : ''}${design})`
+        const known = SWIFT_DESIGNS.includes(t.family?.design)
+        if (t.family?.design && !known) notes.push(`${e.t.name}: iOS has no ${t.family.design} system font, so ${t.family.design} is the system font there`)
+        const design = known ? `, design: .${t.family.design}` : ''
+        const system = (s) => `Font.system(.${s}${design})${w}`
+        font = style.style ? available(system(style.style), system(LATER_STYLES[style.style] ?? style.style)) : `Font.system(size: ${n(t.size)}${weight ? `, weight: .${weight}` : ''}${design})`
         if (style.style) notes.push(`${e.t.name}: the system font takes the size of the ${style.style} text style and scales with it; the token's ${n(t.size)}pt is kept in size`)
       } else {
         notes.push(`${e.t.name}: the family ${t.family.name} must be bundled with the app and registered (UIAppFonts) before SwiftUI can use it`)
-        const base = style.style ? `Font.custom(${stringLiteral(t.family.name)}, size: ${n(t.size)}, relativeTo: .${style.style})` : `Font.custom(${stringLiteral(t.family.name)}, fixedSize: ${n(t.size)})`
-        font = weight ? `${base}.weight(.${weight})` : base
+        const family = stringLiteral(t.family.name)
+        // Before iOS 14 a custom font has a size alone, which does not scale.
+        const later = style.style ? `Font.custom(${family}, size: ${n(t.size)}, relativeTo: .${style.style})${w}` : `Font.custom(${family}, fixedSize: ${n(t.size)})${w}`
+        font = available(later, `Font.custom(${family}, size: ${n(t.size)})${w}`)
       }
       needs.textStyle = true
       add(e.group, [...head, `${pad}${pub}static let ${name} = ${ns}TextStyle(font: ${font}, size: ${n(t.size)}, lineHeight: ${t.lineHeight === null ? 'nil' : n(t.lineHeight)}, tracking: ${t.tracking === null ? 'nil' : n(t.tracking)})`])
@@ -145,7 +175,10 @@ export function buildSwift(plan, options, ctx, header) {
   for (const e of entries) for (const note of e.notes) notes.push(`${e.t.name}: ${note}`)
 
   const out = [`// ${header}`, '// massimo mobile output, format 1', '', 'import SwiftUI']
-  if (traitColors) out.push('#if canImport(UIKit)', 'import UIKit', '#elseif canImport(AppKit)', 'import AppKit', '#endif')
+  if (traitColors) {
+    out.push('#if canImport(UIKit)', 'import UIKit', '#elseif canImport(AppKit)', 'import AppKit', '#endif')
+    notes.push('on watchOS, which has no light and dark appearance, colours built from their components take their light value, as a catalog colour does there')
+  }
   else if (options.uikit) out.push('#if canImport(UIKit)', 'import UIKit', '#endif')
   out.push('')
   // Outside a package, the bundle that holds this file, which is the app's or the framework's.
@@ -157,7 +190,8 @@ export function buildSwift(plan, options, ctx, header) {
     out.push(`    ${pub}enum ${group} {`, ...groups.get(group), '    }')
   })
   if (options.uikit && needs.uikitColors.length > 0) {
-    out.push('', '#if canImport(UIKit)', `    ${pub}enum UIColors {`, ...needs.uikitColors.map((c) => `${pad}${pub}static let ${c.name} = ${c.line}`), '    }', '#endif')
+    // UIColor(named:in:compatibleWith:) and the dynamic provider are not on watchOS.
+    out.push('', '#if canImport(UIKit) && !os(watchOS)', `    ${pub}enum UIColors {`, ...needs.uikitColors.map((c) => `${pad}${pub}static let ${c.name} = ${c.line}`), '    }', '#endif')
   }
   out.push('}')
   if (needs.textStyle) {

@@ -28,7 +28,9 @@ export const MATERIAL_SLOTS = [
 ]
 
 // The FontFamily, and the family name a fontFamily token writes, for each system font design.
-const COMPOSE_FAMILY = { monospaced: { family: 'Monospace', name: 'monospace' }, serif: { family: 'Serif', name: 'serif' }, rounded: { family: 'Default', name: 'default' } }
+const COMPOSE_FAMILY = { monospaced: { family: 'Monospace', name: 'monospace' }, serif: { family: 'Serif', name: 'serif' }, rounded: { family: 'Default', name: 'default' }, cursive: { family: 'Cursive', name: 'cursive' }, fantasy: { family: 'Default', name: 'default' } }
+// A design Android has no system font for, written as the default one, with a note.
+const noAndroidFont = (design) => (design === 'rounded' || design === 'fantasy' ? design : null)
 
 const f = floatText
 const n = numberText
@@ -106,6 +108,7 @@ export function buildCompose(plan, options, ctx, header) {
       add(e.group, [...head, `${pad}public val ${name}: FontWeight = FontWeight(${Math.round(v.weight)})`])
     } else if (v.family) {
       if (!v.family.system && !v.family.roboto) notes.push(`${e.t.name}: the family ${v.family.name} must be added as a font resource before Compose can use it`)
+      if (noAndroidFont(v.family.design)) notes.push(`${e.t.name}: Android has no ${v.family.design} system font, so ${v.family.name} is written as default`)
       add(e.group, [...head, `${pad}public const val ${name}: String = ${stringLiteral(v.family.design ? COMPOSE_FAMILY[v.family.design].name : v.family.system || v.family.roboto ? 'default' : v.family.name)}`])
     } else if (v.ms !== undefined) add(e.group, [...head, `${pad}public const val ${name}: Int = ${Math.round(v.ms)}`])
     else if (v.curve) {
@@ -115,7 +118,7 @@ export function buildCompose(plan, options, ctx, header) {
       const t = v.text
       for (const i of ['androidx.compose.ui.text.TextStyle', `androidx.compose.ui.unit.${options.fontUnit}`, 'androidx.compose.ui.text.font.FontFamily']) imports.add(i)
       if (t.family && !t.family.system && !t.family.roboto) notes.push(`${e.t.name}: the family ${t.family.name} is written as FontFamily.Default; add it as a font resource and swap it in`)
-      if (t.family?.design === 'rounded') notes.push(`${e.t.name}: Android has no rounded system font, so ${t.family.name} is written as FontFamily.Default`)
+      if (noAndroidFont(t.family?.design)) notes.push(`${e.t.name}: Android has no ${t.family.design} system font, so ${t.family.name} is written as FontFamily.Default`)
       const args = [`fontFamily = FontFamily.${t.family?.design ? COMPOSE_FAMILY[t.family.design].family : 'Default'}`]
       if (t.weight) {
         imports.add('androidx.compose.ui.text.font.FontWeight')
