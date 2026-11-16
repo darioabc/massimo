@@ -196,11 +196,27 @@ export const hasHighContrast = (set) => 'contrast-light' in set.values || 'contr
 // the light (or any) entry is the value, the dark entry the dark mode, and
 // the name Xcode gives it is kept in `mobile.asset`. High-contrast entries
 // are kept in `mobile.contrast`, and the colour is listed in the notes.
+// Whether two repo-relative paths are one file or folder on disk: the same
+// spelling, or another one (a case-only rename on a disk that ignores case).
+export function samePlace(root, a, b) {
+  if (a === b) return true
+  try {
+    const x = statSync(join(root, a))
+    const y = statSync(join(root, b))
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
+}
+
+// Whether a catalog is one massimo writes or wrote (`owned` lists them).
+export const isOwnedCatalog = (root, owned, catalog) => owned.some((o) => samePlace(root, o, catalog))
+
 export function readAssetCatalog(root, path, ignore = [], { owned = [] } = {}) {
   const notes = []
   const tokens = []
   // A catalog massimo writes (an xcassets output) is never read back as the app's own.
-  const catalogs = catalogPaths(root, path, ignore).filter((c) => !owned.includes(c))
+  const catalogs = catalogPaths(root, path, ignore).filter((c) => !isOwnedCatalog(root, owned, c))
   if (catalogs.length === 0) notes.push(`${path}: no asset catalog there`)
   const contrast = []
   for (const catalog of catalogs) {

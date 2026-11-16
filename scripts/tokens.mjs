@@ -33,7 +33,7 @@
 // is behind the CSS, and `build` never writes over a file it mirrors.
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { colorCss, colorModes, contrastRatio, parseColor, toHex } from './lib/color.mjs'
@@ -65,7 +65,7 @@ import { MOBILE_FORMATS, PLATFORM_OF_FORMAT, hasMassimoHeader, mobileEntries } f
 import { mobileOptions } from './lib/mobile-units.mjs'
 import { packageTargetOf } from './lib/platform-ios.mjs'
 import { adapterFor } from './lib/platforms.mjs'
-import { androidValueFiles, catalogColors, catalogPaths, readAndroidValues, readAssetCatalog } from './lib/readers-mobile.mjs'
+import { androidValueFiles, catalogColors, catalogPaths, isOwnedCatalog, readAndroidValues, readAssetCatalog, samePlace } from './lib/readers-mobile.mjs'
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
 import { runAudit } from './audit.mjs'
 import { FAMILIES, propose } from './lib/propose.mjs'
@@ -550,11 +550,21 @@ function draftFrom(found, config) {
   return { tokens: typed, losses, defaultMode: legacy.defaultMode }
 }
 
-// The asset catalogs massimo writes (xcassets outputs), as repo-relative paths.
-const ownedCatalogs = (config) => (config.tokens.outputs ?? []).filter((o) => o?.format === 'xcassets' && typeof o.path === 'string').map((o) => o.path.replace(/^\.\//, '').replace(/\/+$/, ''))
+// The asset catalogs massimo writes (xcassets outputs) or wrote (a catalog
+// mobile-outputs.json still lists, once its output is gone), as repo-relative
+// paths: never read back as the app's own.
+function ownedCatalogs(config, projectDir) {
+  const out = new Set((config.tokens.outputs ?? []).filter((o) => o?.format === 'xcassets' && typeof o.path === 'string').map((o) => o.path.replace(/^\.\//, '').replace(/\/+$/, '')))
+  const doc = projectDir ? readJson(ownedPath(projectDir), null) : null
+  for (const key of Object.keys(doc?.files ?? {})) {
+    const at = key.indexOf('.xcassets/')
+    if (at !== -1) out.add(key.slice(0, at + '.xcassets'.length))
+  }
+  return [...out]
+}
 
 // Every place the config names where the repo keeps design values, read.
-function readSources(root, config) {
+function readSources(root, config, projectDir = null) {
   const sources = []
   const styleFiles = expandGlobs(root, config.tokens.styleFiles, [], config.ignore)
   // In a Tailwind 4 repo, @theme's colour wiring is the tailwind4 output's to
@@ -582,7 +592,7 @@ function readSources(root, config) {
   if (config.tokens.figmaExport) sources.push({ kind: 'figma', ...readFigmaExport(root, config.tokens.figmaExport) })
   // A mobile app's own colours and sizes: asset catalogs and Android res/values (0.6.0).
   for (const [i, s] of (Array.isArray(config.tokens.mobileSources) ? config.tokens.mobileSources : []).entries()) {
-    if (s?.kind === 'xcassets') sources.push({ kind: 'xcassets', ...readAssetCatalog(root, s.path, config.ignore, { owned: ownedCatalogs(config) }) })
+    if (s?.kind === 'xcassets') sources.push({ kind: 'xcassets', ...readAssetCatalog(root, s.path, config.ignore, { owned: ownedCatalogs(config, projectDir) }) })
     else if (s?.kind === 'android-values') sources.push({ kind: 'android-values', ...readAndroidValues(root, androidValueFiles(root, s.include, config.ignore)) })
     else sources.push({ kind: 'xcassets', tokens: [], notes: [`tokens.mobileSources[${i}]: the kind ${JSON.stringify(s?.kind)} is not one these scripts read (xcassets, android-values)`] })
   }
@@ -1731,7 +1741,7 @@ const warnAll = (model) => {
 // The mobile outputs, as files plus what the build reports: what was not
 // carried over, notes, the step that wires each output into its project, and
 // the colour sets an owned catalog now duplicates in the app's own.
-function buildMobile(root, config, model, outputs) {
+function buildMobile(root, config, model, outputs, projectDir) {
   const options = mobileOptions(config)
   const plan = mobileEntries(model, options)
   if (plan.collisions.length > 0) {
@@ -1749,7 +1759,8 @@ function buildMobile(root, config, model, outputs) {
   const teamSets = new Map()
   for (const s of Array.isArray(config.tokens.mobileSources) ? config.tokens.mobileSources : []) {
     if (s?.kind !== 'xcassets') continue
-    for (const catalog of catalogPaths(root, s.path, config.ignore).filter((c) => !ownedCatalogs(config).includes(c))) for (const set of catalogColors(root, catalog)) if (!teamSets.has(set.name)) teamSets.set(set.name, set)
+    const owned = ownedCatalogs(config, projectDir)
+    for (const catalog of catalogPaths(root, s.path, config.ignore).filter((c) => !isOwnedCatalog(root, owned, c))) for (const set of catalogColors(root, catalog)) if (!teamSets.has(set.name)) teamSets.set(set.name, set)
   }
   const ownedCatalog = outputs.find((o) => o.format === 'xcassets')
   if (options.colors === 'catalog' && ownedCatalog) {
@@ -1894,7 +1905,7 @@ function buildOutputs(root, projectDir, config, tokens) {
     }[output.format]()
     out.push({ path: join(root, output.path), text })
   }
-  const mobile = mobileOutputs.length > 0 ? buildMobile(root, config, model, mobileOutputs) : null
+  const mobile = mobileOutputs.length > 0 ? buildMobile(root, config, model, mobileOutputs, projectDir) : null
   if (mobile) out.push(...mobile.files)
   out.push({ path: join(projectDir, 'tokens', 'figma-variables.json'), text: buildFigma(model, mobile?.codeNames ?? null) })
   out.push({ path: join(projectDir, 'kit', 'kit.css'), text: buildKit(model, tokens.origin, tokens.files, config) })
@@ -1909,72 +1920,119 @@ function buildOutputs(root, projectDir, config, tokens) {
 const ownedPath = (projectDir) => join(projectDir, 'tokens', 'mobile-outputs.json')
 const OWNED_FORMAT = 1
 
-// A path massimo may list: relative to the repo, with no step out of it.
-const plainPath = (p) => typeof p === 'string' && p !== '' && !isAbsolute(p) && !p.includes('\\') && !p.split('/').some((step) => step === '..' || step === '')
+// The repo the project sits in: the folder that holds .git, above the
+// config's folder when the config sits in a package of a monorepo, else
+// the config's folder. A mobile output may go anywhere in it.
+function repoTop(root) {
+  const start = realpathSync(root)
+  for (let at = start; ; at = dirname(at)) {
+    if (existsSync(join(at, '.git'))) return at
+    if (dirname(at) === at) return start
+  }
+}
+const insideTop = (top, real) => real === top || real.startsWith(`${top}${sep}`)
 
-function readOwned(projectDir) {
-  const doc = readJson(ownedPath(projectDir), null)
-  if (!doc) return { files: {} }
-  refuseNewer('mobileOutputs', doc.format, 'tokens/mobile-outputs.json')
-  // A key that leaves the repo is never massimo's to write over or remove.
-  const files = doc.files && typeof doc.files === 'object' ? Object.fromEntries(Object.entries(doc.files).filter(([p]) => plainPath(p))) : {}
-  return { files }
+// A path with every symlink on it followed, a dangling one too, so a link
+// to a file not made yet is judged by where it leads.
+function realOf(path, hops = 0) {
+  try {
+    return realpathSync(path)
+  } catch {
+    if (hops > 40) return path
+    let link = null
+    try {
+      link = lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null
+    } catch {
+      // not there at all
+    }
+    if (link !== null) return realOf(resolve(dirname(path), link), hops + 1)
+    return dirname(path) === path ? path : join(realOf(dirname(path), hops), basename(path))
+  }
 }
 
 // Whether a path, with every symlink on it followed, is inside the repo.
-function insideRoot(root, path) {
-  const top = realpathSync(root)
-  let at = path
-  while (!existsSync(at) && dirname(at) !== at) at = dirname(at)
-  const real = join(realpathSync(at), relative(at, path))
-  return real === top || real.startsWith(`${top}${sep}`)
+const insideRoot = (root, path) => insideTop(repoTop(root), realOf(path))
+
+// A path massimo may list: relative to the config's folder, with no empty
+// step, inside the repo as written.
+const plainPath = (root, p) => typeof p === 'string' && p !== '' && !isAbsolute(p) && !p.includes('\\') && !p.split('/').some((step) => step === '') && insideTop(repoTop(root), resolve(realpathSync(root), p))
+
+function readOwned(root, projectDir) {
+  const doc = readJson(ownedPath(projectDir), null)
+  if (!doc) return { files: {}, listed: false }
+  refuseNewer('mobileOutputs', doc.format, 'tokens/mobile-outputs.json')
+  // A key that leaves the repo is never massimo's to write over or remove.
+  const files = doc.files && typeof doc.files === 'object' ? Object.fromEntries(Object.entries(doc.files).filter(([p]) => plainPath(root, p))) : {}
+  return { files, listed: true }
 }
 
-// Files a build would write over that massimo did not write: listed in
-// mobile-outputs.json, opening with massimo's header, or a Contents.json
-// massimo is the author of count as its own.
-// A listed file whose bytes are no longer the ones massimo wrote (its hash
-// differs) was changed by hand, and is not written over either: `changed`.
+// A file's identity on disk, so two spellings of one file (a case-only
+// rename on a disk that ignores case, a hard link) count as one.
+const idOf = (path) => {
+  try {
+    const st = statSync(path)
+    return `${st.dev}:${st.ino}`
+  } catch {
+    return null
+  }
+}
+
+// The listed key a file on disk is: its own spelling, or another spelling of the same file.
+function listedKey(root, owned, path) {
+  const shown = rel(root, path)
+  if (shown in owned.files) return shown
+  const id = idOf(path)
+  return id === null ? null : Object.keys(owned.files).find((k) => idOf(join(root, k)) === id) ?? null
+}
+
+// Whether bytes are what massimo wrote: its hash, or its hash once git has
+// turned the line endings into CRLF (core.autocrlf), which is no hand edit.
+const lf = (buf) => Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
+const wroteThis = (buf, hash) => sha256(buf) === hash || sha256(lf(buf)) === hash
+
+// Files a build would write over that it cannot: `theirs`, which massimo
+// did not write; `changed`, listed but changed by hand since (the hash
+// differs); and `unlisted`, which carry massimo's header but are not on the
+// list, so whether they were changed by hand cannot be told. A file whose
+// text is already what the build writes is none of these.
 function notOwned(root, files, owned) {
-  const out = []
+  const theirs = []
   const changed = []
+  const unlisted = []
   for (const f of files.filter((x) => x.mobile)) {
     const shown = rel(root, f.path)
-    if (!existsSync(f.path)) continue
-    if (shown in owned.files) {
-      const now = readFileSync(f.path)
-      if (sha256(now) !== owned.files[shown] && now.toString('utf8') !== f.text) changed.push(shown)
+    if (!existsSync(f.path) || !statSync(f.path).isFile()) continue
+    const now = readFileSync(f.path)
+    if (lf(now).toString('utf8') === f.text) continue
+    const key = listedKey(root, owned, f.path)
+    if (key !== null) {
+      if (!wroteThis(now, owned.files[key])) changed.push(shown)
       continue
     }
-    const text = readFileSync(f.path, 'utf8')
+    const text = now.toString('utf8')
+    let ours = false
     if (f.path.endsWith('.json')) {
-      let author = null
       try {
-        author = JSON.parse(text)?.info?.author ?? null
+        ours = JSON.parse(text)?.info?.author === 'massimo'
       } catch {
         // not JSON: not massimo's
       }
-      if (author === 'massimo') continue
-    } else if (hasMassimoHeader(text.replace(/^<\?xml[^>]*\?>\s*/, ''))) continue
-    out.push(shown)
+    } else ours = hasMassimoHeader(text.replace(/^<\?xml[^>]*\?>\s*/, ''))
+    ;(ours ? unlisted : theirs).push(shown)
   }
-  return { theirs: out, changed }
+  return { theirs, changed, unlisted }
 }
 
 // Owned files the build no longer makes and that are still on disk:
-// `orphans` as massimo wrote them, and `changed`, changed by hand since,
-// which are the team's now and never removed.
+// `orphans` as massimo wrote them, and `changed`, changed by hand since (or
+// now a folder), which are the team's now and never removed.
 function orphansOf(root, files, owned) {
   const made = new Set(files.filter((f) => f.mobile).map((f) => rel(root, f.path)))
-  // On a disk that ignores case, an output renamed only in case is the old
-  // path too: the same file, never an orphan of itself.
-  const idOf = (path) => {
-    const st = statSync(path)
-    return `${st.dev}:${st.ino}`
-  }
-  const madeIds = new Set(files.filter((f) => f.mobile && existsSync(f.path)).map((f) => idOf(f.path)))
+  // Another spelling of a file the build writes (a case-only rename on a
+  // disk that ignores case) is that file, never an orphan of itself.
+  const madeIds = new Set(files.filter((f) => f.mobile).map((f) => idOf(f.path)).filter(Boolean))
   const left = Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p)) && insideRoot(root, join(root, p)) && !madeIds.has(idOf(join(root, p)))).sort(compare)
-  const same = (p) => sha256(readFileSync(join(root, p))) === owned.files[p]
+  const same = (p) => statSync(join(root, p)).isFile() && wroteThis(readFileSync(join(root, p)), owned.files[p])
   return { orphans: left.filter(same), changed: left.filter((p) => !same(p)) }
 }
 
@@ -1993,6 +2051,25 @@ function removeOwned(root, path) {
   }
 }
 
+// An output renamed only in case keeps its old name on a disk that ignores
+// case, since writing to the new spelling opens the old file. Before writing,
+// the file or folder massimo listed under the old spelling takes the new one.
+function renameCase(root, outputs, owned) {
+  for (const o of outputs) {
+    const path = join(root, String(o.path ?? '').replace(/^\.\//, '').replace(/\/+$/, ''))
+    const dir = dirname(path)
+    const name = basename(path)
+    if (!existsSync(path) || !existsSync(dir)) continue
+    const names = readdirSync(dir)
+    if (names.includes(name)) continue
+    const old = names.find((n) => n.toLowerCase() === name.toLowerCase())
+    if (!old) continue
+    const oldRel = rel(root, join(dir, old))
+    if (!Object.keys(owned.files).some((k) => k === oldRel || k.startsWith(`${oldRel}/`))) continue
+    renameSync(join(dir, old), path)
+  }
+}
+
 // A file kept on the list keeps the hash massimo wrote, never what is on disk now.
 function writeOwned(root, projectDir, files, keep, owned) {
   const entries = files.filter((f) => f.mobile).map((f) => [rel(root, f.path), sha256(f.text)])
@@ -2007,6 +2084,7 @@ function mobileLines(report, shown) {
   for (const s of report.skipped) lines.push(`  not carried over to ${s.output}: ${s.token} ${s.why}`)
   for (const n of report.notes) lines.push(`  note: ${n}`)
   for (const w of report.wire) lines.push(`  ${w.needed ? 'wire' : 'wired'}: ${w.step}`)
+  if (report.away?.length > 0) lines.push(`  left in place, since a symlink leads outside the repo: ${report.away.map(shown).join(', ')} (the owned catalog holds ${report.away.length === 1 ? 'that name' : 'those names'} too)`)
   if (report.duplicates.length > 0) {
     lines.push(`  duplicates: the owned catalog now holds ${report.duplicates.length} ${report.duplicates.length === 1 ? 'colour set' : 'colour sets'} the app's catalog also has (${report.duplicates.slice(0, 5).map(shown).join(', ')}${report.duplicates.length > 5 ? `, +${report.duplicates.length - 5} more` : ''}); after the user's OK, run build --dedupe to remove them from the app's catalog so each name exists once`)
   }
@@ -2342,7 +2420,7 @@ function main() {
 
   if (mode === 'extract') {
     // What the sources define, then the code's own values for the gaps.
-    const { sources } = readSources(root, config)
+    const { sources } = readSources(root, config, projectDir)
     const audit = runAudit(root, config, { raw: true })
     const proposal = propose({ sources, audit, fromCss, minCount: Number(flags['min-count'] ?? 2), styling: config.styling, defaultMode: config.tokens.defaultMode })
     proposal.tokens.push(...textStepParts(sources, proposal, config.tokens.tailwindConfig, config.styling ?? []))
@@ -2405,13 +2483,19 @@ function main() {
       process.stderr.write(`massimo: warn: the mirror is behind the style files, so this build is from the CSS as it was; run ${scriptCommand(root, projectDir, 'tokens', 'mirror')} first\n`)
     }
     // A mobile output never writes over a file massimo did not write.
-    const owned = mobile || existsSync(ownedPath(projectDir)) ? readOwned(projectDir) : null
+    const owned = mobile || existsSync(ownedPath(projectDir)) ? readOwned(root, projectDir) : null
     if (mobile) {
-      const outside = files.filter((f) => f.mobile && !insideRoot(root, f.path)).map((f) => rel(root, f.path))
-      if (outside.length > 0) fail(`these mobile files would be written outside the repo (a symlink on the way leads out), so the build writes nothing: ${outside.join(', ')}`)
-      const { theirs, changed } = notOwned(root, files, owned)
-      if (changed.length > 0) fail(`these files were changed by hand since massimo wrote them, so the build leaves them alone and writes nothing: ${changed.join(', ')}. Put the change in the tokens and restore the file (git checkout), or point the output at another path in tokens.outputs.`)
+      const top = repoTop(root)
+      const outside = files.filter((f) => f.mobile && !insideRoot(root, f.path))
+      if (outside.length > 0) {
+        const linked = outside.some((f) => insideTop(top, resolve(realpathSync(root), rel(root, f.path))))
+        fail(`these mobile files would be written outside the repo${linked ? ' (a symlink on the way leads out)' : ''}, so the build writes nothing: ${outside.map((f) => rel(root, f.path)).join(', ')}`)
+      }
+      const { theirs, changed, unlisted } = notOwned(root, files, owned)
+      if (changed.length > 0) fail(`these files were changed by hand since massimo wrote them, so the build leaves them alone and writes nothing: ${changed.join(', ')}. Put the change in the tokens, then delete it and build again, or point the output at another path in tokens.outputs.`)
+      if (unlisted.length > 0) fail(`these files carry massimo's header but are not in ${rel(root, ownedPath(projectDir))}, so the build cannot tell whether they were changed by hand and writes nothing: ${unlisted.join(', ')}. If they hold no hand edits, delete them and build again; else point the output at another path in tokens.outputs.`)
       if (theirs.length > 0) fail(`these files exist and massimo did not write them, so the build leaves them alone and writes nothing: ${theirs.join(', ')}. Point the output at a path of its own in tokens.outputs.`)
+      renameCase(root, config.tokens.outputs.filter((o) => MOBILE_FORMATS.includes(o?.format)), owned)
     }
     for (const f of files) writeText(f.path, f.text)
     const written = []
@@ -2426,16 +2510,17 @@ function main() {
       if (prune) for (const p of orphans) removeOwned(root, p)
       // A file changed by hand that the build no longer makes is the team's now: off the list.
       writeOwned(root, projectDir, files, prune ? [] : orphans, owned)
-      for (const p of changed) lines.push(`  ${p} was changed by hand since massimo wrote it, so it is left as it is and no longer listed`)
+      for (const p of changed) lines.push(`  ${p} ${statSync(join(root, p)).isFile() ? 'was changed by hand since massimo wrote it' : 'is a folder now'}, so it is left as it is and no longer listed`)
       if (orphans.length > 0) lines.push(prune ? `  removed ${orphans.length} ${orphans.length === 1 ? 'file' : 'files'} the build no longer makes: ${orphans.join(', ')}` : `  no longer built, still on disk: ${orphans.join(', ')}; run build --prune to remove ${orphans.length === 1 ? 'it' : 'them'}`)
     }
+    if (mobile) {
+      // A colour set the repo reaches through a symlink lives somewhere else, maybe shared: it is left alone, and never offered to --dedupe.
+      mobile.away = mobile.duplicates.filter((folder) => !insideRoot(root, join(root, folder)))
+      mobile.duplicates = mobile.duplicates.filter((folder) => !mobile.away.includes(folder))
+    }
     if (mobile && truthy(flags.dedupe)) {
-      // A colour set the repo reaches through a symlink lives somewhere else, maybe shared: it is left alone.
-      const away = mobile.duplicates.filter((folder) => !insideRoot(root, join(root, folder)))
-      const gone = mobile.duplicates.filter((folder) => !away.includes(folder))
-      for (const folder of gone) rmSync(join(root, folder), { recursive: true, force: true })
-      if (gone.length > 0) lines.push(`  removed ${gone.length} ${gone.length === 1 ? 'colour set' : 'colour sets'} from the app's catalog that the owned catalog now holds`)
-      if (away.length > 0) lines.push(`  left in place, since a symlink leads outside the repo: ${away.join(', ')}`)
+      for (const folder of mobile.duplicates) rmSync(join(root, folder), { recursive: true, force: true })
+      if (mobile.duplicates.length > 0) lines.push(`  removed ${mobile.duplicates.length} ${mobile.duplicates.length === 1 ? 'colour set' : 'colour sets'} from the app's catalog that the owned catalog now holds`)
       mobile.duplicates = []
     }
     if (mobile) lines.unshift(...mobileLines(mobile, (p) => p))
@@ -2469,7 +2554,7 @@ function main() {
   // A draft read with --source has no outputs of its own: only its contrast is checked.
   const stale = typeof flags.source === 'string' ? [] : files.filter((f) => !existsSync(f.path) || readFileSync(f.path, 'utf8') !== f.text)
   // Mobile files massimo wrote that the build no longer makes.
-  const left = typeof flags.source !== 'string' && (mobile || existsSync(ownedPath(projectDir))) ? orphansOf(root, files, readOwned(projectDir)) : { orphans: [], changed: [] }
+  const left = typeof flags.source !== 'string' && (mobile || existsSync(ownedPath(projectDir))) ? orphansOf(root, files, readOwned(root, projectDir)) : { orphans: [], changed: [] }
   const orphans = [...left.orphans, ...left.changed].sort(compare)
   for (const p of orphans) process.stderr.write(`  orphan: ${p} (massimo wrote it and no longer builds it)\n`)
   // With tokens.mirror on, the mirror itself is checked against the style files too.
