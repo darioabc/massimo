@@ -30,7 +30,8 @@ export const MATERIAL_SLOTS = [
 const f = floatText
 const n = numberText
 const stringLiteral = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$')}"`
-const doc = (text, pad) => (text ? [`${pad}/** ${text.replace(/\*\//g, '* /').replace(/\n/g, ' ')} */`] : [])
+// Kotlin block comments nest, so a description can neither close the KDoc (*/) nor open another one (/*).
+const doc = (text, pad) => (text ? [`${pad}/** ${text.replace(/\*\//g, '* /').replace(/\/\*/g, '/ *').replace(/\n/g, ' ')} */`] : [])
 
 // The package a Kotlin file's path names: what follows kotlin/ or java/ in a source set.
 export function packageOfPath(path) {
