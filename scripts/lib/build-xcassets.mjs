@@ -50,8 +50,14 @@ export function xcassetsPlan(entries, teamSets = new Map()) {
   const colors = []
   const skipped = []
   const notes = []
+  const unsafe = []
   for (const e of entries.filter((x) => x.type === 'color')) {
     const name = assetName(e.t)
+    // A name is folders and a colour set name: a step that is empty, . or .. would write outside the catalog.
+    if (name.startsWith('/') || name.includes('\\') || name.split('/').some((step) => !step.trim() || step === '.' || step === '..')) {
+      unsafe.push({ token: e.t.name, name })
+      continue
+    }
     const team = teamSets.get(name)
     if (e.t.mobile?.contrast || (team && hasHighContrast(team))) {
       const reason = `has high-contrast entries${team ? ` in ${team.folder}` : ''}, which massimo does not model yet`
@@ -70,7 +76,7 @@ export function xcassetsPlan(entries, teamSets = new Map()) {
     if (e.value.color.converted) notes.push(`${e.t.name}: converted from ${e.value.color.converted} to sRGB for the catalog`)
     colors.push({ entry: e, name })
   }
-  return { colors, skipped, notes, collisions: collisions(colors.map((c) => ({ name: c.name, token: c.entry.t.name }))) }
+  return { colors, skipped, notes, unsafe, collisions: collisions(colors.map((c) => ({ name: c.name, token: c.entry.t.name }))) }
 }
 
 // Every file of the catalog at `dir` (repo-relative), as { path, text }.

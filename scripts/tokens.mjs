@@ -34,7 +34,7 @@
 
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { colorCss, colorModes, contrastRatio, parseColor, toHex } from './lib/color.mjs'
 import { DESIGN_MD, designMd } from './lib/designmd.mjs'
@@ -1756,6 +1756,7 @@ function buildMobile(root, config, model, outputs) {
     throw new Error(`tokens.outputs has an xcassets output (${ownedCatalog.path}) while colours are in catalog mode, where the app's own catalog stays the colour source: remove that output, or set tokens.mobile.colors to "tokens"`)
   }
   const xc = xcassetsPlan(plan.entries, teamSets)
+  if (ownedCatalog && xc.unsafe.length > 0) throw new Error(xc.unsafe.map((u) => `${u.token}: the colour set name "${u.name}" climbs out of the catalog or has an empty step; give it folders and a name with no "..", "." or empty step ($extensions.massimo.mobile.asset)`).join('\n'))
   if (ownedCatalog && xc.collisions.length > 0) throw new Error(xc.collisions.map((c) => `${c.tokens.join(' and ')} would both be the colour set ${c.name}; rename one of them`).join('\n'))
   const files = []
   const report = { skipped: [], notes: [], wire: [], duplicates: [] }
@@ -1908,11 +1909,25 @@ function buildOutputs(root, projectDir, config, tokens) {
 const ownedPath = (projectDir) => join(projectDir, 'tokens', 'mobile-outputs.json')
 const OWNED_FORMAT = 1
 
+// A path massimo may list: relative to the repo, with no step out of it.
+const plainPath = (p) => typeof p === 'string' && p !== '' && !isAbsolute(p) && !p.includes('\\') && !p.split('/').some((step) => step === '..' || step === '')
+
 function readOwned(projectDir) {
   const doc = readJson(ownedPath(projectDir), null)
   if (!doc) return { files: {} }
   refuseNewer('mobileOutputs', doc.format, 'tokens/mobile-outputs.json')
-  return { files: doc.files && typeof doc.files === 'object' ? doc.files : {} }
+  // A key that leaves the repo is never massimo's to write over or remove.
+  const files = doc.files && typeof doc.files === 'object' ? Object.fromEntries(Object.entries(doc.files).filter(([p]) => plainPath(p))) : {}
+  return { files }
+}
+
+// Whether a path, with every symlink on it followed, is inside the repo.
+function insideRoot(root, path) {
+  const top = realpathSync(root)
+  let at = path
+  while (!existsSync(at) && dirname(at) !== at) at = dirname(at)
+  const real = join(realpathSync(at), relative(at, path))
+  return real === top || real.startsWith(`${top}${sep}`)
 }
 
 // Files a build would write over that massimo did not write: listed in
@@ -1941,7 +1956,7 @@ function notOwned(root, files, owned) {
 // Owned files the build no longer makes and that are still on disk.
 function orphansOf(root, files, owned) {
   const made = new Set(files.filter((f) => f.mobile).map((f) => rel(root, f.path)))
-  return Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p))).sort(compare)
+  return Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p)) && insideRoot(root, join(root, p))).sort(compare)
 }
 
 // Remove a file and the folders above it that it leaves empty, up to the repo root.
@@ -2372,6 +2387,8 @@ function main() {
     // A mobile output never writes over a file massimo did not write.
     const owned = mobile || existsSync(ownedPath(projectDir)) ? readOwned(projectDir) : null
     if (mobile) {
+      const outside = files.filter((f) => f.mobile && !insideRoot(root, f.path)).map((f) => rel(root, f.path))
+      if (outside.length > 0) fail(`these mobile files would be written outside the repo (a symlink on the way leads out), so the build writes nothing: ${outside.join(', ')}`)
       const theirs = notOwned(root, files, owned)
       if (theirs.length > 0) fail(`these files exist and massimo did not write them, so the build leaves them alone and writes nothing: ${theirs.join(', ')}. Point the output at a path of its own in tokens.outputs.`)
     }
@@ -2390,8 +2407,12 @@ function main() {
       if (orphans.length > 0) lines.push(prune ? `  removed ${orphans.length} ${orphans.length === 1 ? 'file' : 'files'} the build no longer makes: ${orphans.join(', ')}` : `  no longer built, still on disk: ${orphans.join(', ')}; run build --prune to remove ${orphans.length === 1 ? 'it' : 'them'}`)
     }
     if (mobile && truthy(flags.dedupe)) {
-      for (const folder of mobile.duplicates) rmSync(join(root, folder), { recursive: true, force: true })
-      if (mobile.duplicates.length > 0) lines.push(`  removed ${mobile.duplicates.length} ${mobile.duplicates.length === 1 ? 'colour set' : 'colour sets'} from the app's catalog that the owned catalog now holds`)
+      // A colour set the repo reaches through a symlink lives somewhere else, maybe shared: it is left alone.
+      const away = mobile.duplicates.filter((folder) => !insideRoot(root, join(root, folder)))
+      const gone = mobile.duplicates.filter((folder) => !away.includes(folder))
+      for (const folder of gone) rmSync(join(root, folder), { recursive: true, force: true })
+      if (gone.length > 0) lines.push(`  removed ${gone.length} ${gone.length === 1 ? 'colour set' : 'colour sets'} from the app's catalog that the owned catalog now holds`)
+      if (away.length > 0) lines.push(`  left in place, since a symlink leads outside the repo: ${away.join(', ')}`)
       mobile.duplicates = []
     }
     if (mobile) lines.unshift(...mobileLines(mobile, (p) => p))
