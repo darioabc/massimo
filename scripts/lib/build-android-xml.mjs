@@ -8,7 +8,7 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { resourceName } from './mobile-names.mjs'
+import { collisions, resourceName } from './mobile-names.mjs'
 import { inSrgb, numberText } from './mobile-units.mjs'
 import { moduleValueFiles, xmlResources } from './readers-mobile.mjs'
 
@@ -34,24 +34,33 @@ export function androidPlan(entries, options) {
     if (v.color) {
       const day = hex(v.color)
       if (day.clipped || v.color.space === 'display-p3') notes.push(`${e.t.name}: Android colour resources are sRGB, so its ${v.color.space === 'display-p3' ? 'Display P3' : v.color.converted ?? ''} value was converted${day.clipped ? ' and clipped' : ''}`)
-      resources.push({ type: 'color', name, line: `<color name="${name}">${day.text}</color>` })
-      if (e.dark) resources.push({ type: 'color', name, night: true, line: `<color name="${name}">${hex(e.dark.color).text}</color>` })
+      resources.push({ token: e.t.name, type: 'color', name, line: `<color name="${name}">${day.text}</color>` })
+      if (e.dark) resources.push({ token: e.t.name, type: 'color', name, night: true, line: `<color name="${name}">${hex(e.dark.color).text}</color>` })
     } else if (v.points !== undefined) {
       const u = e.group === 'Typography' ? options.fontUnit : 'dp'
-      resources.push({ type: 'dimen', name, line: `<dimen name="${name}">${numberText(v.points)}${u}</dimen>` })
+      resources.push({ token: e.t.name, type: 'dimen', name, line: `<dimen name="${name}">${numberText(v.points)}${u}</dimen>` })
     } else if (v.number !== undefined) {
-      resources.push({ type: 'dimen', name, line: `<item name="${name}" format="float" type="dimen">${numberText(v.number)}</item>` })
+      resources.push({ token: e.t.name, type: 'dimen', name, line: `<item name="${name}" format="float" type="dimen">${numberText(v.number)}</item>` })
     } else if (v.ms !== undefined) {
-      resources.push({ type: 'integer', name, line: `<integer name="${name}">${Math.round(v.ms)}</integer>` })
+      resources.push({ token: e.t.name, type: 'integer', name, line: `<integer name="${name}">${Math.round(v.ms)}</integer>` })
     } else if (v.text) {
-      resources.push({ type: 'dimen', name: `${name}_size`, line: `<dimen name="${name}_size">${numberText(v.text.size)}${options.fontUnit}</dimen>` })
-      if (v.text.lineHeight !== null) resources.push({ type: 'dimen', name: `${name}_line_height`, line: `<dimen name="${name}_line_height">${numberText(v.text.lineHeight)}${options.fontUnit}</dimen>` })
+      resources.push({ token: e.t.name, type: 'dimen', name: `${name}_size`, line: `<dimen name="${name}_size">${numberText(v.text.size)}${options.fontUnit}</dimen>` })
+      if (v.text.lineHeight !== null) resources.push({ token: e.t.name, type: 'dimen', name: `${name}_line_height`, line: `<dimen name="${name}_line_height">${numberText(v.text.lineHeight)}${options.fontUnit}</dimen>` })
       notes.push(`${e.t.name}: Android resources carry its size and line height; its family, weight and letter spacing are in the compose output`)
     } else {
       skipped.push({ token: e.t.name, why: `is a ${e.type}, which has no Android value resource; the compose output carries it` })
     }
   }
-  return { resources, skipped, notes }
+  // Two tokens that end up with one name and type (text.body's text_body_size
+  // and a text.body-size dimension, say) would not compile.
+  const clashes = []
+  for (const night of [false, true]) {
+    for (const type of ['color', 'dimen', 'integer']) {
+      const list = resources.filter((r) => r.type === type && Boolean(r.night) === night).map((r) => ({ name: r.name, token: r.token }))
+      for (const c of collisions(list)) if (!clashes.some((x) => x.type === type && x.name === c.name)) clashes.push({ ...c, type })
+    }
+  }
+  return { resources, skipped, notes, collisions: clashes }
 }
 
 // Names the module already declares that the output would declare again:

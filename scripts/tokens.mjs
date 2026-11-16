@@ -1818,6 +1818,7 @@ function buildMobile(root, config, model, outputs) {
       report.wire.push(adapter.tokens.wire(path, r.libraries))
     } else if (output.format === 'android-xml') {
       const xml = androidPlan(plan.entries, options)
+      if (xml.collisions.length > 0) throw new Error(xml.collisions.map((c) => `${c.tokens.join(' and ')} would both be the ${c.type} ${c.name} in ${path}; rename one of them`).join('\n'))
       const clashes = resourceClashes(root, path, xml.resources)
       if (clashes.length > 0) {
         throw new Error(`the android-xml output would declare resources the module already declares, which does not compile:\n${clashes.map((c) => `  ${c.type} ${c.name} in ${c.file}`).join('\n')}\nRename those tokens, or remove the module's own resource once massimo_tokens.xml declares it (after the user's OK)`)
