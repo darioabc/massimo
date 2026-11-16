@@ -162,8 +162,11 @@ export function inSrgb(c) {
 // Whether a colour's components sit outside 0..1 in its own space.
 export const outOfRange = (c) => [c.r, c.g, c.b].some((n) => n < -0.0005 || n > 1.0005)
 
-// 0..1 as an 8-bit byte when it is one (within the precision a token keeps), else null.
+// 0..1 as an 8-bit byte when it is one (within the precision a token keeps),
+// else null. A component outside 0..1 is never a byte: clamping it would
+// write another colour.
 export function byteOf(n) {
   const v = n * 255
-  return Math.abs(v - Math.round(v)) < 0.015 ? Math.min(255, Math.max(0, Math.round(v))) : null
+  const byte = Math.round(v)
+  return byte >= 0 && byte <= 255 && Math.abs(v - byte) < 0.015 ? byte : null
 }
