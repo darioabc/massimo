@@ -36,13 +36,13 @@ function put(root, files) {
   return root
 }
 // A scratch repo: a fixture's files (or none), a config, a token set and more files.
-function repo({ fixture = null, config = {}, tokens = null, files = {} } = {}) {
+function repo({ fixture = null, config = {}, tokens = null, files = {}, defaultMode = 'light' } = {}) {
   const root = join(scratch(), 'repo')
   mkdirSync(root, { recursive: true })
   if (fixture) cpSync(join(FIXTURES, fixture), root, { recursive: true })
   put(root, files)
   writeConfig(root, { version: 1, minScripts: '0.6.0', projectDir: 'ds', ...config })
-  if (tokens) for (const [name, text] of Object.entries(writeTokenSet({ tokens }))) put(root, { [join('ds', 'tokens', name)]: text })
+  if (tokens) for (const [name, text] of Object.entries(writeTokenSet({ tokens, defaultMode }))) put(root, { [join('ds', 'tokens', name)]: text })
   return root
 }
 const writeConfig = (root, config) => writeFileSync(join(root, 'massimo.config.json'), JSON.stringify(config, null, 2))
@@ -306,7 +306,7 @@ test('a token set whose default mode is dark keeps its light values: light is th
   const surface = tok(['color', 'surface'], 'color', srgb('#111111'), { modes: { light: srgb('#ffffff') } })
   const config = tokensMode([XCASSETS_OUT, COMPOSE_OUT, XML_OUT])
   config.tokens.defaultMode = 'dark'
-  const root = repo({ config, tokens: [surface] })
+  const root = repo({ config, tokens: [surface], defaultMode: 'dark' })
   const r = tokensRun(root, ['build'])
   assert.equal(r.status, 0, r.stderr)
   assert.doesNotMatch(r.stdout, /light value is not carried over/)

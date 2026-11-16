@@ -52,7 +52,7 @@ A named family is written with `Font.custom(_:size:relativeTo:)`, and must be bu
 
 ## Modes, dark and dynamic colour
 
-The default mode is light and `dark` is dark, on both platforms: an asset catalog's dark appearance, a trait-based provider, the Compose dark instance and `values-night/`. A token with a dark value has it in every mobile output. Only colours change with the appearance on a phone, so a dark value on any other token, and every mode other than the default and dark, is not carried over, and the build says so.
+The default mode is light and `dark` is dark, on both platforms. A token set whose default mode is dark (`tokens.defaultMode`) keeps its `light` mode as the light value and its default as the dark one. Either way, the dark value goes in an asset catalog's dark appearance, a trait-based provider, the Compose dark instance and `values-night/`. A token with a dark value has it in every mobile output. Only colours change with the appearance on a phone, so a dark value on any other token, and every mode other than the default and dark, is not carried over, and the build says so.
 
 Material 3 apps usually switch to `dynamicLightColorScheme` and `dynamicDarkColorScheme` on Android 12 and later, with a static scheme as the fallback. The compose output writes only the static schemes and leaves the app's switch as it is.
 

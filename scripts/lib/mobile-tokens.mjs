@@ -130,9 +130,15 @@ export function mobileEntries(model, options) {
   const entries = []
   const skipped = []
   const renamed = []
-  const otherModes = model.modes.filter((m) => m !== 'default' && model.modeLabel(m) !== 'dark')
-  const hasDark = model.modes.some((m) => model.modeLabel(m) === 'dark')
-  const dark = model.modes.find((m) => model.modeLabel(m) === 'dark')
+  // The day value and the dark one. A set whose default mode is dark keeps
+  // its light mode as the day value and its default as the dark one, so a
+  // phone in light appearance never shows the dark colours.
+  const labelled = (label) => model.modes.find((m) => m !== 'default' && model.modeLabel(m) === label) ?? null
+  const darkDefault = model.modeLabel('default') === 'dark'
+  const day = darkDefault ? labelled('light') ?? 'default' : 'default'
+  const dark = darkDefault ? (day === 'default' ? null : 'default') : labelled('dark')
+  const hasDark = dark !== null
+  const otherModes = model.modes.filter((m) => m !== day && m !== dark)
   for (const t of model.tokens) {
     if (t.cssOnly) {
       skipped.push({ token: t.name, why: 'is a CSS-only value' })
@@ -142,7 +148,7 @@ export function mobileEntries(model, options) {
     const notes = []
     let value
     try {
-      value = plainValue(model, t, type, 'default', options)
+      value = plainValue(model, t, type, day, options)
     } catch (err) {
       skipped.push({ token: t.name, why: err.message })
       continue
