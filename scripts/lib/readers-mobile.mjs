@@ -321,7 +321,8 @@ export function readAndroidValues(root, files) {
             continue
           }
           if (!['dp', 'dip', 'sp'].includes(m[2])) {
-            notes.push(`${file}: ${r.name} is in ${m[2]}, which does not scale with the screen; left out`)
+            // px is a screen pixel; pt, mm and in are physical sizes, which have no fixed dp value.
+            notes.push(`${file}: ${r.name} is in ${m[2]}, ${m[2] === 'px' ? 'which does not scale with the screen' : 'a physical unit with no fixed dp value'}; left out`)
             continue
           }
           css = `${Number(m[1])}px`
