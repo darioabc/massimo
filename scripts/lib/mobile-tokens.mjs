@@ -26,11 +26,18 @@ export function hasMassimoHeader(text) {
 const SYSTEM_FAMILIES = /^(?:system-ui|-apple-system|blinkmacsystemfont|sf pro(?: text| display)?|\.sf\b.*|sans-serif|ui-sans-serif)$/i
 const ROBOTO = /^roboto$/i
 
-// A family list as its first family, and whether that is the system font.
+// CSS's generic families that name a design of the system font: SwiftUI's
+// Font.Design, and Compose's FontFamily where Android has one.
+const GENERIC_DESIGNS = { 'ui-monospace': 'monospaced', monospace: 'monospaced', 'ui-serif': 'serif', serif: 'serif', 'ui-rounded': 'rounded' }
+
+// A family list as its first family, whether that is the system font, and
+// the system font's design a generic family names (monospaced, serif,
+// rounded), which is the system font too, with nothing to bundle.
 export function familyOf(value) {
   const list = Array.isArray(value) ? value : String(value ?? '').split(',')
   const first = String(list[0] ?? '').trim().replace(/^(['"])(.*)\1$/, '$2')
-  return { name: first, system: SYSTEM_FAMILIES.test(first), roboto: ROBOTO.test(first) }
+  const design = GENERIC_DESIGNS[first.toLowerCase()] ?? null
+  return { name: first, system: Boolean(design) || SYSTEM_FAMILIES.test(first), roboto: ROBOTO.test(first), design }
 }
 
 const WEIGHT_WORDS = { thin: 100, hairline: 100, 'extra-light': 200, 'ultra-light': 200, light: 300, normal: 400, regular: 400, book: 400, medium: 500, 'semi-bold': 600, 'demi-bold': 600, bold: 700, 'extra-bold': 800, 'ultra-bold': 800, black: 900, heavy: 900, 'extra-black': 950, 'ultra-black': 950 }

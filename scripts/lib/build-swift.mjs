@@ -85,7 +85,7 @@ export function buildSwift(plan, options, ctx, header) {
     else if (v.weight !== undefined) add(e.group, [...head, `${pad}${pub}static let ${name}: Font.Weight = .${weightName(v.weight)}`])
     else if (v.family) {
       if (!v.family.system) notes.push(`${e.t.name}: the family ${v.family.name} must be bundled with the app and registered (UIAppFonts) before SwiftUI can use it`)
-      add(e.group, [...head, `${pad}${pub}static let ${name}: String = ${stringLiteral(v.family.system ? 'system' : v.family.name)}`])
+      add(e.group, [...head, `${pad}${pub}static let ${name}: String = ${stringLiteral(v.family.design ?? (v.family.system ? 'system' : v.family.name))}`])
     } else if (v.ms !== undefined) add(e.group, [...head, `${pad}${pub}static let ${name}: TimeInterval = ${n(v.ms / 1000)}`])
     else if (v.curve) add(e.group, [...head, `${pad}${pub}static let ${name}: (x1: Double, y1: Double, x2: Double, y2: Double) = (${v.curve.map(n).join(', ')})`])
     else if (v.text) {
@@ -102,7 +102,8 @@ export function buildSwift(plan, options, ctx, header) {
       const weight = t.weight ? weightName(t.weight) : null
       let font
       if (!t.family || t.family.system) {
-        font = style.style ? `Font.system(.${style.style})${weight ? `.weight(.${weight})` : ''}` : `Font.system(size: ${n(t.size)}${weight ? `, weight: .${weight}` : ''})`
+        const design = t.family?.design ? `, design: .${t.family.design}` : ''
+        font = style.style ? `Font.system(.${style.style}${design})${weight ? `.weight(.${weight})` : ''}` : `Font.system(size: ${n(t.size)}${weight ? `, weight: .${weight}` : ''}${design})`
         if (style.style) notes.push(`${e.t.name}: the system font takes the size of the ${style.style} text style and scales with it; the token's ${n(t.size)}pt is kept in size`)
       } else {
         notes.push(`${e.t.name}: the family ${t.family.name} must be bundled with the app and registered (UIAppFonts) before SwiftUI can use it`)
