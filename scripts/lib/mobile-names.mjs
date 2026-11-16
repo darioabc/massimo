@@ -64,10 +64,16 @@ export const GROUPS = {
 }
 
 // The group a token sits in for the code outputs: its first path segment's,
-// else by its type, else Other.
+// else by its type, else Other. Every colour sits in Colors, since that is
+// where both code outputs declare colours: one under another group keeps
+// that group's word (`text.primary` is `textPrimary`), so it does not meet
+// `border.primary` there. A token under `color` that is not a colour (an
+// opacity, a gradient) goes by its type, keeping the word `color`.
 export function groupOf(path, type) {
   const first = String(path[0] ?? '')
-  if (GROUPS[first]) return { name: GROUPS[first], dropFirst: true }
+  const mapped = GROUPS[first]
+  if (type === 'color') return { name: 'Colors', dropFirst: mapped === 'Colors' }
+  if (mapped && mapped !== 'Colors') return { name: mapped, dropFirst: true }
   const byType = { color: 'Colors', dimension: 'Sizes', fontFamily: 'Typography', fontWeight: 'Typography', typography: 'Typography', duration: 'Motion', cubicBezier: 'Motion', shadow: 'Shadows', border: 'Borders', number: 'Numbers', gradient: 'Gradients' }[type]
   return { name: byType ?? 'Other', dropFirst: false }
 }

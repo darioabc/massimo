@@ -139,9 +139,11 @@ test('a colour outside the color group keeps its group word in the shared Colors
   const r = tokensRun(root, ['build'])
   assert.equal(r.status, 0, r.stderr)
   const swift = read(root, SWIFT_OUT.path)
-  for (const name of ['textPrimary', 'borderPrimary', 'textDefault', 'borderDefault']) assert.equal(swift.split(`static let ${name} =`).length - 1, 1, name)
+  // Once in the UIKit branch of the #if each colour built from its components has.
+  for (const name of ['textPrimary', 'borderPrimary', 'textDefault', 'borderDefault']) assert.equal(swift.split(`static let ${name} = Color(uiColor:`).length - 1, 1, name)
   assert.doesNotMatch(swift, /static let primary =/)
-  assert.match(read(root, COMPOSE_OUT.path), /public val textPrimary: Color,\n {4}public val borderPrimary: Color,/)
+  const kt = read(root, COMPOSE_OUT.path)
+  for (const name of ['textPrimary', 'borderPrimary', 'textDefault', 'borderDefault']) assert.equal(kt.split(`public val ${name}: Color,`).length - 1, 1, name)
   const clash = repo({ config: tokensMode([SWIFT_OUT]), tokens: [tok(['color', 'text-primary'], 'color', srgb('#111111')), tok(['text', 'primary'], 'color', srgb('#222222'))] })
   const c = tokensRun(clash, ['build'])
   assert.equal(c.status, 1)
