@@ -185,11 +185,21 @@ const storiesNeed040 = (raw) => {
 }
 const outputsOf = (raw) => (Array.isArray(raw?.tokens?.outputs) ? raw.tokens.outputs : [])
 
+// The keys 0.3.0 added. Older scripts ignore them, so a config that sets one
+// to anything but its default needs 0.3.0 (the adopt and tokens skills set it).
+export const KEYS_0_3_0 = ['tokens.mirror', 'tokens.inventory', 'audit.kinds', 'audit.exempt', 'audit.arbitrary', 'audit.primitives', 'audit.failWhenBehind', 'graph.keys', 'graph.taxonomy', 'graph.strictFaults', 'graph.kinds', 'graph.edges', 'graph.header', 'stories.manifest', 'stories.pages', 'stories.frames', 'stories.componentless']
+const sets030 = (key) => (raw) => {
+  const [group, name] = key.split('.')
+  const block = raw?.[group]
+  return Boolean(block) && typeof block === 'object' && name in block && JSON.stringify(block[name]) !== JSON.stringify(DEFAULTS[group][name])
+}
+
 // What each release added that older scripts would ignore or misread: a row
 // per key, with the scripts version that reads it. A config that uses a key
 // sets `minScripts` to that version at least, so older scripts refuse it by
 // name instead of ignoring it.
 export const SCRIPTS_NEEDS = [
+  ...KEYS_0_3_0.map((key) => ({ version: '0.3.0', what: key, test: sets030(key) })),
   { version: '0.4.0', what: 'the 0.4.0 stories keys', test: storiesNeed040 },
   { version: '0.6.0', what: 'platforms', test: (raw) => raw?.platforms !== undefined },
   { version: '0.6.0', what: 'a mobile token output (swift, xcassets, compose or android-xml)', test: (raw) => outputsOf(raw).some((o) => MOBILE_OUTPUT_FORMATS.includes(o?.format)) },
