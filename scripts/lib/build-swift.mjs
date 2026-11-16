@@ -48,6 +48,10 @@ function nsColor(c) {
 //                  declarations are public and catalogs read from .module
 //   ctx.catalog    Map token name -> colour set name the code reads, or null
 //                  when colours are built from their components
+//   ctx.only       whether every colour must come from ctx.catalog; else a
+//                  colour not in it is built from its components
+//   ctx.skip       Map token name -> why it is left out, for colours that
+//                  can neither be read nor built without losing something
 //   ctx.mode       'catalog' or 'tokens', for the notes
 export function buildSwift(plan, options, ctx, header) {
   const { entries } = plan
@@ -67,8 +71,13 @@ export function buildSwift(plan, options, ctx, header) {
     const head = doc(e.t.description, pad)
     const v = e.value
     if (v.color) {
-      const asset = ctx.catalog ? ctx.catalog.get(e.t.name) : null
-      if (ctx.catalog && !asset) {
+      const left = ctx.skip?.get(e.t.name)
+      if (left) {
+        skipped.push({ token: e.t.name, why: left })
+        continue
+      }
+      const asset = ctx.catalog ? ctx.catalog.get(e.t.name) ?? null : null
+      if (ctx.only && !asset) {
         skipped.push({ token: e.t.name, why: ctx.mode === 'catalog' ? 'is not a colour set in the app\'s catalog, which is the colour source in catalog mode: add it to the catalog, or set tokens.mobile.colors to "tokens"' : 'is not in the catalog the xcassets output writes' })
         continue
       }

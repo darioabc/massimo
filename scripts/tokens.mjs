@@ -1797,15 +1797,31 @@ function buildMobile(root, config, model, outputs) {
       report.wire.push(adapter.tokens.wire(path, repoFiles, read, block))
     } else if (output.format === 'swift') {
       let catalog = null
+      let only = false
+      const leave = new Map()
       if (options.colors === 'catalog') {
         catalog = new Map(plan.entries.filter((e) => e.type === 'color').map((e) => [e.t.name, assetName(e.t)]).filter(([, name]) => teamSets.has(name)))
-      } else if (ownedCatalog) {
-        // A colour the owned catalog leaves out stays in the app's catalog, under the same name.
-        const kept = plan.entries.filter((e) => xc.skipped.some((s) => s.token === e.t.name)).map((e) => [e.t.name, assetName(e.t)]).filter(([, name]) => teamSets.has(name))
-        catalog = new Map([...xc.colors.map((c) => [c.entry.t.name, c.name]), ...kept])
+        only = true
+      } else {
+        // A colour the owned catalog would leave out (high contrast, a variant
+        // a token cannot hold) stays in the app's catalog, under the same
+        // name, and is read from there, owned catalog or not, so none of its
+        // entries is lost. With no catalog holding it, it is left out rather
+        // than built from its light and dark values alone.
+        const kept = []
+        for (const s of xc.skipped) {
+          const e = plan.entries.find((x) => x.t.name === s.token)
+          const name = assetName(e.t)
+          if (teamSets.has(name)) {
+            kept.push([s.token, name])
+            if (!ownedCatalog) report.notes.push(`${s.token} ${s.reason}; the Swift output reads it from the app's catalog by name, so they are kept`)
+          } else leave.set(s.token, `${s.reason}, and no catalog this build reads holds it; it is left out rather than built without them`)
+        }
+        catalog = new Map([...(ownedCatalog ? xc.colors.map((c) => [c.entry.t.name, c.name]) : []), ...kept])
+        only = Boolean(ownedCatalog)
       }
       const target = packageTargetOf(path, repoFiles, read)
-      const r = buildSwift(plan, options, { inPackage: Boolean(target), catalog, mode: options.colors }, HEADER)
+      const r = buildSwift(plan, options, { inPackage: Boolean(target), catalog, only, skip: leave, mode: options.colors }, HEADER)
       made = [{ path, text: r.text }]
       skip(r.skipped, path)
       report.notes.push(...r.notes)
