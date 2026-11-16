@@ -7,8 +7,9 @@
 // <project>/tokens/mobile-outputs.json.
 //
 // A colour whose colour set in the app's own catalog has high-contrast
-// entries is skipped: the token set cannot hold them yet, so the colour stays
-// in the app's catalog as it is, the rest build, and the build lists it.
+// entries, or any other entry a token cannot hold (a Display P3 gamut,
+// another idiom), is skipped: the colour stays in the app's catalog as it
+// is, the rest build, and the build lists it.
 
 import { byteOf, outOfRange } from './mobile-units.mjs'
 import { assetName, collisions } from './mobile-names.mjs'
@@ -53,7 +54,17 @@ export function xcassetsPlan(entries, teamSets = new Map()) {
     const name = assetName(e.t)
     const team = teamSets.get(name)
     if (e.t.mobile?.contrast || (team && hasHighContrast(team))) {
-      skipped.push({ token: e.t.name, why: `has high-contrast entries${team ? ` in ${team.folder}` : ''}, which massimo does not model yet; it stays in the app's catalog as it is` })
+      const reason = `has high-contrast entries${team ? ` in ${team.folder}` : ''}, which massimo does not model yet`
+      skipped.push({ token: e.t.name, reason, why: `${reason}; it stays in the app's catalog as it is` })
+      continue
+    }
+    // Entries a token cannot hold (a Display P3 gamut, another idiom): the
+    // owned set would not carry them, so the app's set stays whole and is
+    // never listed as a duplicate for --dedupe to remove.
+    const variants = team ? team.variants ?? [] : Array.isArray(e.t.mobile?.variants) ? e.t.mobile.variants : []
+    if (variants.length > 0) {
+      const reason = `has entries massimo does not model yet (${variants.join(', ')})${team ? ` in ${team.folder}` : ''}`
+      skipped.push({ token: e.t.name, reason, why: `${reason}; it stays in the app's catalog as it is` })
       continue
     }
     if (e.value.color.converted) notes.push(`${e.t.name}: converted from ${e.value.color.converted} to sRGB for the catalog`)

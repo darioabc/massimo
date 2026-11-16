@@ -137,7 +137,7 @@ function readColorSet(path, folder, name) {
   try {
     doc = readJson(join(path, 'Contents.json'))
   } catch (err) {
-    return { name, folder, values, notes: [`${folder}: Contents.json cannot be read (${err.message})`] }
+    return { name, folder, values, notes: [`${folder}: Contents.json cannot be read (${err.message})`], variants: [] }
   }
   const colors = Array.isArray(doc?.colors) ? doc.colors : []
   // One idiom is read: universal, else iphone, else the first there is.
@@ -147,14 +147,22 @@ function readColorSet(path, folder, name) {
   const others = idioms.filter((i) => i !== idiom)
   if (idiom !== 'universal' && idiom !== undefined) notes.push(`${folder}: has no universal entries; read the ${idiom} ones${others.length > 0 ? `, and the ${others.join(', ')} ones are not read` : ''}`)
   else if (others.length > 0) notes.push(`${folder}: also has entries for ${others.join(', ')}, which are not read`)
+  // What the set holds that a token cannot, so a catalog massimo writes
+  // would not carry it: such a set stays the app's, whole (see xcassetsPlan).
+  const variants = new Set(others.map((i) => `the ${i} idiom`))
   // An entry refused with a reason already given, so the set is not called empty as well.
   let refused = 0
+  const gamuts = new Set()
   const entries = colors.filter((c) => idiomOf(c) === idiom)
   for (const entry of entries) {
-    if (entry['display-gamut'] && entry['display-gamut'] !== 'sRGB') continue
+    if (entry['display-gamut'] && entry['display-gamut'] !== 'sRGB') {
+      gamuts.add(entry['display-gamut'])
+      continue
+    }
     const which = appearanceOf(entry)
     if (!which) {
       notes.push(`${folder}: has an entry for an appearance massimo does not read (${JSON.stringify(entry.appearances)})`)
+      variants.add(`an entry for the appearance ${JSON.stringify(entry.appearances)}`)
       refused++
       continue
     }
@@ -162,6 +170,7 @@ function readColorSet(path, folder, name) {
     const read = colorEntryCss(entry.color)
     if (read.why) {
       notes.push(`${folder}: the ${which} entry ${read.why}`)
+      variants.add(`a ${which} entry it cannot read`)
       refused++
       continue
     }
@@ -169,9 +178,14 @@ function readColorSet(path, folder, name) {
     values[which] = read.css
     forms[which] = read.form
   }
+  for (const g of gamuts) {
+    notes.push(`${folder}: has ${g} gamut entries, which are not read; the sRGB ones are`)
+    variants.add(`${g} gamut`)
+  }
+  if (values.light && values.any && values.light !== values.any) variants.add('an any-appearance entry that differs from the light one')
   // How its components are written (0xRR, 102 or 0.400), so a build writes them back the same way.
   const form = forms.light ?? forms.any ?? null
-  return { name, folder, values, notes, form, refused }
+  return { name, folder, values, notes, form, refused, variants: [...variants] }
 }
 
 // Whether a colour set has high-contrast entries, which the token set cannot
@@ -200,6 +214,7 @@ export function readAssetCatalog(root, path, ignore = [], { owned = [] } = {}) {
       }
       if (set.values.light && set.values.any && set.values.light !== set.values.any) notes.push(`${set.folder}: its any-appearance entry (${set.values.any}) differs from its light one (${set.values.light}); the token takes the light one`)
       const mobile = { asset: set.name, catalog, ...(set.form && set.form !== 'hex' ? { form: set.form } : {}) }
+      if (set.variants.length > 0) mobile.variants = set.variants
       if (hasHighContrast(set)) {
         mobile.contrast = Object.fromEntries([['light', set.values['contrast-light']], ['dark', set.values['contrast-dark']]].filter(([, v]) => v))
         contrast.push(set.name)
