@@ -58,13 +58,13 @@ export function detectAndroid(files, read) {
   if (ui.length === 0) ui.push('views')
   const modules = settingsFile ? settingsModules(read(settingsFile) ?? '').map((m) => ({ ...m, path: join(root, m.dir) })) : []
   const dsModules = modules.filter((m) => m.dir.split('/').some((seg) => DS_SEGMENT.test(seg)))
-  // The folder all design-system modules share: one module, or a group of them.
+  // Each design-system module on its own (never the folder they share, which
+  // would hold every other core module too), the one named for a design
+  // system first.
   let designSystem = null
   if (dsModules.length > 0) {
-    const parts = dsModules.map((m) => m.path.split('/'))
-    const common = []
-    for (let i = 0; parts.every((p) => i < p.length && p[i] === parts[0][i]); i++) common.push(parts[0][i])
-    designSystem = { path: common.join('/') || root, modules: dsModules.map((m) => m.name) }
+    const named = dsModules.find((m) => /design[-_]?system/i.test(m.dir.split('/').pop())) ?? dsModules[0]
+    designSystem = { path: named.path, paths: dsModules.map((m) => m.path), modules: dsModules.map((m) => m.name) }
   }
   const values = inRoot.filter((f) => /\/src\/main\/res\/values(?:-night)?\/[^/]+\.xml$/.test(f) && /<(?:color|dimen)\b/.test(read(f) ?? ''))
   const kotlin = inRoot.filter((f) => f.endsWith('.kt') && !f.endsWith('.gradle.kts'))
@@ -83,11 +83,11 @@ export function detectAndroid(files, read) {
 // The config block detect proposes, globs relative to the block's root.
 export function androidDefaults(e) {
   const rel = (p) => (e.root === '.' ? p : p.slice(e.root.length + 1))
-  const ds = e.designSystem ? rel(e.designSystem.path) : null
+  const ds = e.designSystem ? (e.designSystem.paths ?? [e.designSystem.path]).map(rel) : []
   return {
     root: e.root,
     ui: e.ui,
-    components: { include: ds ? [`${ds}/**/src/main/**/*.kt`] : [], exclude: ['**/src/test/**', '**/src/androidTest/**', '**/src/testFixtures/**'] },
+    components: { include: ds.map((d) => `${d}/**/src/main/**/*.kt`), exclude: ['**/src/test/**', '**/src/androidTest/**', '**/src/testFixtures/**'] },
     consumers: ['**/src/main/**/*.kt', ...(e.ui.includes('views') ? ['**/src/main/res/layout/**/*.xml'] : [])],
   }
 }
@@ -101,7 +101,8 @@ function outputModule(e) {
     counts.set(module, (counts.get(module) ?? 0) + 1)
   }
   const ranked = [...counts].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).map(([m]) => m)
-  const ds = ranked.find((m) => e.designSystem && (m === e.designSystem.path || m.startsWith(`${e.designSystem.path}/`)))
+  const paths = e.designSystem ? e.designSystem.paths ?? [e.designSystem.path] : []
+  const ds = ranked.find((m) => paths.some((p) => m === p || m.startsWith(`${p}/`)))
   return ds ?? (e.designSystem?.modules?.length === 1 ? e.designSystem.path : null) ?? ranked[0] ?? (e.root === '.' ? 'app' : `${e.root}/app`)
 }
 
@@ -115,7 +116,8 @@ function namespaceOf(module, read) {
 // design-system modules (or of every module, with none), and a Kotlin file
 // and a res folder in the module that holds the most of them.
 export function androidTokens(e, files, read) {
-  const dsValues = e.designSystem ? e.values.filter((f) => f.startsWith(`${e.designSystem.path}/`)) : []
+  const dsPaths = e.designSystem ? e.designSystem.paths ?? [e.designSystem.path] : []
+  const dsValues = e.values.filter((f) => dsPaths.some((p) => f.startsWith(`${p}/`)))
   const chosen = dsValues.length > 0 ? dsValues : e.values
   const modules = [...new Set(chosen.map((f) => f.slice(0, f.indexOf('/src/main/res/'))))].sort(compare)
   const sources = modules.length > 0 ? [{ kind: 'android-values', include: modules.map((m) => `${m}/src/main/res/values*/*.xml`) }] : []
