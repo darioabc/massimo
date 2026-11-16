@@ -103,7 +103,8 @@ function outputModule(e) {
   const ranked = [...counts].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).map(([m]) => m)
   const paths = e.designSystem ? e.designSystem.paths ?? [e.designSystem.path] : []
   const ds = ranked.find((m) => paths.some((p) => m === p || m.startsWith(`${p}/`)))
-  return ds ?? (e.designSystem?.modules?.length === 1 ? e.designSystem.path : null) ?? ranked[0] ?? (e.root === '.' ? 'app' : `${e.root}/app`)
+  // With no values in a design-system module yet, the one detect names (the module named for a design system first).
+  return ds ?? e.designSystem?.path ?? ranked[0] ?? (e.root === '.' ? 'app' : `${e.root}/app`)
 }
 
 // The module's namespace from its build file, which is the package its code uses.

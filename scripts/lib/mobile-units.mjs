@@ -9,6 +9,8 @@
 // A length in em follows the font size it sits in, so it has no fixed value
 // on either platform: it is reported as not carried over.
 
+import { srgbOfComponents } from './color.mjs'
+
 // The options every mobile builder reads, with their defaults. `colors` is
 // "catalog" when a source lists an asset catalog, else "tokens".
 export function mobileOptions(config) {
@@ -143,8 +145,13 @@ export function colorValue(v, parseColor) {
       return { space: 'srgb', r, g, b, a, converted: v.colorSpace }
     }
   }
-  // Any other space (hsl, hwb, lab, lch…) through its hex, which never holds
-  // the alpha: a DTCG colour keeps that apart, in `alpha`.
+  // Any other space DTCG names (hsl, hwb, lab, lch, xyz, a98-rgb…) from its
+  // components, so one outside sRGB keeps that (a hex is clipped, and optional).
+  if (v && typeof v === 'object' && Array.isArray(v.components)) {
+    const rgb = srgbOfComponents(v.colorSpace, v.components)
+    if (rgb) return { space: 'srgb', r: rgb[0], g: rgb[1], b: rgb[2], a: typeof v.alpha === 'number' ? v.alpha : 1, converted: v.colorSpace }
+  }
+  // Else through its hex, which never holds the alpha: a DTCG colour keeps that apart, in `alpha`.
   const css = typeof v === 'string' ? v : v && typeof v === 'object' && typeof v.hex === 'string' ? v.hex : null
   const c = css ? parseColor(css) : null
   if (!c) return null

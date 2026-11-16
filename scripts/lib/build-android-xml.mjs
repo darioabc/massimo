@@ -8,9 +8,9 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collisions, resourceName } from './mobile-names.mjs'
+import { collisions, resourceName, resourceRename } from './mobile-names.mjs'
 import { inSrgb, numberText } from './mobile-units.mjs'
-import { moduleValueFiles, xmlResources } from './readers-mobile.mjs'
+import { moduleColorFiles, moduleValueFiles, xmlResources } from './readers-mobile.mjs'
 
 const hex = (c) => {
   const s = inSrgb(c)
@@ -28,14 +28,26 @@ export function androidPlan(entries, options) {
   const resources = []
   const skipped = []
   const notes = []
+  // What happened to a colour on its way to sRGB, for the day value and the dark one alike.
+  const said = (e, c, h, which) => {
+    if (!h.clipped && c.space !== 'display-p3') return
+    const converted = c.space === 'display-p3' || c.converted
+    notes.push(`${e.t.name}: Android colour resources are sRGB, so its ${which}${c.space === 'display-p3' ? 'Display P3' : c.converted ?? 'extended sRGB'} value was ${converted ? `converted${h.clipped ? ' and clipped' : ''}` : 'clipped'}`)
+  }
   for (const e of entries) {
     const name = resourceName(e.t)
+    const renamed = resourceRename(e.t)
+    if (renamed) notes.push(`${e.t.name}: ${renamed}, so its Android resource is ${name}`)
     const v = e.value
     if (v.color) {
       const day = hex(v.color)
-      if (day.clipped || v.color.space === 'display-p3') notes.push(`${e.t.name}: Android colour resources are sRGB, so its ${v.color.space === 'display-p3' ? 'Display P3' : v.color.converted ?? ''} value was converted${day.clipped ? ' and clipped' : ''}`)
+      said(e, v.color, day, '')
       resources.push({ token: e.t.name, type: 'color', name, line: `<color name="${name}">${day.text}</color>` })
-      if (e.dark) resources.push({ token: e.t.name, type: 'color', name, night: true, line: `<color name="${name}">${hex(e.dark.color).text}</color>` })
+      if (e.dark) {
+        const night = hex(e.dark.color)
+        said(e, e.dark.color, night, 'dark ')
+        resources.push({ token: e.t.name, type: 'color', name, night: true, line: `<color name="${name}">${night.text}</color>` })
+      }
     } else if (v.points !== undefined) {
       const u = e.group === 'Typography' ? options.fontUnit : 'dp'
       resources.push({ token: e.t.name, type: 'dimen', name, line: `<dimen name="${name}">${numberText(v.points)}${u}</dimen>` })
@@ -80,6 +92,11 @@ export function resourceClashes(root, resDir, resources, owned = new Set()) {
       const type = r.type === 'dimen' || r.type === 'color' || r.type === 'integer' ? r.type : null
       if (type && wanted.has(`${type}:${r.name}`)) out.push({ type, name: r.name, file })
     }
+  }
+  // A colour state list in res/color*/ is a colour resource named for its file.
+  for (const file of moduleColorFiles(root, resDir)) {
+    const name = file.slice(file.lastIndexOf('/') + 1, -'.xml'.length)
+    if (wanted.has(`color:${name}`)) out.push({ type: 'color', name, file })
   }
   return out
 }

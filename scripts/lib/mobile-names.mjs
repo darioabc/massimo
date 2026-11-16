@@ -112,9 +112,17 @@ export function assetName(t) {
 // `color.brand.primary` is `color_brand_primary` and never meets a name the
 // app's own colors.xml already uses for itself. A name that starts with a
 // digit takes `token_` in front.
+// A Java keyword is no resource name either: R.dimen.default would not compile.
+const JAVA_RESERVED = new Set(['abstract', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char', 'class', 'const', 'continue', 'default', 'do', 'double', 'else', 'enum', 'extends', 'false', 'final', 'finally', 'float', 'for', 'goto', 'if', 'implements', 'import', 'instanceof', 'int', 'interface', 'long', 'native', 'new', 'null', 'package', 'private', 'protected', 'public', 'return', 'short', 'static', 'strictfp', 'super', 'switch', 'synchronized', 'this', 'throw', 'throws', 'transient', 'true', 'try', 'void', 'volatile', 'while', '_'])
 export function resourceName(t) {
   const name = snakeCase(t.path.filter((p) => p !== '$root'))
-  return /^\d/.test(name) || !name ? `token_${name}` : name
+  return /^\d/.test(name) || !name || JAVA_RESERVED.has(name) ? `token_${name}` : name
+}
+
+// Why a token's resource name is not its path in snake_case, or null.
+export function resourceRename(t) {
+  const name = snakeCase(t.path.filter((p) => p !== '$root'))
+  return JAVA_RESERVED.has(name) ? `"${name}" is a reserved word in Java` : null
 }
 
 // Collisions inside one scope: [{ name, tokens: [a, b] }] for every name two

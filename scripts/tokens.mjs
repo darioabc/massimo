@@ -563,6 +563,18 @@ function ownedCatalogs(config, projectDir) {
   return [...out]
 }
 
+// A file a mobile output wrote (listed in mobile-outputs.json, or a
+// massimo_tokens.xml with massimo's header): never read back as the app's.
+function massimoWrote(root, projectDir, file) {
+  if (projectDir && file in (readJson(ownedPath(projectDir), null)?.files ?? {})) return true
+  if (!/(?:^|\/)massimo_tokens\.xml$/.test(file)) return false
+  try {
+    return hasMassimoHeader(readFileSync(join(root, file), 'utf8').replace(/^<\?xml[^>]*\?>\s*/, ''))
+  } catch {
+    return false
+  }
+}
+
 // Every place the config names where the repo keeps design values, read.
 function readSources(root, config, projectDir = null) {
   const sources = []
@@ -593,7 +605,7 @@ function readSources(root, config, projectDir = null) {
   // A mobile app's own colours and sizes: asset catalogs and Android res/values (0.6.0).
   for (const [i, s] of (Array.isArray(config.tokens.mobileSources) ? config.tokens.mobileSources : []).entries()) {
     if (s?.kind === 'xcassets') sources.push({ kind: 'xcassets', ...readAssetCatalog(root, s.path, config.ignore, { owned: ownedCatalogs(config, projectDir) }) })
-    else if (s?.kind === 'android-values') sources.push({ kind: 'android-values', ...readAndroidValues(root, androidValueFiles(root, s.include, config.ignore)) })
+    else if (s?.kind === 'android-values') sources.push({ kind: 'android-values', ...readAndroidValues(root, androidValueFiles(root, s.include, config.ignore).filter((f) => !massimoWrote(root, projectDir, f))) })
     else sources.push({ kind: 'xcassets', tokens: [], notes: [`tokens.mobileSources[${i}]: the kind ${JSON.stringify(s?.kind)} is not one these scripts read (xcassets, android-values)`] })
   }
   return { sources, styleFiles }

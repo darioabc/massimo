@@ -24,38 +24,42 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Immutable
-public data class DesignTokensColors(
-    public val brandPrimary: Color,
-    public val surface: Color,
-    public val primary: Color,
-    public val onPrimary: Color,
-    public val default: Color,
-    public val accent: Color,
-    public val vivid: Color,
-    public val scrim: Color,
-)
+public abstract class DesignTokensColors {
+    public abstract val brandPrimary: Color
+    public abstract val surface: Color
+    public abstract val primary: Color
+    public abstract val onPrimary: Color
+    public abstract val default: Color
+    public abstract val accent: Color
+    public abstract val vivid: Color
+    public abstract val scrim: Color
+}
 
-public val LightDesignTokensColors: DesignTokensColors = DesignTokensColors(
-    brandPrimary = Color(0xFF6200EE),
-    surface = Color(0xFFFFFFFF),
-    primary = Color(0xFF6200EE),
-    onPrimary = Color(0xFFFFFFFF),
-    default = Color(0xFF000000),
-    accent = Color(red = 1f, green = 0.4f, blue = 0.2f, alpha = 1f, colorSpace = ColorSpaces.DisplayP3),
-    vivid = Color(0xFFFF0000),
-    scrim = Color(0x80000000),
-)
+private object LightColors : DesignTokensColors() {
+    override val brandPrimary: Color = Color(0xFF6200EE)
+    override val surface: Color = Color(0xFFFFFFFF)
+    override val primary: Color = Color(0xFF6200EE)
+    override val onPrimary: Color = Color(0xFFFFFFFF)
+    override val default: Color = Color(0xFF000000)
+    override val accent: Color = Color(red = 1f, green = 0.4f, blue = 0.2f, alpha = 1f, colorSpace = ColorSpaces.DisplayP3)
+    override val vivid: Color = Color(0xFFFF0000)
+    override val scrim: Color = Color(0x80000000)
+}
 
-public val DarkDesignTokensColors: DesignTokensColors = DesignTokensColors(
-    brandPrimary = Color(0xFFBB86FC),
-    surface = Color(0xFF1C1C1E),
-    primary = Color(0xFFBB86FC),
-    onPrimary = Color(0xFFFFFFFF),
-    default = Color(0xFF000000),
-    accent = Color(red = 1f, green = 0.4f, blue = 0.2f, alpha = 1f, colorSpace = ColorSpaces.DisplayP3),
-    vivid = Color(0xFFFF0000),
-    scrim = Color(0x80000000),
-)
+public val LightDesignTokensColors: DesignTokensColors = LightColors
+
+private object DarkColors : DesignTokensColors() {
+    override val brandPrimary: Color = Color(0xFFBB86FC)
+    override val surface: Color = Color(0xFF1C1C1E)
+    override val primary: Color = Color(0xFFBB86FC)
+    override val onPrimary: Color = Color(0xFFFFFFFF)
+    override val default: Color = Color(0xFF000000)
+    override val accent: Color = Color(red = 1f, green = 0.4f, blue = 0.2f, alpha = 1f, colorSpace = ColorSpaces.DisplayP3)
+    override val vivid: Color = Color(0xFFFF0000)
+    override val scrim: Color = Color(0x80000000)
+}
+
+public val DarkDesignTokensColors: DesignTokensColors = DarkColors
 
 public val LocalDesignTokensColors: ProvidableCompositionLocal<DesignTokensColors> = staticCompositionLocalOf { LightDesignTokensColors }
 

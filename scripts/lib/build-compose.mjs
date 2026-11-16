@@ -44,15 +44,17 @@ export function packageOfPath(path) {
   return m ? m[1].split('/').join('.') : null
 }
 
-// A colour as Kotlin. Compose's sRGB holds 0..1, so a component outside it
-// (an oklch or extended sRGB colour out of gamut) is clipped, and `clip`
-// records what was, for the note.
+// A colour as Kotlin. Compose's sRGB and Display P3 hold 0..1 (older Compose
+// throws on anything else), so a component outside it (an oklch or extended
+// sRGB colour out of gamut, a wide P3 one) is clipped, and `clip` records
+// what was, for the note, when it was more than the rounding a token keeps.
+const clamp = (n) => Math.min(1, Math.max(0, n))
 function color(raw, imports, clip = null) {
   let c = raw
-  if (raw.space !== 'display-p3' && outOfRange(raw)) {
-    const s = inSrgb(raw)
+  if ([raw.r, raw.g, raw.b, raw.a].some((x) => x < 0 || x > 1)) {
+    const s = raw.space === 'display-p3' ? { r: clamp(raw.r), g: clamp(raw.g), b: clamp(raw.b), a: clamp(raw.a) } : inSrgb(raw)
     c = { ...raw, r: s.r, g: s.g, b: s.b, a: s.a }
-    if (clip) clip.from = raw.converted ?? 'extended sRGB'
+    if (clip && outOfRange(raw)) clip.from = raw.space === 'display-p3' ? 'Display P3' : raw.converted ?? 'extended sRGB'
   }
   const bytes = [c.a, c.r, c.g, c.b].map(byteOf)
   if (c.space !== 'display-p3' && bytes.every((b) => b !== null)) return `Color(0x${bytes.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('')})`
@@ -90,7 +92,7 @@ export function buildCompose(plan, options, ctx, header) {
     const v = e.value
     const head = doc(e.t.description, pad)
     const clip = { from: null }
-    const clipNote = () => clip.from && notes.push(`${e.t.name}: Compose colours are sRGB here, so its ${clip.from} value was converted and clipped`)
+    const clipNote = () => clip.from && notes.push(clip.from === 'Display P3' ? `${e.t.name}: Compose colours hold 0 to 1, so its Display P3 value was clipped` : `${e.t.name}: Compose colours are sRGB here, so its ${clip.from} value was converted and clipped`)
     if (v.color) {
       colors.push({ e, name, light: color(v.color, imports, clip), dark: color((e.dark ?? v).color, imports, clip) })
       if (clip.from) clipNote()
@@ -149,9 +151,12 @@ export function buildCompose(plan, options, ctx, header) {
   const body = []
   if (colors.length > 0) {
     for (const i of ['androidx.compose.runtime.Immutable', 'androidx.compose.runtime.staticCompositionLocalOf', 'androidx.compose.runtime.ProvidableCompositionLocal', 'androidx.compose.runtime.Composable', 'androidx.compose.runtime.ReadOnlyComposable', 'androidx.compose.runtime.CompositionLocalProvider', 'androidx.compose.foundation.isSystemInDarkTheme']) imports.add(i)
-    body.push('@Immutable', `public data class ${ns}Colors(`, ...colors.map((c) => `${pad}public val ${c.name}: Color,`), ')', '')
+    // An abstract class with an object per appearance: a constructor takes
+    // two JVM slots per colour, and past 127 colours the JVM refuses the class.
+    body.push('@Immutable', `public abstract class ${ns}Colors {`, ...colors.map((c) => `${pad}public abstract val ${c.name}: Color`), '}', '')
     for (const [which, key] of [['Light', 'light'], ['Dark', 'dark']]) {
-      body.push(`public val ${which}${ns}Colors: ${ns}Colors = ${ns}Colors(`, ...colors.map((c) => `${pad}${c.name} = ${c[key]},`), ')', '')
+      body.push(`private object ${which}Colors : ${ns}Colors() {`, ...colors.map((c) => `${pad}override val ${c.name}: Color = ${c[key]}`), '}', '')
+      body.push(`public val ${which}${ns}Colors: ${ns}Colors = ${which}Colors`, '')
     }
     body.push(`public val Local${ns}Colors: ProvidableCompositionLocal<${ns}Colors> = staticCompositionLocalOf { Light${ns}Colors }`, '')
     const slots = colors.filter((c) => MATERIAL_SLOTS.includes(c.name))

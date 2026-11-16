@@ -337,6 +337,8 @@ export function readAndroidValues(root, files) {
   const night = []
   const ordered = [...files].sort((a, b) => Number(qualifierOf(a) === 'dark') - Number(qualifierOf(b) === 'dark') || compare(a, b))
   const refs = []
+  // Every colour and dimen values/ declares, read or not, so a reference to one left out says so.
+  const declared = new Set()
   for (const file of ordered) {
     const qualifier = qualifierOf(file)
     let text = ''
@@ -352,6 +354,7 @@ export function readAndroidValues(root, files) {
       continue
     }
     for (const r of resources) {
+      if (qualifier === '') declared.add(`${r.type}:${r.name}`)
       const value = r.value ?? ''
       let css = null
       let group = 'color'
@@ -434,8 +437,8 @@ export function readAndroidValues(root, files) {
     const { end, cycle } = follow(t)
     if (end) continue
     const ref = refOf.get(t)
-    const direct = !byKey.has(keyOf(ref))
-    notes.push(`${t.source}: ${t.mobile.resource} points at ${shown(ref)}, ${cycle ? 'and the references go round in a cycle' : direct ? 'which no file read here declares' : 'which is left out'}; left out${direct || cycle ? '' : ' too'}`)
+    const missing = !declared.has(keyOf(ref))
+    notes.push(`${t.source}: ${t.mobile.resource} points at ${shown(ref)}, ${cycle ? 'and the references go round in a cycle' : missing ? 'which no file read here declares' : 'which is left out'}; left out${missing || cycle ? '' : ' too'}`)
   }
   const out = new Set(refs.filter(({ t }) => !follow(t).end).map(({ t }) => t))
   for (const t of out) {
@@ -451,12 +454,31 @@ export function readAndroidValues(root, files) {
     if (out.has(t)) continue
     const target = isObject(value) ? byKey.get(keyOf(value.ref)) : null
     if (isObject(value) && !target) {
-      notes.push(`${file}: ${t.mobile.resource} points at ${shown(value.ref)}, which no file read here declares`)
+      notes.push(`${file}: ${t.mobile.resource} points at ${shown(value.ref)}, ${declared.has(keyOf(value.ref)) ? 'which is left out; its night value is left out too' : 'which no file read here declares'}`)
       continue
     }
     const v = target ? `{${target.path.join('.')}}` : value
-    if (v !== t.value) t.modes.dark = v
+    if (v !== t.value) {
+      t.modes.dark = v
+      t.nightFile = file
+    }
   }
+  // A night value that leads back to itself through the others (b is @color/a
+  // at night, a is @color/b) has no colour: its night value is left out.
+  const byPath = new Map(tokens.map((t) => [t.path.join('.'), t]))
+  const nightOf = (t) => ('dark' in t.modes ? t.modes.dark : t.value)
+  for (const t of tokens.filter((x) => 'dark' in x.modes)) {
+    const seen = [t]
+    let at = byPath.get(String(nightOf(t)).slice(1, -1))
+    while (at && !seen.includes(at)) {
+      seen.push(at)
+      at = byPath.get(String(nightOf(at)).slice(1, -1))
+    }
+    if (at !== t) continue
+    notes.push(`${t.nightFile}: ${t.mobile.resource}: its night value points round in a cycle (${seen.map((x) => `@${x.path[0] === 'color' ? 'color' : 'dimen'}/${x.mobile.resource}`).sort(compare).join(', ')}); its night value is left out`)
+    delete t.modes.dark
+  }
+  for (const t of tokens) delete t.nightFile
   for (const [dir, count] of [...skipped].sort((a, b) => compare(a[0], b[0]))) {
     notes.push(`${dir}: ${count} ${count === 1 ? 'value is' : 'values are'} for a qualifier massimo does not model yet (only values and values-night are read)`)
   }
@@ -469,6 +491,28 @@ export function androidValueFiles(root, include, ignore = []) {
   const globs = [].concat(include ?? []).filter((g) => typeof g === 'string')
   if (globs.length === 0) return []
   return expandGlobs(root, globs, [], ignore).filter((f) => /(?:^|\/)res\/values[^/]*\/[^/]+\.xml$/.test(f))
+}
+
+// The res folders of the module a res folder belongs to: <module>/src/<set>/res.
+function moduleResDirs(root, resDir) {
+  const at = resDir.replace(/\/+$/, '').indexOf('/src/')
+  const module = at === -1 ? resDir.replace(/\/res\/?$/, '') : resDir.slice(0, at)
+  const src = join(root, module, 'src')
+  const sets = existsSync(src) && statSync(src).isDirectory() ? readdirSync(src) : []
+  return sets.length > 0 ? sets.map((s) => `${module}/src/${s}/res`) : [resDir.replace(/\/+$/, '')]
+}
+
+// Every colour state list of that module: <module>/src/<set>/res/color*/*.xml.
+export function moduleColorFiles(root, resDir) {
+  const out = []
+  for (const res of moduleResDirs(root, resDir)) {
+    const abs = join(root, res)
+    if (!existsSync(abs)) continue
+    for (const dir of readdirSync(abs).filter((d) => /^color(?:-|$)/.test(d)).sort(compare)) {
+      for (const f of readdirSync(join(abs, dir)).filter((n) => n.endsWith('.xml')).sort(compare)) out.push(`${res}/${dir}/${f}`)
+    }
+  }
+  return out
 }
 
 // Every values XML file of the module a res folder belongs to, for the clash

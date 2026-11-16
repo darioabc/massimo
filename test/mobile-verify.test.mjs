@@ -6,13 +6,14 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { iosWire } from '../scripts/lib/platform-ios.mjs'
 import { swiftColorLiterals } from '../scripts/lib/lang-swift.mjs'
 import { kotlinColorLiterals } from '../scripts/lib/lang-kotlin.mjs'
+import { readAndroidValues } from '../scripts/lib/readers-mobile.mjs'
 import { CATALOG, COMPOSE_OUT, detect, EXTRA, OWNED, colorset, entry, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
 
 const listed = (root) => JSON.parse(read(root, 'ds/tokens/mobile-outputs.json')).files
@@ -614,4 +615,145 @@ test('the colour counts keep hard-coded components wrapped in a conversion or pa
   assert.deepEqual(swiftColorLiterals(swift).map((f) => f.line), [1, 2, 3])
   const kotlin = 'val a = Color.rgb((0.1f * 255).toInt(), 0, 0)\nval b = Color(18 / 255f, 52 / 255f, 86 / 255f)\nval c = Color.rgb(r, g, b)\n'
   assert.deepEqual(kotlinColorLiterals(kotlin).map((f) => f.line), [1, 2])
+})
+
+// ── The Android outputs and readers ─────────────────────────────────────────
+
+const androidBuild = (tokens, outputs = [COMPOSE_OUT, XML_OUT], extra = {}) => {
+  const root = repo({ config: tokensMode(outputs, extra), tokens })
+  const r = tokensRun(root, ['build'])
+  return { root, r }
+}
+const composeColor = (kt, name) => new RegExp(String.raw`override val ${name}: Color = (Color\([^\n]*\))`).exec(kt)?.[1] ?? null
+const floats = (text) => [...text.matchAll(/(?:red|green|blue) = (-?[\d.]+)f/g)].map((m) => Number(m[1]))
+
+// L1
+test('Compose never writes a colour component outside 0..1: a colour just past the sRGB edge, and a Display P3 one', () => {
+  const { root, r } = androidBuild([
+    tok(['color', 'orange', '200'], 'color', { colorSpace: 'oklch', components: [0.901, 0.076, 70.697] }),
+    tok(['color', 'indigo', '50'], 'color', { colorSpace: 'oklch', components: [0.962, 0.018, 272.314] }),
+    tok(['color', 'wide'], 'color', { colorSpace: 'display-p3', components: [1.2, -0.1, 0.5] }),
+  ], [COMPOSE_OUT])
+  assert.equal(r.status, 0, r.stderr)
+  const kt = read(root, COMPOSE_OUT.path)
+  for (const name of ['orange200', 'indigo50', 'wide']) {
+    const c = composeColor(kt, name)
+    assert.ok(c, name)
+    assert.ok(floats(c).every((n) => n >= 0 && n <= 1), `${name}: ${c}`)
+  }
+  assert.match(r.stdout, /color\.wide: Compose colours hold 0 to 1, so its Display P3 value was clipped/)
+})
+
+// L2
+test('android-xml says when a dark value was converted or clipped, as it does for the day value', () => {
+  const { r } = androidBuild([
+    tok(['color', 'night'], 'color', srgb('#336699'), { modes: { dark: { colorSpace: 'oklch', components: [0.7, 0.3, 30] } } }),
+    tok(['color', 'ext'], 'color', { colorSpace: 'srgb', components: [1.1, -0.05, 0.2] }),
+  ], [XML_OUT])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /note: color\.night: Android colour resources are sRGB, so its dark oklch value was converted and clipped/)
+  assert.match(r.stdout, /note: color\.ext: Android colour resources are sRGB, so its extended sRGB value was clipped/)
+  assert.doesNotMatch(r.stdout, /its {2}value/)
+})
+
+// L3
+test('a lab, lch, hsl or hwb colour is converted from its components, kept or clipped as any other, with or without a hex', () => {
+  const { root, r } = androidBuild([
+    tok(['color', 'labx'], 'color', { colorSpace: 'lab', components: [60, 90, 60], hex: '#ff002f' }),
+    tok(['color', 'lchx'], 'color', { colorSpace: 'lch', components: [60, 130, 30] }),
+    tok(['color', 'hslx'], 'color', { colorSpace: 'hsl', components: [210, 50, 40] }),
+    tok(['color', 'hwbx'], 'color', { colorSpace: 'hwb', components: [0, 20, 30] }),
+  ], [SWIFT_OUT, XCASSETS_OUT, COMPOSE_OUT, XML_OUT])
+  assert.equal(r.status, 0, r.stderr)
+  const swift = read(root, SWIFT_OUT.path)
+  assert.doesNotMatch(r.stdout, /not a colour these outputs can write/)
+  for (const name of ['Labx', 'Lchx', 'Hslx', 'Hwbx']) assert.ok(existsSync(join(root, XCASSETS_OUT.path, `${name}.colorset/Contents.json`)), name)
+  assert.equal(JSON.parse(read(root, `${XCASSETS_OUT.path}/Labx.colorset/Contents.json`)).colors[0].color['color-space'], 'extended-srgb')
+  assert.match(swift, /static let labx = Color\("Labx"/)
+  assert.match(r.stdout, /color\.labx: Compose colours are sRGB here, so its lab value was converted and clipped/)
+  assert.match(r.stdout, /color\.lchx: Android colour resources are sRGB, so its lch value was converted and clipped/)
+  assert.match(read(root, `${XML_OUT.path}/values/massimo_tokens.xml`), /<color name="color_hslx">#FF336699<\/color>/)
+})
+
+// P2
+test('extract run again after a build never reads the values massimo wrote as the app\'s own', () => {
+  const root = repo({ fixture: 'android-compose', config: { platforms: { android: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', outputs: [], mobileSources: [{ kind: 'android-values', include: ['core/designsystem/src/main/res/values*/*.xml'] }] } } })
+  const first = tokensRun(root, ['extract'])
+  assert.equal(first.status, 0, first.stderr)
+  const count = /(\d+) tokens/.exec(first.stdout)[1]
+  cpSync(join(root, 'ds/tokens/draft'), join(root, 'ds/tokens'), { recursive: true })
+  const config = readConfig(root)
+  config.tokens.outputs = [{ format: 'android-xml', path: 'core/designsystem/src/main/res' }]
+  writeConfig(root, config)
+  assert.equal(tokensRun(root, ['build']).status, 0)
+  const again = tokensRun(root, ['extract'])
+  assert.equal(again.status, 0, again.stderr)
+  assert.equal(/(\d+) tokens/.exec(again.stdout)[1], count)
+})
+
+// P3
+test('the Compose colours class takes no constructor arguments, so any number of colours loads on the JVM', () => {
+  const many = Array.from({ length: 130 }, (_, i) => tok(['color', `c${i}`], 'color', srgb(`#${(i * 1234567 % 0xffffff).toString(16).padStart(6, '0')}`), { modes: { dark: srgb('#000000') } }))
+  const { root, r } = androidBuild(many, [COMPOSE_OUT])
+  assert.equal(r.status, 0, r.stderr)
+  const kt = read(root, COMPOSE_OUT.path)
+  assert.doesNotMatch(kt, /data class DesignTokensColors\(/)
+  assert.match(kt, /public abstract class DesignTokensColors \{\n {4}public abstract val c0: Color\n/)
+  assert.match(kt, /private object LightColors : DesignTokensColors\(\) \{\n {4}override val c0: Color = Color\(0xFF000000\)\n/)
+  assert.match(kt, /public val LightDesignTokensColors: DesignTokensColors = LightColors\n/)
+})
+
+// P5
+test('a resource name that is a Java keyword is renamed, and the build says so', () => {
+  const { root, r } = androidBuild([tok(['default'], 'dimension', px(8)), tok(['class'], 'number', 2), tok(['new'], 'color', srgb('#6f4d09'))], [XML_OUT])
+  assert.equal(r.status, 0, r.stderr)
+  const xml = read(root, `${XML_OUT.path}/values/massimo_tokens.xml`)
+  assert.match(xml, /<dimen name="token_default">8dp<\/dimen>/)
+  assert.match(xml, /<item name="token_class" format="float" type="dimen">2<\/item>/)
+  assert.match(xml, /<color name="token_new">#FF6F4D09<\/color>/)
+  assert.match(r.stdout, /note: default: "default" is a reserved word in Java, so its Android resource is token_default/)
+})
+
+// P8
+test('a colour state list in res/color with a token\'s resource name stops the build, as a values clash does', () => {
+  const root = repo({ config: tokensMode([XML_OUT]), tokens: [tok(['color', 'brand'], 'color', srgb('#6200ee'))], files: { 'android/core/src/main/res/color/color_brand.xml': '<?xml version="1.0" encoding="utf-8"?>\n<selector xmlns:android="http://schemas.android.com/apk/res/android">\n    <item android:color="#6200ee"/>\n</selector>\n' } })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 1)
+  assert.match(r.stderr, /color color_brand in android\/core\/src\/main\/res\/color\/color_brand\.xml/)
+  assert.ok(!existsSync(join(root, XML_OUT.path, 'values/massimo_tokens.xml')))
+})
+
+// L11
+test('an Android reference to a resource left out says so, and a cycle through values-night drops only the night value', () => {
+  const root = put(join(scratch(), 'repo'), {
+    'core/src/main/res/values/dimens.xml': '<resources><dimen name="card_padding">@dimen/gutter</dimen><dimen name="gutter">@dimen/m3_comp_card_padding</dimen><dimen name="spacing_md">16dp</dimen><dimen name="hairline">1px</dimen></resources>',
+    'core/src/main/res/values-night/dimens.xml': '<resources><dimen name="spacing_md">@dimen/card_padding</dimen></resources>',
+    'core/src/main/res/values/colors.xml': '<resources><color name="a">@color/b</color><color name="b">#112233</color><color name="c">#445566</color><color name="tint">?attr/colorPrimary</color></resources>',
+    'core/src/main/res/values-night/colors.xml': '<resources><color name="b">@color/a</color><color name="c">@color/tint</color></resources>',
+  })
+  const files = ['core/src/main/res/values/dimens.xml', 'core/src/main/res/values-night/dimens.xml', 'core/src/main/res/values/colors.xml', 'core/src/main/res/values-night/colors.xml']
+  const { tokens, notes } = readAndroidValues(root, files)
+  assert.ok(notes.includes('core/src/main/res/values-night/dimens.xml: spacing_md points at @dimen/card_padding, which is left out; its night value is left out too'), notes.join('\n'))
+  assert.ok(notes.includes('core/src/main/res/values-night/colors.xml: c points at @color/tint, which is left out; its night value is left out too'), notes.join('\n'))
+  assert.ok(notes.some((n) => /b: its night value points round in a cycle \(@color\/a, @color\/b\); its night value is left out/.test(n)), notes.join('\n'))
+  const b = tokens.find((t) => t.mobile.resource === 'b')
+  assert.ok(!('dark' in b.modes))
+  // The tokens build: no cycle reaches the model.
+  const r = repo({ fixture: null, config: { platforms: { android: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', outputs: [], mobileSources: [{ kind: 'android-values', include: ['core/src/main/res/values*/*.xml'] }] } }, files: Object.fromEntries(files.map((f) => [f, readFileSync(join(root, f), 'utf8')])) })
+  const x = tokensRun(r, ['extract'])
+  assert.equal(x.status, 0, x.stderr)
+})
+
+// L12
+test('with two design-system modules and no values yet, the token outputs go in the module detect names', () => {
+  const root = put(join(scratch(), 'repo'), {
+    'settings.gradle.kts': 'include(":app", ":core:designsystem", ":core:ui", ":core:data")\n',
+    'app/build.gradle.kts': 'plugins { id("com.android.application") }\nandroid { namespace = "com.example.app"\n buildFeatures { compose = true } }\n',
+    'core/designsystem/build.gradle.kts': 'plugins { id("com.android.library") }\nandroid { namespace = "com.example.designsystem" }\n',
+    'core/designsystem/src/main/kotlin/com/example/designsystem/Button.kt': 'package com.example.designsystem\n',
+    'core/ui/src/main/kotlin/com/example/ui/Card.kt': 'package com.example.ui\n',
+  })
+  const android = detect(root).platforms.find((p) => p.id === 'android')
+  assert.equal(android.designSystem.path, 'core/designsystem')
+  assert.deepEqual(android.suggestedOutputs.map((o) => o.path), ['core/designsystem/src/main/kotlin/com/example/designsystem/DesignTokens.kt', 'core/designsystem/src/main/res'])
 })

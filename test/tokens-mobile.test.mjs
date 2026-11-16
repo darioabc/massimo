@@ -98,7 +98,7 @@ test('a colour with a dark value has it in every output', () => {
   assert.equal(set.colors[1].color.components.red, '0xBB')
   assert.match(read(root, 'ios/App/DesignTokens.swift'), /static let brandPrimary = Color\("Brand\/Primary", bundle: designTokensBundle\)/)
   const kotlin = read(root, 'android/core/src/main/kotlin/com/example/tokens/DesignTokens.kt')
-  assert.match(kotlin, /public val DarkDesignTokensColors: DesignTokensColors = DesignTokensColors\(\n[\s\S]*brandPrimary = Color\(0xFFBB86FC\)/)
+  assert.match(kotlin, /private object DarkColors : DesignTokensColors\(\) \{\n[\s\S]*override val brandPrimary: Color = Color\(0xFFBB86FC\)/)
   assert.match(read(root, 'android/core/src/main/res/values-night/massimo_tokens.xml'), /<color name="color_brand_primary">#FFBB86FC<\/color>/)
 })
 
