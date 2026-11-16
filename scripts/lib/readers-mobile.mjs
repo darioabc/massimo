@@ -140,21 +140,29 @@ function readColorSet(path, folder, name) {
     return { name, folder, values, notes: [`${folder}: Contents.json cannot be read (${err.message})`] }
   }
   const colors = Array.isArray(doc?.colors) ? doc.colors : []
-  const universal = colors.filter((c) => (c.idiom ?? 'universal') === 'universal')
-  const idioms = [...new Set(colors.map((c) => c.idiom ?? 'universal'))].filter((i) => i !== 'universal')
-  if (idioms.length > 0) notes.push(`${folder}: has entries for ${idioms.join(', ')} only; read the universal ones`)
-  const entries = universal.length > 0 ? universal : colors
+  // One idiom is read: universal, else iphone, else the first there is.
+  const idiomOf = (c) => c.idiom ?? 'universal'
+  const idioms = [...new Set(colors.map(idiomOf))]
+  const idiom = idioms.includes('universal') ? 'universal' : idioms.includes('iphone') ? 'iphone' : idioms[0]
+  const others = idioms.filter((i) => i !== idiom)
+  if (idiom !== 'universal' && idiom !== undefined) notes.push(`${folder}: has no universal entries; read the ${idiom} ones${others.length > 0 ? `, and the ${others.join(', ')} ones are not read` : ''}`)
+  else if (others.length > 0) notes.push(`${folder}: also has entries for ${others.join(', ')}, which are not read`)
+  // An entry refused with a reason already given, so the set is not called empty as well.
+  let refused = 0
+  const entries = colors.filter((c) => idiomOf(c) === idiom)
   for (const entry of entries) {
     if (entry['display-gamut'] && entry['display-gamut'] !== 'sRGB') continue
     const which = appearanceOf(entry)
     if (!which) {
       notes.push(`${folder}: has an entry for an appearance massimo does not read (${JSON.stringify(entry.appearances)})`)
+      refused++
       continue
     }
     if (!entry.color) continue
     const read = colorEntryCss(entry.color)
     if (read.why) {
       notes.push(`${folder}: the ${which} entry ${read.why}`)
+      refused++
       continue
     }
     if (read.note) notes.push(`${folder}: the ${which} entry ${read.note}`)
@@ -163,7 +171,7 @@ function readColorSet(path, folder, name) {
   }
   // How its components are written (0xRR, 102 or 0.400), so a build writes them back the same way.
   const form = forms.light ?? forms.any ?? null
-  return { name, folder, values, notes, form }
+  return { name, folder, values, notes, form, refused }
 }
 
 // Whether a colour set has high-contrast entries, which the token set cannot
@@ -186,8 +194,8 @@ export function readAssetCatalog(root, path, ignore = [], { owned = [] } = {}) {
       notes.push(...set.notes)
       const base = set.values.light ?? set.values.any
       if (!base) {
-        if (Object.keys(set.values).length === 0) notes.push(`${set.folder}: holds no colour, so no token (an empty AccentColor, say)`)
-        else notes.push(`${set.folder}: has no light or any-appearance entry, so no token`)
+        if (Object.keys(set.values).length > 0) notes.push(`${set.folder}: has no light or any-appearance entry, so no token`)
+        else if (!set.refused) notes.push(`${set.folder}: holds no colour, so no token (an empty AccentColor, say)`)
         continue
       }
       if (set.values.light && set.values.any && set.values.light !== set.values.any) notes.push(`${set.folder}: its any-appearance entry (${set.values.any}) differs from its light one (${set.values.light}); the token takes the light one`)
