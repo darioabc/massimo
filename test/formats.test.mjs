@@ -7,13 +7,14 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import * as lane from '../scripts/lib/lane.mjs'
 import * as laneCss from '../scripts/lib/lane-css.mjs'
 import * as laneRoute from '../scripts/lib/lane-route.mjs'
-import { DEFAULTS, FORMATS_READ, SCRIPTS_VERSION, loadConfig, needsScripts, olderThan, parseArgs } from '../scripts/lib/project.mjs'
+import { DEFAULTS, FORMATS_READ, SCRIPTS_VERSION, loadConfig, needsScripts, olderThan, parseArgs, withMinScripts } from '../scripts/lib/project.mjs'
 import * as redirects from '../scripts/lib/redirects.mjs'
 import * as viteStories from '../scripts/lib/vite-stories.mjs'
 import { SCRIPTS, readJson, run, scratch } from './helpers.mjs'
@@ -252,4 +253,55 @@ test('the route module imports nothing, since the plugin inlines its text', () =
   const text = readFileSync(join(SCRIPTS, 'lib', 'lane-route.mjs'), 'utf8')
   assert.ok(!/^\s*(import|export\s.*\sfrom)\b/m.test(text))
   assert.ok(!/\bimport\s*\(/.test(text))
+})
+
+// ── 0.6.0: platforms and the mobile token files ────────────────────────────
+
+// A copy of these scripts that says it is 0.5.0, as a project's vendored
+// copy from before platforms would.
+function olderScripts(version) {
+  const dir = mkdtempSync(join(tmpdir(), 'massimo-older-'))
+  cpSync(SCRIPTS, join(dir, 'scripts'), { recursive: true })
+  const path = join(dir, 'scripts', 'lib', 'project.mjs')
+  writeFileSync(path, readFileSync(path, 'utf8').replace(/^export const SCRIPTS_VERSION = '[^']+'/m, `export const SCRIPTS_VERSION = '${version}'`))
+  return { scripts: join(dir, 'scripts'), cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('each key 0.6.0 added raises minScripts, and 0.5.0 scripts refuse that config by name instead of ignoring the key', () => {
+  const older = olderScripts('0.5.0')
+  contexts.push(older)
+  const keys = [
+    { platforms: { ios: { root: 'ios' } } },
+    { tokens: { outputs: [{ format: 'swift', path: 'ios/DesignTokens.swift' }] } },
+    { tokens: { outputs: [{ format: 'css', path: 'src/tokens.css', platform: 'web' }] } },
+    { tokens: { mobile: { colors: 'tokens' } } },
+    { tokens: { mobileSources: [{ kind: 'xcassets', path: 'ios/Colors.xcassets' }] } },
+  ]
+  for (const key of keys) {
+    const ctx = fresh()
+    const path = join(ctx.root, 'massimo.config.json')
+    const raw = withMinScripts({ ...readJson(path), ...key })
+    assert.equal(raw.minScripts, '0.6.0', JSON.stringify(key))
+    writeFileSync(path, JSON.stringify(raw))
+    for (const script of ['graph', 'tokens']) {
+      const r = spawnSync(process.execPath, [join(older.scripts, `${script}.mjs`), ...(script === 'tokens' ? ['check'] : []), '--root', ctx.root, '--project-dir', ctx.project], { encoding: 'utf8' })
+      assert.equal(r.status, 1, `${script} ${JSON.stringify(key)}`)
+      assert.match(r.stderr, /massimo\.config\.json needs massimo scripts 0\.6\.0 or later, and these are 0\.5\.0/)
+      assert.match(r.stderr, updateHint)
+    }
+    // These scripts read it.
+    assert.equal(run('graph', ctx).status, 0)
+  }
+})
+
+test('a mobile-outputs.json in a newer format is refused by name, not read as this one', () => {
+  assert.equal(FORMATS_READ.mobileOutputs, 1)
+  const ctx = fresh()
+  mkdirSync(join(ctx.project, 'tokens'), { recursive: true })
+  writeFileSync(join(ctx.project, 'tokens', 'mobile-outputs.json'), JSON.stringify({ format: 2, files: {} }))
+  for (const mode of ['build', 'check']) {
+    const r = run('tokens', ctx, [mode])
+    assert.equal(r.status, 1, mode)
+    assert.match(r.stderr, /tokens\/mobile-outputs\.json is format 2, and these scripts \(\S+\) read up to 1/)
+  }
 })

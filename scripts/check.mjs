@@ -3,7 +3,7 @@
 // project's own, one line each, and exit 1 when any failed. It is what CI
 // runs, so a check added here reaches every project on its next update.
 //
-//   graph    graph.mjs --check, always
+//   graph    graph.mjs --check, unless the project declares platforms and web is not one
 //   stories  stories.mjs --check, when stories.lane is "csf"
 //   audit    audit.mjs --check, when audits/baseline.json exists
 //   tokens   tokens.mjs check, when the token set exists; a contrast pair below
@@ -22,7 +22,8 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DOCS_START } from './docs.mjs'
-import { fail, loadConfig, parseArgs, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { fail, loadConfig, minScriptsWarning, parseArgs, rel, scriptCommand, warnIfVendoredOlder } from './lib/project.mjs'
+import { hasWeb } from './lib/platforms.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
 helpAndExit(import.meta.url)
@@ -35,9 +36,11 @@ const here = dirname(fileURLToPath(import.meta.url))
 export function checksFor({ root, config, projectDir }) {
   const script = (name, file, args) => ({ name, script: file, args, command: scriptCommand(root, projectDir, file, args.join(' ')) })
   const readme = join(projectDir, 'README.md')
+  // The graph and the story lane read web code; a mobile-only project has none yet.
+  const web = hasWeb(config)
   const checks = [
-    script('graph', 'graph', ['--check']),
-    ...(config.stories?.lane === 'csf' ? [script('stories', 'stories', ['--check'])] : []),
+    web ? script('graph', 'graph', ['--check']) : { name: 'graph', skip: 'the graph reads web code, and this project declares no web platform' },
+    ...(web && config.stories?.lane === 'csf' ? [script('stories', 'stories', ['--check'])] : []),
     existsSync(join(projectDir, 'audits', 'baseline.json')) ? script('audit', 'audit', ['--check']) : { name: 'audit', skip: 'no audit baseline yet' },
     existsSync(join(root, config.tokens.source)) ? script('tokens', 'tokens', ['check']) : { name: 'tokens', skip: 'no token set yet' },
     existsSync(readme) && readFileSync(readme, 'utf8').includes(DOCS_START) ? script('docs', 'docs', ['--check']) : { name: 'docs', skip: 'no generated README yet' },
@@ -64,8 +67,10 @@ function runCheck(check, { root, configPath, projectDir, flags }) {
 
 function main() {
   const { flags } = parseArgs()
-  const { root, configPath, config, projectDir } = loadConfig(flags)
+  const { root, configPath, config, projectDir, raw } = loadConfig(flags)
   warnIfVendoredOlder(projectDir, import.meta.url)
+  const tooLow = minScriptsWarning(raw)
+  if (tooLow) process.stderr.write(`massimo: warn: ${tooLow}\n`)
   const checks = checksFor({ root, config, projectDir })
   const width = Math.max(...checks.map((c) => c.name.length))
   let ran = 0

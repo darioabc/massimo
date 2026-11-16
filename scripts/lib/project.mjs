@@ -10,9 +10,11 @@ import { execFileSync } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ANDROID_IGNORE } from './platform-android.mjs'
+import { IOS_IGNORE } from './platform-ios.mjs'
 
 export const CONFIG_FILE = 'massimo.config.json'
-export const SCRIPTS_VERSION = '0.5.0'
+export const SCRIPTS_VERSION = '0.6.0'
 
 export const DEFAULTS = {
   version: 1,
@@ -172,19 +174,97 @@ export const DEFAULTS = {
 // `minScripts` must say so: 0.3.0 would otherwise read it and ignore the keys.
 export const STORIES_0_4_0_KEYS = ['ids', 'order', 'home', 'viewports', 'sideBySide', 'switchers', 'banners', 'frame', 'storyOnly', 'appCss', 'outDir', 'hostFiles', 'frozen', 'policy']
 
-// The `minScripts` a raw config's stories section requires, or null when it
-// uses nothing from 0.4.0.
-export function needsScripts(raw) {
+// The token output formats 0.6.0 added, one pair per mobile platform.
+export const MOBILE_OUTPUT_FORMATS = ['swift', 'xcassets', 'compose', 'android-xml']
+
+const storiesNeed040 = (raw) => {
   const stories = raw?.stories
-  if (!stories || typeof stories !== 'object') return null
-  if (stories.lane === 'csf') return '0.4.0'
-  const set = STORIES_0_4_0_KEYS.some((key) => key in stories && JSON.stringify(stories[key]) !== JSON.stringify(DEFAULTS.stories[key]))
-  return set ? '0.4.0' : null
+  if (!stories || typeof stories !== 'object') return false
+  if (stories.lane === 'csf') return true
+  return STORIES_0_4_0_KEYS.some((key) => key in stories && JSON.stringify(stories[key]) !== JSON.stringify(DEFAULTS.stories[key]))
+}
+const outputsOf = (raw) => (Array.isArray(raw?.tokens?.outputs) ? raw.tokens.outputs : [])
+
+// The keys 0.3.0 added. Older scripts ignore them, so a config that sets one
+// to anything but its default needs 0.3.0 (the adopt and tokens skills set it).
+export const KEYS_0_3_0 = ['tokens.mirror', 'tokens.inventory', 'tokens.breakpoints', 'guard.extraChecks', 'audit.kinds', 'audit.exempt', 'audit.arbitrary', 'audit.primitives', 'audit.failWhenBehind', 'graph.keys', 'graph.taxonomy', 'graph.strictFaults', 'graph.kinds', 'graph.edges', 'graph.header', 'stories.manifest', 'stories.pages', 'stories.frames', 'stories.componentless']
+const sets030 = (key) => (raw) => {
+  const [group, name] = key.split('.')
+  const block = raw?.[group]
+  return Boolean(block) && typeof block === 'object' && name in block && JSON.stringify(block[name]) !== JSON.stringify(DEFAULTS[group][name])
+}
+
+// What each release added that older scripts would ignore or misread: a row
+// per key, with the scripts version that reads it. A config that uses a key
+// sets `minScripts` to that version at least, so older scripts refuse it by
+// name instead of ignoring it.
+export const SCRIPTS_NEEDS = [
+  ...KEYS_0_3_0.map((key) => ({ version: '0.3.0', what: key, test: sets030(key) })),
+  { version: '0.4.0', what: 'the 0.4.0 stories keys', test: storiesNeed040 },
+  { version: '0.6.0', what: 'platforms', test: (raw) => raw?.platforms !== undefined },
+  { version: '0.6.0', what: 'a mobile token output (swift, xcassets, compose or android-xml)', test: (raw) => outputsOf(raw).some((o) => MOBILE_OUTPUT_FORMATS.includes(o?.format)) },
+  { version: '0.6.0', what: 'tokens.outputs[].platform', test: (raw) => outputsOf(raw).some((o) => o && typeof o === 'object' && 'platform' in o) },
+  { version: '0.6.0', what: 'tokens.mobile', test: (raw) => raw?.tokens?.mobile !== undefined },
+  { version: '0.6.0', what: 'tokens.mobileSources', test: (raw) => raw?.tokens?.mobileSources !== undefined },
+]
+
+// The rows of SCRIPTS_NEEDS a raw config uses.
+export const scriptsNeeds = (raw) => SCRIPTS_NEEDS.filter((row) => row.test(raw))
+
+// The `minScripts` a raw config requires, or null when it uses nothing that
+// needs more than the scripts every version reads.
+export function needsScripts(raw) {
+  return scriptsNeeds(raw).reduce((best, row) => (best === null || olderThan(best, row.version) ? row.version : best), null)
+}
+
+// Why a raw config's `minScripts` is too low for the keys it uses, or null.
+// It covers a config edited by hand: the scripts that write configs set it.
+export function minScriptsWarning(raw) {
+  const need = needsScripts(raw)
+  if (!need) return null
+  const declared = typeof raw?.minScripts === 'string' ? raw.minScripts : null
+  if (declared && !olderThan(declared, need)) return null
+  const what = scriptsNeeds(raw).filter((row) => row.version === need).map((row) => row.what)
+  return `${CONFIG_FILE} uses ${what.join(', ')}, which needs massimo scripts ${need}, and its minScripts is ${declared ?? 'not set'}: set "minScripts": "${need}" so older scripts refuse it instead of ignoring the keys`
+}
+
+// A config with `minScripts` raised to what its keys need, placed after
+// `version` as init and detect write it; the same object when it already says enough.
+export function withMinScripts(raw) {
+  const need = needsScripts(raw)
+  if (!need || (typeof raw.minScripts === 'string' && !olderThan(raw.minScripts, need))) return raw
+  const { version, minScripts, ...rest } = raw
+  return { ...(version === undefined ? {} : { version }), minScripts: need, ...rest }
+}
+
+// What a platform block starts from before its own keys, by platform. A
+// block merges over these, never over the web top-level keys, so a web glob
+// never reaches an iOS or Android run.
+export const PLATFORM_DEFAULTS = {
+  ios: { root: '.', ui: ['swiftui'], ignore: IOS_IGNORE, components: { include: [], exclude: ['**/Tests/**', '**/*Tests/**', '**/*Tests.swift'] }, consumers: ['**/*.swift'] },
+  android: { root: '.', ui: ['compose'], ignore: ANDROID_IGNORE, components: { include: [], exclude: ['**/src/test/**', '**/src/androidTest/**'] }, consumers: ['**/src/main/**/*.kt'] },
+}
+
+const union = (...lists) => [...new Set(lists.flatMap((l) => (Array.isArray(l) ? l : [])))]
+
+// One platform block as the scripts read it: the adapter's defaults with the
+// block's own keys over them, and the lists that must never lose a default
+// (ignore, components.exclude, audit.exclude) the union of DEFAULTS', the
+// adapter's and the block's. deepMerge alone would replace them.
+export function platformBlock(id, block) {
+  const own = isPlainObject(block) ? block : {}
+  if (id === 'web') return { ...own }
+  const adapter = PLATFORM_DEFAULTS[id] ?? {}
+  const merged = deepMerge(deepMerge({ components: { include: [], exclude: [] }, consumers: [], audit: { include: [], exclude: [] } }, structuredClone(adapter)), own)
+  merged.ignore = union(DEFAULTS.ignore, adapter.ignore, own.ignore)
+  merged.components = { ...merged.components, exclude: union(DEFAULTS.components.exclude, adapter.components?.exclude, own.components?.exclude) }
+  merged.audit = { ...merged.audit, exclude: union(DEFAULTS.audit.exclude, adapter.audit?.exclude, own.audit?.exclude) }
+  return merged
 }
 
 // Flags that never take a value, so `--strict build` keeps `build` as a
 // positional instead of reading it as the flag's value.
-export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'no-agents-file', 'freeze', 'reduced-motion', 'settle', 'legacy'])
+export const BOOLEAN_FLAGS = new Set(['check', 'baseline', 'lower', 'strict', 'json', 'inline', 'full', 'pretty', 'dry-run', 'update-scripts', 'no-npm-scripts', 'no-agents-file', 'freeze', 'reduced-motion', 'settle', 'legacy', 'prune', 'dedupe'])
 
 // Parse argv into positionals and flags. `--a b`, `--a=b`, and a bare `--a`
 // (true) all work; a repeated flag collects into an array.
@@ -405,7 +485,8 @@ const UPDATE = 'update massimo: the plugin, then its init.mjs --update-scripts f
 // was written by a newer massimo, and reading it as an older one would guess.
 // baseline 2: it tracks a kind added in 0.3.0 (audit.mjs NEWER_KINDS).
 // conversion, removal, redirects and registry are the 0.4.0 story-lane files.
-export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1, conversion: 1, removal: 1, redirects: 1, registry: 1 }
+// mobileOutputs is <project>/tokens/mobile-outputs.json (0.6.0).
+export const FORMATS_READ = { config: 1, graph: 1, baseline: 2, resolved: 1, pairs: 1, inventory: 1, ledger: 1, conversion: 1, removal: 1, redirects: 1, registry: 1, mobileOutputs: 1 }
 // Why a file of `kind` at `version` is too new to read, or null.
 export const newerMessage = (kind, version, where) =>
   typeof version === 'number' && version > FORMATS_READ[kind] ? `${where} is format ${version}, and these scripts (${SCRIPTS_VERSION}) read up to ${FORMATS_READ[kind]}: ${UPDATE}` : null
@@ -415,10 +496,18 @@ export function refuseNewer(kind, version, where, code = 1) {
 }
 
 // Why a config cannot be used by these scripts, or null.
-function configRefusal(raw) {
+export function configRefusal(raw) {
   const newer = newerMessage('config', raw?.version, CONFIG_FILE)
   if (newer) return newer
   if (typeof raw?.minScripts === 'string' && olderThan(SCRIPTS_VERSION, raw.minScripts)) return `${CONFIG_FILE} needs massimo scripts ${raw.minScripts} or later, and these are ${SCRIPTS_VERSION}: ${UPDATE}`
+  // A malformed platforms value would read as no web platform and quietly turn the web checks off.
+  if (raw && typeof raw === 'object' && 'platforms' in raw) {
+    const p = raw.platforms
+    const ids = ['web', 'ios', 'android']
+    if (!isPlainObject(p) || Object.keys(p).length === 0 || Object.entries(p).some(([id, block]) => !ids.includes(id) || !isPlainObject(block))) {
+      return `${CONFIG_FILE}: platforms must map web, ios or android to a block (an object, {} for the defaults) and name at least one, such as { "web": {}, "ios": {} }; it is ${JSON.stringify(p)}`
+    }
+  }
   return null
 }
 
@@ -443,6 +532,8 @@ export function loadConfig(flags = {}, { gate = true } = {}) {
   const refusal = configRefusal(raw)
   if (refusal && gate) fail(refusal)
   const config = deepMerge(structuredClone(DEFAULTS), raw)
+  // Each platform block over its own defaults; a config without platforms is web only, as before.
+  if (isPlainObject(raw.platforms)) config.platforms = Object.fromEntries(Object.entries(raw.platforms).map(([id, block]) => [id, platformBlock(id, block)]))
   const projectDirFlag = flags['project-dir']
   const projectDir = projectDirFlag
     ? resolve(projectDirFlag)
@@ -458,7 +549,7 @@ export function loadConfig(flags = {}, { gate = true } = {}) {
     // A copy: deepMerge shares DEFAULTS' nested objects, which must stay as they are.
     config.tokens = { ...config.tokens, source }
   }
-  return { root, configPath, exists, config, projectDir, refusal }
+  return { root, configPath, exists, config, projectDir, refusal, raw }
 }
 
 // The command that runs a vendored script, from the repo root, for messages

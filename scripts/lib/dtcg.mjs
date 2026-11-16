@@ -327,6 +327,8 @@ export function flattenFormat(doc, problems = [], where = '') {
         extensions: FOREIGN(node.$extensions),
         strict: true,
         ...(isObject(ext.scopes) ? { scopes: ext.scopes } : {}),
+        // Where a mobile source had it (its catalog or resource name), for the mobile outputs.
+        ...(isObject(ext.mobile) ? { mobile: ext.mobile } : {}),
       })
       return
     }
@@ -842,6 +844,7 @@ function extensionsOf(t, css) {
   if (css) m.css = css
   // A mirror's values under selectors that are not themes, as CSS text by selector.
   if (t.scopes && Object.keys(t.scopes).length > 0) m.scopes = t.scopes
+  if (t.mobile && Object.keys(t.mobile).length > 0) m.mobile = t.mobile
   const ext = { ...(t.extensions ?? {}) }
   if (Object.keys(m).length > 0) ext.massimo = m
   return Object.keys(ext).length > 0 ? ext : null
@@ -948,7 +951,7 @@ export function writeTokenSet({ tokens, defaultMode = 'light', modifier = 'theme
   files['base.tokens.json'] = jsonText({ ...root, ...baseTree, $extensions: { massimo: ext } })
   const contexts = { [defaultMode]: [] }
   for (const mode of modes) {
-    const own = typed.filter((t) => mode in t.modes || mode in t.cssModes).map((t) => (t.scopes ? { ...t, scopes: null } : t))
+    const own = typed.filter((t) => mode in t.modes || mode in t.cssModes).map((t) => (t.scopes || t.mobile ? { ...t, scopes: null, mobile: null } : t))
     const tree = treeOf(own, (t) => (mode in t.modes ? t.modes[mode] : t.value), (t) => t.cssModes[mode] ?? (mode in t.modes ? null : t.css))
     const onlyCss = cssOnly.filter((t) => mode in t.modes)
     const fileExt = { format: FORMAT_VERSION }

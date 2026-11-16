@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// Read a front-end repo and report its stack as JSON: framework, styling,
-// existing story tools, candidate component folders and style files, path
-// aliases, scripts, and a suggested massimo.config.json. The start skill
-// shows this to the user to confirm before anything is written.
+// Read a repo and report its stack as JSON: framework, styling, existing
+// story tools, candidate component folders and style files, path aliases,
+// scripts, the mobile platforms it holds (an Xcode, SwiftPM, Tuist or
+// XcodeGen project; a Gradle Android project), and a suggested
+// massimo.config.json. The start skill shows this to the user to confirm
+// before anything is written. A repo with no package.json is read too.
 //
 //   detect.mjs [--root <dir>]
 
@@ -15,7 +17,8 @@ import { adoptableSummary } from './lib/inventory.mjs'
 import { findObject } from './lib/jsobject.mjs'
 import { csfScaffold } from './lib/lane-css.mjs'
 import { nuxtComponentFolders, nuxtRootConfig, nuxtSrcDir, withNuxtFolders } from './lib/nuxt.mjs'
-import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, readJson, workspaceGlobs } from './lib/project.mjs'
+import { CONFIG_FILE, DEFAULTS, findRoot, parseArgs, platformBlock, readJson, withMinScripts, workspaceGlobs } from './lib/project.mjs'
+import { adapterFor, colorLiteralCounts } from './lib/platforms.mjs'
 import { TAILWIND_CONFIG_STARTS } from './lib/readers.mjs'
 import { stripComments, workspacePackages } from './lib/source.mjs'
 import { storybookKeys } from './lib/storybook.mjs'
@@ -648,6 +651,134 @@ const suggestedConfig = {
   },
 }
 
+// The mobile platforms the repo holds, each as what detect read (evidence),
+// the config block and token sources it suggests, and the read-only count of
+// colours its Swift or Kotlin files hard-code. A web app's mobile shell is
+// not one: Capacitor's android/ and ios/ (kept out above), and the iOS and
+// Android folders of a React Native, Expo, NativeScript, Cordova, Tauri or
+// Flutter app, which that framework builds.
+const MOBILE_SHELLS = ['react-native', 'expo', '@nativescript/core', 'cordova-ios', 'cordova-android', '@tauri-apps/cli', '@tauri-apps/api']
+// A native project a shell framework builds names it: React Native's
+// use_react_native! and its Gradle plugin, Flutter's pods and Gradle plugin,
+// Capacitor's and Tauri's own settings.
+const SHELL_NATIVE = /use_react_native!|react[-_]native|flutter_install_all_ios_pods|flutter_root|flutter-gradle|dev\.flutter|\bcapacitor\b|tauri\.settings\.gradle|tauri-android/i
+const shellManifest = (dir) => {
+  if (existsSync(join(dir, 'pubspec.yaml')) || existsSync(join(dir, 'tauri.conf.json')) || existsSync(join(dir, 'src-tauri', 'tauri.conf.json'))) return true
+  if (['ts', 'js', 'mjs', 'json'].some((ext) => existsSync(join(dir, `capacitor.config.${ext}`)))) return true
+  try {
+    const pkg = depsOf(readJson(join(dir, 'package.json'), {}))
+    return MOBILE_SHELLS.some((dep) => Object.hasOwn(pkg, dep))
+  } catch {
+    return false
+  }
+}
+// detect run inside a shell's own ios/ or android/ folder: the app above it names the framework.
+function insideShell() {
+  let at = resolve(root)
+  for (let i = 0; i < 6; i++) {
+    const up = dirname(at)
+    if (up === at || existsSync(join(at, '.git'))) return false
+    at = up
+    if (shellManifest(at)) return true
+  }
+  return false
+}
+// The native paths a Capacitor config gives its iOS and Android projects (ios.path, android.path).
+const capacitorPaths = (text) => ['ios', 'android'].map((p) => new RegExp(String.raw`["']?${p}["']?\s*:\s*\{[^}]*?["']?path["']?\s*:\s*["']([^"']+)["']`).exec(text)?.[1]).filter(Boolean)
+const normal = (p) => {
+  const out = []
+  for (const step of p.split('/')) {
+    if (step === '..') out.pop()
+    else if (step && step !== '.') out.push(step)
+  }
+  return out.join('/') || '.'
+}
+function detectPlatforms() {
+  if (MOBILE_SHELLS.some(has) || files.includes('pubspec.yaml') || insideShell()) return []
+  // A shell can sit below the root too (a workspace member, a mobile/
+  // folder): any folder whose package.json names a shell framework, or that
+  // holds a capacitor.config, a pubspec.yaml or a Tauri config, is left out
+  // with all it holds, and so are the native paths a Capacitor config names
+  // and a native project that names a shell framework itself.
+  const shell = new Set(notUi)
+  const readText = (f) => {
+    try {
+      return readFileSync(join(root, f), 'utf8')
+    } catch {
+      return ''
+    }
+  }
+  for (const f of listed) {
+    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '.'
+    const name = f.slice(f.lastIndexOf('/') + 1)
+    if (/^capacitor\.config\.(?:ts|js|mjs|json)$/.test(name)) {
+      // At the root, its android/ and ios/ are kept out above (notUi), and a web app stays one.
+      if (dir !== '.') shell.add(dir)
+      for (const p of capacitorPaths(readText(f))) shell.add(normal(`${dir}/${p}`))
+    } else if (name === 'pubspec.yaml') shell.add(dir)
+    else if (/^(?:tauri\.conf\.json5?|Tauri\.toml)$/.test(name)) shell.add(/(?:^|\/)src-tauri$/.test(dir) ? (dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '.') : dir)
+    else if (name === 'Podfile' || /^settings\.gradle(?:\.kts)?$/.test(name)) {
+      if (SHELL_NATIVE.test(readText(f))) shell.add(dir)
+    } else if (name === 'package.json' && dir !== '.') {
+      let own = {}
+      try {
+        own = depsOf(readJson(join(root, f), {}))
+      } catch {
+        // an unreadable package.json names no shell
+      }
+      if (MOBILE_SHELLS.some((dep) => Object.hasOwn(own, dep))) shell.add(dir)
+    }
+  }
+  if (shell.has('.')) return []
+  const own = listed.filter((f) => ![...shell].some((dir) => f.startsWith(`${dir}/`)) && !f.startsWith(ownDir))
+  const read = (f) => {
+    try {
+      const p = join(root, f)
+      return statSync(p).size < 2 * 1024 * 1024 ? readFileSync(p, 'utf8') : null
+    } catch {
+      return null
+    }
+  }
+  const out = []
+  for (const id of ['ios', 'android']) {
+    const adapter = adapterFor(id)
+    const evidence = adapter.detect(own, read)
+    if (!evidence) continue
+    const block = adapter.defaults(evidence)
+    const tokens = adapter.tokens.suggest(evidence, own, read)
+    const [count] = colorLiteralCounts(root, { ignore: DEFAULTS.ignore, platforms: { [id]: platformBlock(id, block) } }, { list: own })
+    out.push({
+      ...evidence,
+      colorLiterals: { count: count.count, files: count.files, top: count.top.slice(0, 5).map(({ file, count: n }) => ({ file, count: n })) },
+      suggestedOutputs: tokens.outputs,
+      block,
+      tokens,
+    })
+  }
+  return out
+}
+const platforms = detectPlatforms()
+// A repo is web when it has a package.json, unless that file only holds
+// tooling for a mobile app (no framework, no component folders, no styles).
+const web = !(platforms.length > 0 && (!existsSync(join(root, 'package.json')) || (framework === 'unknown' && dirs.length === 0 && styles.length === 0)))
+
+// The suggested config with the platforms the repo holds. A web repo keeps
+// every key it had and lists web beside the others; a mobile repo holds only
+// what its platforms need. Either way it sets the minScripts its keys need.
+function withPlatforms(config) {
+  if (platforms.length === 0) return config
+  const blocks = Object.fromEntries([...(web ? [['web', {}]] : []), ...platforms.map((p) => [p.id, p.block])])
+  const mobile = {}
+  const ios = platforms.find((p) => p.id === 'ios')
+  const android = platforms.find((p) => p.id === 'android')
+  if (ios) mobile.colors = ios.tokens.colors
+  if (android?.tokens.package) mobile.package = android.tokens.package
+  const mobileSources = platforms.flatMap((p) => p.tokens.sources)
+  const tokens = web ? { ...config.tokens } : { source: config.tokens.source, outputs: [] }
+  const base = web ? config : { version: 1, projectDir: config.projectDir }
+  return withMinScripts({ ...base, platforms: blocks, tokens: { ...tokens, mobile, mobileSources } })
+}
+
 // What `adopt.mjs scan` would find: a lane or story tool, ds: keys beyond the
 // built-in ones and those the config already gives a role or lists as extra,
 // the repo's own graph, ratchet or token inventory, a DESIGN.md. Only listed
@@ -673,7 +804,9 @@ const result = {
   nestedPackages: nested,
   styleFiles: styles.slice(0, 10),
   aliases: suggestedConfig.aliases,
-  suggestedConfig,
+  // Only when the repo holds a mobile app, so a web repo's report is as it was.
+  ...(platforms.length > 0 ? { platforms: platforms.map(({ block, tokens, ...p }) => p) } : {}),
+  suggestedConfig: withPlatforms(suggestedConfig),
   // Where the suggested dark selector comes from, only when one was read.
   ...(dark ? { darkMode: dark } : {}),
   ...(adoptable.length > 0 ? { adoptable } : {}),
