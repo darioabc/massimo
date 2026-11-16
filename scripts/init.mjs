@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { compare, globToRegExp } from './lib/glob.mjs'
 import { parseArrayAt } from './lib/jsobject.mjs'
 import { stripComments } from './lib/source.mjs'
-import { CONFIG_FILE, DEFAULTS, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, platformBlock, readJson, rel, vendoredVersion as vendoredVersionOf, withMinScripts } from './lib/project.mjs'
+import { CONFIG_FILE, DEFAULTS, SCRIPTS_VERSION, configRefusal, deepMerge, fail, findRoot, loadConfig, parseArgs, platformBlock, readJson, rel, vendoredVersion as vendoredVersionOf, withMinScripts } from './lib/project.mjs'
 import { emptyState, renderStatus, saveState, setPhase } from './lib/state.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -75,6 +75,9 @@ if (!existsSync(configPath)) {
   }
   // The scripts version the config's keys need, so older scripts refuse it instead of ignoring them.
   planned = withMinScripts(deepMerge(suggested, overrides))
+  // Checked before anything is written, so a refused config leaves no half-made project, in a dry run too.
+  const refusal = configRefusal(planned)
+  if (refusal) fail(refusal)
   write(configPath, `${JSON.stringify(planned, null, 2)}\n`)
 } else {
   report.skipped.push(CONFIG_FILE)

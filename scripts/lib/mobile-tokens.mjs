@@ -133,10 +133,15 @@ export function mobileEntries(model, options) {
   // The day value and the dark one. A set whose default mode is dark keeps
   // its light mode as the day value and its default as the dark one, so a
   // phone in light appearance never shows the dark colours.
-  const labelled = (label) => model.modes.find((m) => m !== 'default' && model.modeLabel(m) === label) ?? null
-  const darkDefault = model.modeLabel('default') === 'dark'
-  const day = darkDefault ? labelled('light') ?? 'default' : 'default'
-  const dark = darkDefault ? (day === 'default' ? null : 'default') : labelled('dark')
+  // A name in any case (Dark, Light). A set with a light mode and no dark one
+  // is dark by default, whatever its default is called (a second modifier's
+  // name, say).
+  const labelled = (label) => model.modes.find((m) => m !== 'default' && model.modeLabel(m).toLowerCase() === label) ?? null
+  const darkMode = labelled('dark')
+  const lightMode = labelled('light')
+  const darkDefault = model.modeLabel('default').toLowerCase() === 'dark' || (!darkMode && lightMode !== null)
+  const day = darkDefault ? lightMode ?? 'default' : 'default'
+  const dark = darkDefault ? (day === 'default' ? null : 'default') : darkMode
   const hasDark = dark !== null
   const otherModes = model.modes.filter((m) => m !== day && m !== dark)
   for (const t of model.tokens) {
@@ -167,7 +172,7 @@ export function mobileEntries(model, options) {
     }
     if (typeof t.css === 'string' && t.css.trim()) notes.push(`its exact CSS (${t.css.trim()}) is the web's; the mobile outputs use its value`)
     for (const m of otherModes) {
-      if (m in t.modes) notes.push(`its ${model.modeLabel(m)} value is not carried over: the mobile outputs hold the default and dark only`)
+      if (m in t.modes) notes.push(`its ${model.modeLabel(m)} value is not carried over: the mobile outputs hold the ${hasDark ? `${model.modeLabel(day)} and ${model.modeLabel(dark)} values` : `${model.modeLabel(day)} value`} only`)
     }
     const group = groupOf(t.path, type).name
     const swift = memberName(t.path, type, SWIFT_RESERVED)

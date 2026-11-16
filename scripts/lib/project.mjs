@@ -187,7 +187,7 @@ const outputsOf = (raw) => (Array.isArray(raw?.tokens?.outputs) ? raw.tokens.out
 
 // The keys 0.3.0 added. Older scripts ignore them, so a config that sets one
 // to anything but its default needs 0.3.0 (the adopt and tokens skills set it).
-export const KEYS_0_3_0 = ['tokens.mirror', 'tokens.inventory', 'audit.kinds', 'audit.exempt', 'audit.arbitrary', 'audit.primitives', 'audit.failWhenBehind', 'graph.keys', 'graph.taxonomy', 'graph.strictFaults', 'graph.kinds', 'graph.edges', 'graph.header', 'stories.manifest', 'stories.pages', 'stories.frames', 'stories.componentless']
+export const KEYS_0_3_0 = ['tokens.mirror', 'tokens.inventory', 'tokens.breakpoints', 'guard.extraChecks', 'audit.kinds', 'audit.exempt', 'audit.arbitrary', 'audit.primitives', 'audit.failWhenBehind', 'graph.keys', 'graph.taxonomy', 'graph.strictFaults', 'graph.kinds', 'graph.edges', 'graph.header', 'stories.manifest', 'stories.pages', 'stories.frames', 'stories.componentless']
 const sets030 = (key) => (raw) => {
   const [group, name] = key.split('.')
   const block = raw?.[group]
@@ -496,7 +496,7 @@ export function refuseNewer(kind, version, where, code = 1) {
 }
 
 // Why a config cannot be used by these scripts, or null.
-function configRefusal(raw) {
+export function configRefusal(raw) {
   const newer = newerMessage('config', raw?.version, CONFIG_FILE)
   if (newer) return newer
   if (typeof raw?.minScripts === 'string' && olderThan(SCRIPTS_VERSION, raw.minScripts)) return `${CONFIG_FILE} needs massimo scripts ${raw.minScripts} or later, and these are ${SCRIPTS_VERSION}: ${UPDATE}`

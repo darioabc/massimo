@@ -11,10 +11,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { iosWire } from '../scripts/lib/platform-ios.mjs'
+import { minScriptsWarning, needsScripts } from '../scripts/lib/project.mjs'
 import { swiftColorLiterals } from '../scripts/lib/lang-swift.mjs'
 import { kotlinColorLiterals } from '../scripts/lib/lang-kotlin.mjs'
 import { readAndroidValues } from '../scripts/lib/readers-mobile.mjs'
-import { CATALOG, COMPOSE_OUT, detect, EXTRA, OWNED, colorset, entry, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
+import { CATALOG, COMPOSE_OUT, detect, run, EXTRA, OWNED, colorset, entry, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
 
 const listed = (root) => JSON.parse(read(root, 'ds/tokens/mobile-outputs.json')).files
 const git = (root, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, encoding: 'utf8' })
@@ -756,4 +757,112 @@ test('with two design-system modules and no values yet, the token outputs go in 
   const android = detect(root).platforms.find((p) => p.id === 'android')
   assert.equal(android.designSystem.path, 'core/designsystem')
   assert.deepEqual(android.suggestedOutputs.map((o) => o.path), ['core/designsystem/src/main/kotlin/com/example/designsystem/DesignTokens.kt', 'core/designsystem/src/main/res'])
+})
+
+// ── Cross-platform shells, config and the web ───────────────────────────────
+
+const IOS_APP = (dir) => ({ [`${dir}/Runner.xcodeproj/project.pbxproj`]: PBX_ONE('Runner'), [`${dir}/Runner/AppDelegate.swift`]: 'import UIKit\n\nclass AppDelegate: UIResponder {}\n' })
+const ANDROID_APP = (dir, settings = 'include(":app")\n') => ({ [`${dir}/settings.gradle`]: settings, [`${dir}/app/build.gradle`]: 'plugins { id "com.android.application" }\nandroid { namespace "com.example.app" }\n', [`${dir}/app/src/main/java/com/example/app/MainActivity.kt`]: 'package com.example.app\n\nclass MainActivity\n', [`${dir}/app/src/main/res/values/colors.xml`]: '<resources><color name="brand">#6200ee</color></resources>\n' })
+const platformsOf = (root) => (detect(root).platforms ?? []).map((p) => `${p.id}@${p.root}`)
+
+// I8
+test('a cross-platform shell is never a mobile platform: Tauri with no package.json, Capacitor with its own native paths, React Native folders beside the package, and detect run inside a shell', () => {
+  const tauri = put(join(scratch(), 'repo'), { ...WEB, 'desktop/src-tauri/Cargo.toml': '[package]\nname = "desk"\n', 'desktop/src-tauri/tauri.conf.json': '{"productName":"desk"}\n', 'desktop/src-tauri/gen/apple/project.yml': 'name: desk\ntargets:\n  desk:\n    platform: iOS\n    sources: [Sources]\n', ...IOS_APP('desktop/src-tauri/gen/apple'), ...ANDROID_APP('desktop/src-tauri/gen/android', 'include ":app"\napply from: "tauri.settings.gradle"\n') })
+  assert.deepEqual(platformsOf(tauri), [])
+  const tauriRoot = put(join(scratch(), 'repo'), { 'src-tauri/Cargo.toml': '[package]\nname = "desk"\n', 'src-tauri/tauri.conf.json': '{"productName":"desk"}\n', 'index.html': '<!doctype html>\n', ...ANDROID_APP('src-tauri/gen/android') })
+  assert.deepEqual(platformsOf(tauriRoot), [])
+  const capacitor = put(join(scratch(), 'repo'), { ...WEB, 'capacitor.config.json': '{"appId":"com.example","webDir":"out","ios":{"path":"native/ios"},"android":{"path":"native/android"}}\n', ...IOS_APP('native/ios/App'), ...ANDROID_APP('native/android') })
+  assert.deepEqual(platformsOf(capacitor), [])
+  const rn = put(join(scratch(), 'repo'), { 'app/package.json': { name: 'app', dependencies: { 'react-native': '0.76.0' } }, 'ios/Podfile': "require_relative '../app/node_modules/react-native/scripts/react_native_pods'\ntarget 'App' do\n  use_react_native!\nend\n", ...IOS_APP('ios'), ...ANDROID_APP('android', 'pluginManagement { includeBuild("../app/node_modules/@react-native/gradle-plugin") }\ninclude ":app"\n') })
+  assert.deepEqual(platformsOf(rn), [])
+  const inside = put(join(scratch(), 'repo'), { 'package.json': { name: 'app', dependencies: { 'react-native': '0.76.0' } }, ...IOS_APP('ios'), ...ANDROID_APP('android') })
+  assert.deepEqual(platformsOf(join(inside, 'ios')), [])
+  assert.deepEqual(platformsOf(join(inside, 'android')), [])
+  const flutter = put(join(scratch(), 'repo'), { 'pubspec.yaml': 'name: shop\ndependencies:\n  flutter:\n    sdk: flutter\n', ...IOS_APP('ios'), ...ANDROID_APP('android') })
+  assert.deepEqual(platformsOf(join(flutter, 'ios')), [])
+})
+
+// T4
+test('a Flutter app is never a mobile platform: at the root, in a subfolder, or as a workspace member', () => {
+  const flutter = (dir) => ({ [`${dir}pubspec.yaml`]: 'name: shop\ndependencies:\n  flutter:\n    sdk: flutter\n', [`${dir}lib/main.dart`]: 'void main() {}\n', ...IOS_APP(`${dir}ios`), ...ANDROID_APP(`${dir}android`) })
+  assert.deepEqual(platformsOf(put(join(scratch(), 'repo'), flutter(''))), [])
+  assert.deepEqual(platformsOf(put(join(scratch(), 'repo'), { ...WEB, ...flutter('mobile_app/') })), [])
+  assert.deepEqual(platformsOf(put(join(scratch(), 'repo'), { 'package.json': { name: 'mono', private: true, workspaces: ['apps/*'] }, 'apps/site/package.json': { name: 'site', dependencies: { next: '15.0.0' } }, ...flutter('apps/shop/') })), [])
+})
+
+// L15
+test('the README of a project with no web platform points at no web graph and no ds:check script', () => {
+  const root = repo({ fixture: 'ios-spm', config: { platforms: { ios: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', outputs: [] } } })
+  const r = run('docs', root)
+  assert.equal(r.status, 0, r.stderr)
+  const readme = read(root, 'ds/README.md')
+  assert.doesNotMatch(readme, /graph\.mjs|ds:check script yet/)
+  assert.match(readme, /The component graph reads web code, and this project declares no web platform, so it has none\./)
+  assert.match(readme, /`node ds\/scripts\/check\.mjs` runs every massimo check that applies to the project/)
+})
+
+// L16
+test('tokens.breakpoints and guard.extraChecks, both from 0.3.0, set minScripts and warn without it', () => {
+  for (const raw of [{ tokens: { breakpoints: { scale: ['40rem'] } } }, { guard: { extraChecks: [{ name: 'lint', run: 'npm run lint' }] } }]) {
+    assert.equal(needsScripts(raw), '0.3.0', JSON.stringify(raw))
+    assert.ok(minScriptsWarning(raw), JSON.stringify(raw))
+  }
+  assert.equal(needsScripts({ guard: { extraChecks: [] } }), null)
+})
+
+// L17
+test('init refuses a malformed platforms value before it writes anything, in a dry run too', () => {
+  for (const dry of [true, false]) {
+    const root = put(join(scratch(), 'repo'), WEB)
+    const r = spawnSync(process.execPath, [join('scripts', 'init.mjs'), '--root', root, '--no-agents-file', '--config-json', '{"platforms":["web","ios"]}', ...(dry ? ['--dry-run'] : [])], { encoding: 'utf8' })
+    assert.equal(r.status, 1, `${dry}: ${r.stdout}`)
+    assert.match(r.stderr, /platforms must map web, ios or android to a block/)
+    assert.ok(!existsSync(join(root, 'massimo.config.json')), `dry: ${dry}`)
+  }
+})
+
+// P4
+test('a project whose default mode is dark extracts its iOS and Android colours, keeping the light ones', () => {
+  const ios = repo({ fixture: 'ios-spm', config: { platforms: { ios: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', defaultMode: 'dark', outputs: [], mobile: { colors: 'tokens' }, mobileSources: [{ kind: 'xcassets', path: 'Sources/DesignSystem/Resources/*.xcassets' }] } } })
+  const i = tokensRun(ios, ['extract'])
+  assert.equal(i.status, 0, i.stderr)
+  const base = JSON.parse(read(ios, 'ds/tokens/draft/base.tokens.json'))
+  const light = JSON.parse(read(ios, 'ds/tokens/draft/theme/light.tokens.json'))
+  assert.ok(base.color.Surface.$value.hex !== light.color.Surface.$value.hex)
+  cpSync(join(ios, 'ds/tokens/draft'), join(ios, 'ds/tokens'), { recursive: true })
+  const config = readConfig(ios)
+  config.tokens.outputs = [{ format: 'xcassets', path: OWNED }]
+  writeConfig(ios, config)
+  assert.equal(tokensRun(ios, ['build']).status, 0)
+  const set = JSON.parse(read(ios, `${OWNED}/Brand/Primary.colorset/Contents.json`))
+  const team = JSON.parse(readFileSync(join('test/fixtures/ios-spm', CATALOG, 'Brand/Primary.colorset/Contents.json'), 'utf8'))
+  const pick = (doc, dark) => doc.colors.find((c) => Boolean(c.appearances?.some((a) => a.value === 'dark')) === dark && !c.appearances?.some((a) => a.appearance === 'contrast')).color.components.red
+  assert.equal(pick(set, false), pick(team, false))
+  assert.equal(pick(set, true), pick(team, true))
+  const android = repo({ fixture: 'android-compose', config: { platforms: { android: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', defaultMode: 'dark', outputs: [], mobileSources: [{ kind: 'android-values', include: ['core/designsystem/src/main/res/values*/*.xml'] }] } } })
+  const a = tokensRun(android, ['extract'])
+  assert.equal(a.status, 0, a.stderr)
+})
+
+// L4
+test('a dark default named Dark, or behind a second modifier, keeps its light values, and a third mode\'s note names what the outputs hold', () => {
+  const capital = repo({ config: { ...tokensMode([XML_OUT]), tokens: { ...tokensMode([XML_OUT]).tokens, defaultMode: 'Dark' } }, tokens: [tok(['color', 'surface'], 'color', srgb('#111111'), { modes: { Light: srgb('#ffffff') } })], defaultMode: 'Dark' })
+  const c = tokensRun(capital, ['build'])
+  assert.equal(c.status, 0, c.stderr)
+  assert.match(read(capital, `${XML_OUT.path}/values/massimo_tokens.xml`), /#FFFFFFFF/)
+  assert.match(read(capital, `${XML_OUT.path}/values-night/massimo_tokens.xml`), /#FF111111/)
+  const two = repo({ config: tokensMode([XML_OUT]), tokens: [tok(['color', 'surface'], 'color', srgb('#111111'), { modes: { light: srgb('#ffffff') } })], defaultMode: 'dark' })
+  const resolver = join(two, 'ds/tokens/tokens.resolver.json')
+  const doc = JSON.parse(readFileSync(resolver, 'utf8'))
+  doc.modifiers = { brand: { contexts: { acme: [] }, default: 'acme' }, ...doc.modifiers }
+  doc.resolutionOrder = [{ $ref: '#/sets/base' }, { $ref: '#/modifiers/brand' }, { $ref: '#/modifiers/theme' }]
+  writeFileSync(resolver, JSON.stringify(doc, null, 2))
+  const t = tokensRun(two, ['build'])
+  assert.equal(t.status, 0, t.stderr)
+  assert.match(read(two, `${XML_OUT.path}/values/massimo_tokens.xml`), /#FFFFFFFF/)
+  assert.match(read(two, `${XML_OUT.path}/values-night/massimo_tokens.xml`), /#FF111111/)
+  const third = repo({ config: { ...tokensMode([COMPOSE_OUT]), tokens: { ...tokensMode([COMPOSE_OUT]).tokens, defaultMode: 'dark' } }, tokens: [tok(['color', 'surface'], 'color', srgb('#111111'), { modes: { light: srgb('#ffffff'), contrast: srgb('#000000') } })], defaultMode: 'dark' })
+  const r = tokensRun(third, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /color\.surface: its contrast value is not carried over: the mobile outputs hold the light and dark values only/)
 })

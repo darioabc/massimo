@@ -658,18 +658,68 @@ const suggestedConfig = {
 // Android folders of a React Native, Expo, NativeScript, Cordova, Tauri or
 // Flutter app, which that framework builds.
 const MOBILE_SHELLS = ['react-native', 'expo', '@nativescript/core', 'cordova-ios', 'cordova-android', '@tauri-apps/cli', '@tauri-apps/api']
+// A native project a shell framework builds names it: React Native's
+// use_react_native! and its Gradle plugin, Flutter's pods and Gradle plugin,
+// Capacitor's and Tauri's own settings.
+const SHELL_NATIVE = /use_react_native!|react[-_]native|flutter_install_all_ios_pods|flutter_root|flutter-gradle|dev\.flutter|\bcapacitor\b|tauri\.settings\.gradle|tauri-android/i
+const shellManifest = (dir) => {
+  if (existsSync(join(dir, 'pubspec.yaml')) || existsSync(join(dir, 'tauri.conf.json')) || existsSync(join(dir, 'src-tauri', 'tauri.conf.json'))) return true
+  if (['ts', 'js', 'mjs', 'json'].some((ext) => existsSync(join(dir, `capacitor.config.${ext}`)))) return true
+  try {
+    const pkg = depsOf(readJson(join(dir, 'package.json'), {}))
+    return MOBILE_SHELLS.some((dep) => Object.hasOwn(pkg, dep))
+  } catch {
+    return false
+  }
+}
+// detect run inside a shell's own ios/ or android/ folder: the app above it names the framework.
+function insideShell() {
+  let at = resolve(root)
+  for (let i = 0; i < 6; i++) {
+    const up = dirname(at)
+    if (up === at || existsSync(join(at, '.git'))) return false
+    at = up
+    if (shellManifest(at)) return true
+  }
+  return false
+}
+// The native paths a Capacitor config gives its iOS and Android projects (ios.path, android.path).
+const capacitorPaths = (text) => ['ios', 'android'].map((p) => new RegExp(String.raw`["']?${p}["']?\s*:\s*\{[^}]*?["']?path["']?\s*:\s*["']([^"']+)["']`).exec(text)?.[1]).filter(Boolean)
+const normal = (p) => {
+  const out = []
+  for (const step of p.split('/')) {
+    if (step === '..') out.pop()
+    else if (step && step !== '.') out.push(step)
+  }
+  return out.join('/') || '.'
+}
 function detectPlatforms() {
-  if (MOBILE_SHELLS.some(has) || files.includes('pubspec.yaml')) return []
+  if (MOBILE_SHELLS.some(has) || files.includes('pubspec.yaml') || insideShell()) return []
   // A shell can sit below the root too (a workspace member, a mobile/
   // folder): any folder whose package.json names a shell framework, or that
-  // holds a capacitor.config or a pubspec.yaml, is left out with all it holds.
+  // holds a capacitor.config, a pubspec.yaml or a Tauri config, is left out
+  // with all it holds, and so are the native paths a Capacitor config names
+  // and a native project that names a shell framework itself.
   const shell = new Set(notUi)
+  const readText = (f) => {
+    try {
+      return readFileSync(join(root, f), 'utf8')
+    } catch {
+      return ''
+    }
+  }
   for (const f of listed) {
-    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : null
-    if (!dir) continue
+    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '.'
     const name = f.slice(f.lastIndexOf('/') + 1)
-    if (/^(?:capacitor\.config\.(?:ts|js|mjs|json)|pubspec\.yaml)$/.test(name)) shell.add(dir)
-    else if (name === 'package.json') {
+    if (/^capacitor\.config\.(?:ts|js|mjs|json)$/.test(name)) {
+      // At the root, its android/ and ios/ are kept out above (notUi), and a web app stays one.
+      if (dir !== '.') shell.add(dir)
+      for (const p of capacitorPaths(readText(f))) shell.add(normal(`${dir}/${p}`))
+    } else if (name === 'pubspec.yaml') shell.add(dir)
+    else if (/^(?:tauri\.conf\.json5?|Tauri\.toml)$/.test(name)) shell.add(/(?:^|\/)src-tauri$/.test(dir) ? (dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '.') : dir)
+    else if (name === 'Podfile' || /^settings\.gradle(?:\.kts)?$/.test(name)) {
+      if (SHELL_NATIVE.test(readText(f))) shell.add(dir)
+    } else if (name === 'package.json' && dir !== '.') {
       let own = {}
       try {
         own = depsOf(readJson(join(root, f), {}))
@@ -679,6 +729,7 @@ function detectPlatforms() {
       if (MOBILE_SHELLS.some((dep) => Object.hasOwn(own, dep))) shell.add(dir)
     }
   }
+  if (shell.has('.')) return []
   const own = listed.filter((f) => ![...shell].some((dir) => f.startsWith(`${dir}/`)) && !f.startsWith(ownDir))
   const read = (f) => {
     try {

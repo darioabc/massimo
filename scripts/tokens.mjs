@@ -608,6 +608,18 @@ function readSources(root, config, projectDir = null) {
     else if (s?.kind === 'android-values') sources.push({ kind: 'android-values', ...readAndroidValues(root, androidValueFiles(root, s.include, config.ignore).filter((f) => !massimoWrote(root, projectDir, f))) })
     else sources.push({ kind: 'xcassets', tokens: [], notes: [`tokens.mobileSources[${i}]: the kind ${JSON.stringify(s?.kind)} is not one these scripts read (xcassets, android-values)`] })
   }
+  // A project whose default mode is dark: a phone's dark appearance (or
+  // values-night) is the default value, and its light one the light mode.
+  if (config.tokens.defaultMode === 'dark') {
+    for (const src of sources.filter((x) => x.kind === 'xcassets' || x.kind === 'android-values')) {
+      for (const t of src.tokens) {
+        if (!('dark' in t.modes)) continue
+        const { dark, ...rest } = t.modes
+        t.modes = { ...rest, light: t.value }
+        t.value = dark
+      }
+    }
+  }
   return { sources, styleFiles }
 }
 
