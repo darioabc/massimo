@@ -1933,11 +1933,19 @@ function insideRoot(root, path) {
 // Files a build would write over that massimo did not write: listed in
 // mobile-outputs.json, opening with massimo's header, or a Contents.json
 // massimo is the author of count as its own.
+// A listed file whose bytes are no longer the ones massimo wrote (its hash
+// differs) was changed by hand, and is not written over either: `changed`.
 function notOwned(root, files, owned) {
   const out = []
+  const changed = []
   for (const f of files.filter((x) => x.mobile)) {
     const shown = rel(root, f.path)
-    if (!existsSync(f.path) || shown in owned.files) continue
+    if (!existsSync(f.path)) continue
+    if (shown in owned.files) {
+      const now = readFileSync(f.path)
+      if (sha256(now) !== owned.files[shown] && now.toString('utf8') !== f.text) changed.push(shown)
+      continue
+    }
     const text = readFileSync(f.path, 'utf8')
     if (f.path.endsWith('.json')) {
       let author = null
@@ -1950,13 +1958,17 @@ function notOwned(root, files, owned) {
     } else if (hasMassimoHeader(text.replace(/^<\?xml[^>]*\?>\s*/, ''))) continue
     out.push(shown)
   }
-  return out
+  return { theirs: out, changed }
 }
 
-// Owned files the build no longer makes and that are still on disk.
+// Owned files the build no longer makes and that are still on disk:
+// `orphans` as massimo wrote them, and `changed`, changed by hand since,
+// which are the team's now and never removed.
 function orphansOf(root, files, owned) {
   const made = new Set(files.filter((f) => f.mobile).map((f) => rel(root, f.path)))
-  return Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p)) && insideRoot(root, join(root, p))).sort(compare)
+  const left = Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p)) && insideRoot(root, join(root, p))).sort(compare)
+  const same = (p) => sha256(readFileSync(join(root, p))) === owned.files[p]
+  return { orphans: left.filter(same), changed: left.filter((p) => !same(p)) }
 }
 
 // Remove a file and the folders above it that it leaves empty, up to the repo root.
@@ -1974,9 +1986,10 @@ function removeOwned(root, path) {
   }
 }
 
-function writeOwned(root, projectDir, files, keep) {
+// A file kept on the list keeps the hash massimo wrote, never what is on disk now.
+function writeOwned(root, projectDir, files, keep, owned) {
   const entries = files.filter((f) => f.mobile).map((f) => [rel(root, f.path), sha256(f.text)])
-  for (const p of keep) entries.push([p, sha256(readFileSync(join(root, p)))])
+  for (const p of keep) entries.push([p, owned.files[p]])
   entries.sort((a, b) => compare(a[0], b[0]))
   writeText(ownedPath(projectDir), jsonText({ format: OWNED_FORMAT, writtenBy: SCRIPTS_VERSION, files: Object.fromEntries(entries) }))
 }
@@ -2389,7 +2402,8 @@ function main() {
     if (mobile) {
       const outside = files.filter((f) => f.mobile && !insideRoot(root, f.path)).map((f) => rel(root, f.path))
       if (outside.length > 0) fail(`these mobile files would be written outside the repo (a symlink on the way leads out), so the build writes nothing: ${outside.join(', ')}`)
-      const theirs = notOwned(root, files, owned)
+      const { theirs, changed } = notOwned(root, files, owned)
+      if (changed.length > 0) fail(`these files were changed by hand since massimo wrote them, so the build leaves them alone and writes nothing: ${changed.join(', ')}. Put the change in the tokens and restore the file (git checkout), or point the output at another path in tokens.outputs.`)
       if (theirs.length > 0) fail(`these files exist and massimo did not write them, so the build leaves them alone and writes nothing: ${theirs.join(', ')}. Point the output at a path of its own in tokens.outputs.`)
     }
     for (const f of files) writeText(f.path, f.text)
@@ -2400,10 +2414,12 @@ function main() {
     }
     const lines = []
     if (owned) {
-      const orphans = orphansOf(root, files, owned)
+      const { orphans, changed } = orphansOf(root, files, owned)
       const prune = truthy(flags.prune)
       if (prune) for (const p of orphans) removeOwned(root, p)
-      writeOwned(root, projectDir, files, prune ? [] : orphans)
+      // A file changed by hand that the build no longer makes is the team's now: off the list.
+      writeOwned(root, projectDir, files, prune ? [] : orphans, owned)
+      for (const p of changed) lines.push(`  ${p} was changed by hand since massimo wrote it, so it is left as it is and no longer listed`)
       if (orphans.length > 0) lines.push(prune ? `  removed ${orphans.length} ${orphans.length === 1 ? 'file' : 'files'} the build no longer makes: ${orphans.join(', ')}` : `  no longer built, still on disk: ${orphans.join(', ')}; run build --prune to remove ${orphans.length === 1 ? 'it' : 'them'}`)
     }
     if (mobile && truthy(flags.dedupe)) {
@@ -2446,7 +2462,8 @@ function main() {
   // A draft read with --source has no outputs of its own: only its contrast is checked.
   const stale = typeof flags.source === 'string' ? [] : files.filter((f) => !existsSync(f.path) || readFileSync(f.path, 'utf8') !== f.text)
   // Mobile files massimo wrote that the build no longer makes.
-  const orphans = typeof flags.source !== 'string' && (mobile || existsSync(ownedPath(projectDir))) ? orphansOf(root, files, readOwned(projectDir)) : []
+  const left = typeof flags.source !== 'string' && (mobile || existsSync(ownedPath(projectDir))) ? orphansOf(root, files, readOwned(projectDir)) : { orphans: [], changed: [] }
+  const orphans = [...left.orphans, ...left.changed].sort(compare)
   for (const p of orphans) process.stderr.write(`  orphan: ${p} (massimo wrote it and no longer builds it)\n`)
   // With tokens.mirror on, the mirror itself is checked against the style files too.
   const behind = config.tokens.mirror && typeof flags.source !== 'string' ? mirrorState(root, config, projectDir).stale : []
