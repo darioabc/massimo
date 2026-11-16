@@ -455,3 +455,72 @@ test('tokens mode leaves out and lists a colour whose owned catalog compiles int
   assert.match(r.stdout, /not carried over to App\/DesignTokens\.swift: color\.Accent is in Sources\/DesignSystem\/Resources\/MassimoTokens\.xcassets, which is not in the bundle this file reads/)
   assert.doesNotMatch(read(root, 'App/DesignTokens.swift'), /Color\("Accent"/)
 })
+
+// ── Colour sets --dedupe must keep ──────────────────────────────────────────
+
+const draftColor = (root, name) => {
+  const doc = JSON.parse(read(root, 'ds/tokens/base.tokens.json'))
+  return name.split('.').reduce((at, k) => at?.[k], doc)
+}
+// Extracted in tokens mode with the owned catalog in the package, built with --dedupe.
+const dedupe = (files, edit = null) => {
+  const { root, extract } = extracted({ colors: 'tokens', outputs: [{ format: 'xcassets', path: OWNED }], files })
+  if (edit) edit(root)
+  const r = tokensRun(root, ['build', '--dedupe'])
+  assert.equal(r.status, 0, r.stderr)
+  return { root, r, extract }
+}
+
+// I3
+test('a colour set with a localized entry, or two entries for one appearance, is never deduped, and its base entry is the value', () => {
+  const loc = (first) => colorset(first ? [entry('#FF0000'), { ...entry('#00FF00'), locale: 'fr' }] : [{ ...entry('#00FF00'), locale: 'fr' }, entry('#FF0000')])
+  const { root, r } = dedupe({ [`${CATALOG}/Loc.colorset/Contents.json`]: loc(true), [`${CATALOG}/LocFirst.colorset/Contents.json`]: loc(false), [`${CATALOG}/Twice.colorset/Contents.json`]: colorset([entry('#FF0000'), entry('#0000FF')]) })
+  for (const name of ['Loc', 'LocFirst', 'Twice']) {
+    assert.ok(existsSync(join(root, CATALOG, `${name}.colorset/Contents.json`)), name)
+    assert.ok(!existsSync(join(root, OWNED, `${name}.colorset`)), name)
+  }
+  assert.match(r.stdout, /color\.Loc has entries massimo does not model yet \(an entry for the locale fr\)/)
+  assert.match(r.stdout, /color\.Twice has entries massimo does not model yet \(two entries for the any appearance\)/)
+  assert.equal(draftColor(root, 'color.Loc').$value.hex, '#ff0000')
+  assert.equal(draftColor(root, 'color.LocFirst').$value.hex, '#ff0000')
+})
+
+// I4
+test('a colour set whose Contents.json cannot be read is never deduped, and the build says why', () => {
+  const conflict = '{\n  "colors" : [\n<<<<<<< HEAD\n    { "color" : { "color-space" : "display-p3", "components" : { "alpha" : "1.000", "blue" : "0x33", "green" : "0x22", "red" : "0x11" } }, "idiom" : "universal" }\n=======\n    { "color" : { "color-space" : "srgb", "components" : { "alpha" : "1.000", "blue" : "0x33", "green" : "0x22", "red" : "0x11" } }, "idiom" : "universal" }\n>>>>>>> theirs\n  ]\n}\n'
+  const { root, r } = dedupe({}, (at) => writeFileSync(join(at, EXTRA, 'Ink.colorset/Contents.json'), conflict))
+  assert.equal(readFileSync(join(root, EXTRA, 'Ink.colorset/Contents.json'), 'utf8'), conflict)
+  assert.match(r.stdout, /color\.Ink has entries massimo does not model yet \(a Contents\.json massimo cannot read\)/)
+})
+
+// L5
+test('a colour set with only Display P3 entries is read from them, and never called empty', () => {
+  const p3 = (idiom) => entry('#FF2010', { gamut: 'display-P3', idiom })
+  const { root, extract } = dedupe({ [`${CATALOG}/IphoneP3Only.colorset/Contents.json`]: colorset([p3('iphone'), entry('#FF2010', { gamut: 'sRGB', idiom: 'ipad' })]), [`${CATALOG}/UniversalP3Only.colorset/Contents.json`]: colorset([p3('universal')]) })
+  for (const name of ['IphoneP3Only', 'UniversalP3Only']) {
+    assert.doesNotMatch(extract.stdout + read(root, 'ds/tokens/draft/report.md'), new RegExp(`${name}\\.colorset: holds no colour`))
+    assert.doesNotMatch(read(root, 'ds/tokens/draft/report.md'), new RegExp(`${name}\\.colorset: has display-P3 gamut entries, which are not read; the sRGB ones are`))
+    assert.equal(draftColor(root, `color.${name}`).$value.colorSpace, 'display-p3', name)
+    assert.ok(existsSync(join(root, CATALOG, `${name}.colorset/Contents.json`)), name)
+  }
+})
+
+// T5
+test('every variant check keeps a team colour set from --dedupe: any differing from light, an unknown appearance, an unreadable entry, and variants the token records', () => {
+  const sets = {
+    [`${EXTRA}/Ink.colorset/Contents.json`]: colorset([entry('#112233'), { ...entry('#445566'), appearances: [{ appearance: 'luminosity', value: 'light' }] }, entry('#EEF0F5', { appearance: 'dark' })]),
+    [`${CATALOG}/Dim.colorset/Contents.json`]: colorset([entry('#123456'), { ...entry('#654321'), appearances: [{ appearance: 'luminosity', value: 'dim' }] }]),
+    [`${CATALOG}/Sys.colorset/Contents.json`]: colorset([entry('#123456'), { appearances: [{ appearance: 'luminosity', value: 'dark' }], color: { platform: 'ios', reference: 'systemBlueColor' }, idiom: 'universal' }]),
+  }
+  const { root, r } = dedupe(sets)
+  for (const [name, why] of [['Ink', 'an any-appearance entry that differs from the light one'], ['Dim', 'an entry for the appearance'], ['Sys', 'a dark entry it cannot read']]) {
+    assert.ok(r.stdout.includes(`color.${name} has entries massimo does not model yet (${why}`), `${name}: ${r.stdout}`)
+    assert.ok(Object.keys(sets).some((p) => p.includes(`${name}.colorset`) && existsSync(join(root, p))), name)
+  }
+  // A token that records variants, with no app catalog holding its set.
+  const lone = repo({ config: tokensMode([XCASSETS_OUT]), tokens: [tok(['color', 'ink'], 'color', srgb('#112233'), { mobile: { asset: 'Ink', variants: ['display-P3 gamut'] } })] })
+  const l = tokensRun(lone, ['build'])
+  assert.equal(l.status, 0, l.stderr)
+  assert.match(l.stdout, /color\.ink has entries massimo does not model yet \(display-P3 gamut\)/)
+  assert.ok(!existsSync(join(lone, XCASSETS_OUT.path, 'Ink.colorset')))
+})

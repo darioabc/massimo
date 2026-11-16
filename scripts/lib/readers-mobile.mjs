@@ -67,6 +67,9 @@ export function colorEntryCss(color) {
   return { css: eight ? toHex({ r, g, b, a }) : `color(srgb ${fixed(r)} ${fixed(g)} ${fixed(b)}${alphaText})`, note, form }
 }
 
+// The keys of a colour entry a token holds; any other (locale, subtype…) is a variant.
+const ENTRY_KEYS = ['idiom', 'appearances', 'color', 'display-gamut']
+
 // Which appearance an entry is for: any, light, dark, or high contrast
 // (in light or dark); null for an appearance massimo does not model.
 function appearanceOf(entry) {
@@ -137,7 +140,8 @@ function readColorSet(path, folder, name) {
   try {
     doc = readJson(join(path, 'Contents.json'))
   } catch (err) {
-    return { name, folder, values, notes: [`${folder}: Contents.json cannot be read (${err.message})`], variants: [] }
+    // What it holds cannot be known, so it is never the owned catalog's to replace.
+    return { name, folder, values, notes: [`${folder}: Contents.json cannot be read (${err.message})`], refused: 1, variants: ['a Contents.json massimo cannot read'] }
   }
   const colors = Array.isArray(doc?.colors) ? doc.colors : []
   // One idiom is read: universal, else iphone, else the first there is.
@@ -154,10 +158,22 @@ function readColorSet(path, folder, name) {
   let refused = 0
   const gamuts = new Set()
   const entries = colors.filter((c) => idiomOf(c) === idiom)
+  // Wide-gamut entries are read only when the set has no sRGB ones: then they are its colour.
+  const wideOnly = entries.length > 0 && entries.every((e) => e['display-gamut'] && e['display-gamut'] !== 'sRGB')
+  const seen = new Set()
   for (const entry of entries) {
+    // A key a token cannot hold (a locale, a subtype…) makes it another entry, never the base one.
+    const extra = Object.keys(entry).filter((k) => !ENTRY_KEYS.includes(k))
+    if (extra.length > 0) {
+      const what = extra.map((k) => (k === 'locale' ? `an entry for the locale ${entry.locale}` : `an entry with ${k} ${JSON.stringify(entry[k])}`)).join(', ')
+      notes.push(`${folder}: has ${what}, which is not read`)
+      variants.add(what)
+      refused++
+      continue
+    }
     if (entry['display-gamut'] && entry['display-gamut'] !== 'sRGB') {
       gamuts.add(entry['display-gamut'])
-      continue
+      if (!wideOnly) continue
     }
     const which = appearanceOf(entry)
     if (!which) {
@@ -167,6 +183,12 @@ function readColorSet(path, folder, name) {
       continue
     }
     if (!entry.color) continue
+    if (seen.has(which)) {
+      notes.push(`${folder}: has two entries for the ${which} appearance; read the first`)
+      variants.add(`two entries for the ${which} appearance`)
+      continue
+    }
+    seen.add(which)
     const read = colorEntryCss(entry.color)
     if (read.why) {
       notes.push(`${folder}: the ${which} entry ${read.why}`)
@@ -179,8 +201,8 @@ function readColorSet(path, folder, name) {
     forms[which] = read.form
   }
   for (const g of gamuts) {
-    notes.push(`${folder}: has ${g} gamut entries, which are not read; the sRGB ones are`)
-    variants.add(`${g} gamut`)
+    notes.push(wideOnly ? `${folder}: has only ${g} gamut entries, which are read` : `${folder}: has ${g} gamut entries, which are not read; the sRGB ones are`)
+    variants.add(wideOnly ? `${g} gamut entries only` : `${g} gamut`)
   }
   if (values.light && values.any && values.light !== values.any) variants.add('an any-appearance entry that differs from the light one')
   // How its components are written (0xRR, 102 or 0.400), so a build writes them back the same way.
