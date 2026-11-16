@@ -98,9 +98,11 @@ export function lineAt(text) {
 // Colour literals in Swift: SwiftUI, UIKit, AppKit and Core Graphics
 // initialisers that take components, #colorLiteral, and the common
 // hex-taking initialisers apps add themselves.
+// A component must be a number, so Color(red: r, …) in a hex helper is not counted.
+const NUMBER = String.raw`\s*[-+]?(?:\d|\.\d)`
 const SWIFT_COLOR = [
-  /\b(?:Color|UIColor|NSColor)\s*\(\s*(?:\.\w+\s*,\s*)?(?:red|white|hue|displayP3Red)\s*:/g,
-  /\bCGColor\s*\(\s*(?:red|srgbRed|gray|genericGrayGamma2_2Gray)\s*:/g,
+  new RegExp(String.raw`\b(?:Color|UIColor|NSColor)\s*\(\s*(?:\.\w+\s*,\s*)?(?:red|white|hue|displayP3Red)\s*:${NUMBER}`, 'g'),
+  new RegExp(String.raw`\bCGColor\s*\(\s*(?:red|srgbRed|gray|genericGrayGamma2_2Gray)\s*:${NUMBER}`, 'g'),
   /#colorLiteral\s*\(/g,
   /\b(?:Color|UIColor|NSColor)\s*\(\s*(?:hex|hexString|rgb|rgba|argb)\s*:\s*(?:"#?[0-9A-Fa-f]{3,8}"|0x[0-9A-Fa-f]{6,8})/g,
 ]

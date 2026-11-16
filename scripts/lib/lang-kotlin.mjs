@@ -10,7 +10,7 @@ import { lineAt, maskSource } from './lang-swift.mjs'
 const KOTLIN_COLOR = [
   /\bColor\s*\(\s*0x[0-9A-Fa-f]{6,8}(?:L|UL|u)?\s*\)/g,
   /\bColor\s*\(\s*(?:red\s*=\s*)?-?(?:\d+\.?\d*|\.\d+)f?\s*,/g,
-  /\bColor\s*\.\s*(?:parseColor\s*\(\s*"#?[0-9A-Fa-f]{3,8}"|rgb\s*\(|argb\s*\(|valueOf\s*\(\s*-?\d)/g,
+  /\bColor\s*\.\s*(?:parseColor\s*\(\s*"#?[0-9A-Fa-f]{3,8}"|rgb\s*\(\s*-?\d|argb\s*\(\s*-?\d|valueOf\s*\(\s*-?\d)/g,
   /"#?[0-9A-Fa-f]{6,8}"\s*\.\s*toColorInt\s*\(/g,
 ]
 
