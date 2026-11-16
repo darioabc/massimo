@@ -10,7 +10,7 @@ import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { COMPOSE_OUT, EXTRA, OWNED, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
+import { CATALOG, COMPOSE_OUT, EXTRA, OWNED, colorset, entry, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
 
 const listed = (root) => JSON.parse(read(root, 'ds/tokens/mobile-outputs.json')).files
 const git = (root, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, encoding: 'utf8' })
@@ -334,4 +334,124 @@ test('tokens mode with no catalog holding a high-contrast colour leaves it out a
   assert.equal(r.status, 0, r.stderr)
   assert.match(r.stdout, /not carried over to Sources\/DesignSystem\/DesignTokens\.swift: color\.Surface has high-contrast entries, which massimo does not model yet, and no catalog this build reads holds it; it is left out rather than built without them/)
   assert.doesNotMatch(read(root, 'Sources/DesignSystem/DesignTokens.swift'), /static let surface/)
+})
+
+// ── The bundle a colour is read from ────────────────────────────────────────
+
+const ink = colorset([entry('#112233')])
+const PBX = `// !$*UTF8*$!
+{
+	objects = {
+		AA01 /* App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = App;
+			sourceTree = "<group>";
+		};
+		AA02 /* DesignSystem */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DesignSystem;
+			sourceTree = "<group>";
+		};
+		BB01 /* App */ = {
+			isa = PBXNativeTarget;
+			fileSystemSynchronizedGroups = (
+				AA01 /* App */,
+			);
+			name = App;
+			productType = "com.apple.product-type.application";
+		};
+		BB02 /* DesignSystem */ = {
+			isa = PBXNativeTarget;
+			fileSystemSynchronizedGroups = (
+				AA02 /* DesignSystem */,
+			);
+			name = DesignSystem;
+			productType = "com.apple.product-type.framework";
+		};
+	};
+}
+`
+const XCODEGEN = 'name: App\noptions:\n  bundleIdPrefix: com.example\ntargets:\n  App:\n    type: application\n    platform: iOS\n    sources: [App]\n  DesignSystem:\n    type: framework\n    platform: iOS\n    sources:\n      - path: DesignSystem\n'
+const TUIST_APP = 'import ProjectDescription\n\nlet project = Project(name: "App", targets: [\n    .target(name: "App", destinations: .iOS, product: .app, bundleId: "com.example.app", sources: ["Sources/**"], resources: ["Resources/**"]),\n])\n'
+const TUIST_DS = 'import ProjectDescription\n\nlet project = Project(name: "DesignSystem", targets: [\n    .target(name: "DesignSystem", destinations: .iOS, product: .framework, bundleId: "com.example.ds", sources: ["Sources/**"], resources: ["Resources/**"]),\n])\n'
+const twoTargets = (layout) => {
+  const [app, ds, files] = {
+    xcodeproj: ['App', 'DesignSystem', { 'App.xcodeproj/project.pbxproj': PBX }],
+    xcodegen: ['App', 'DesignSystem', { 'project.yml': XCODEGEN }],
+    tuist: ['Projects/App/Resources', 'Projects/DesignSystem/Resources', { 'Workspace.swift': 'import ProjectDescription\nlet workspace = Workspace(name: "App", projects: ["Projects/*"])\n', 'Projects/App/Project.swift': TUIST_APP, 'Projects/DesignSystem/Project.swift': TUIST_DS }],
+  }[layout]
+  const out = layout === 'tuist' ? 'Projects/DesignSystem/Sources/DesignTokens.swift' : 'DesignSystem/DesignTokens.swift'
+  const root = repo({
+    files: { ...files, [`${app}/Assets.xcassets/Contents.json`]: { info: { author: 'xcode', version: 1 } }, [`${app}/Assets.xcassets/AppTint.colorset/Contents.json`]: ink, [`${ds}/Colors.xcassets/Contents.json`]: { info: { author: 'xcode', version: 1 } }, [`${ds}/Colors.xcassets/Brand.colorset/Contents.json`]: ink },
+    config: { platforms: { ios: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', outputs: [{ format: 'swift', path: out }], mobile: { colors: 'catalog' }, mobileSources: [{ kind: 'xcassets', path: `${ds}/Colors.xcassets` }, { kind: 'xcassets', path: `${app}/Assets.xcassets` }] } },
+    tokens: [tok(['color', 'AppTint'], 'color', srgb('#112233'), { mobile: { asset: 'AppTint' } }), tok(['color', 'Brand'], 'color', srgb('#112233'), { mobile: { asset: 'Brand' } })],
+  })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  return { r, swift: read(root, out), out, app }
+}
+
+// I1
+test('a Swift file in one Xcode, XcodeGen or Tuist target never reads a colour from another target\'s catalog', () => {
+  for (const [layout, label] of [['xcodeproj', 'the Xcode target DesignSystem'], ['xcodegen', 'the XcodeGen target DesignSystem'], ['tuist', 'the Tuist target DesignSystem']]) {
+    const { r, swift, out, app } = twoTargets(layout)
+    assert.doesNotMatch(swift, /appTint/, layout)
+    assert.match(swift, /static let brand = Color\("Brand", bundle: designTokensBundle\)/, layout)
+    assert.ok(r.stdout.includes(`not carried over to ${out}: color.AppTint is in ${app}/Assets.xcassets, which is not in the bundle this file reads (${label})`), `${layout}: ${r.stdout}`)
+  }
+})
+
+// I2
+test('--dedupe never removes a colour set from a catalog that compiles into another bundle than the owned one', () => {
+  const { root } = extracted({ colors: 'tokens', outputs: [{ format: 'xcassets', path: 'App/MassimoTokens.xcassets' }, { format: 'swift', path: 'Sources/DesignSystem/DesignTokens.swift' }] })
+  const b = tokensRun(root, ['build'])
+  assert.equal(b.status, 0, b.stderr)
+  assert.doesNotMatch(b.stdout, /duplicates:/)
+  const d = tokensRun(root, ['build', '--dedupe'])
+  assert.equal(d.status, 0, d.stderr)
+  assert.doesNotMatch(d.stdout, /removed \d+ colour set/)
+  assert.ok(existsSync(join(root, CATALOG, 'Brand/Primary.colorset/Contents.json')))
+  // The other way round: the owned catalog in the package, the app's catalog with the same names.
+  const app = extracted({ colors: 'tokens', outputs: [{ format: 'xcassets', path: OWNED }], files: { 'App/Assets.xcassets/Contents.json': { info: { author: 'xcode', version: 1 } }, 'App/Assets.xcassets/Ink.colorset/Contents.json': ink }, sources: [{ kind: 'xcassets', path: EXTRA }, { kind: 'xcassets', path: 'App/Assets.xcassets' }] }).root
+  const config = readConfig(app)
+  config.tokens.mobileSources = [{ kind: 'xcassets', path: 'App/Assets.xcassets' }]
+  writeConfig(app, config)
+  assert.equal(tokensRun(app, ['build', '--dedupe']).status, 0)
+  assert.ok(existsSync(join(app, 'App/Assets.xcassets/Ink.colorset/Contents.json')))
+})
+
+// R6
+test('a colour set name in two catalogs is read from the one in this file\'s bundle, whatever order mobileSources lists them in', () => {
+  const brand = readFileSync(join('test/fixtures/ios-spm', CATALOG, 'Brand/Primary.colorset/Contents.json'), 'utf8')
+  for (const appFirst of [true, false]) {
+    const sources = [{ kind: 'xcassets', path: 'MyApp/Assets.xcassets' }, { kind: 'xcassets', path: CATALOG }]
+    const { root } = extracted({ colors: 'catalog', outputs: [{ format: 'swift', path: 'Sources/DesignSystem/DesignTokens.swift' }], files: { 'MyApp/Assets.xcassets/Contents.json': { info: { author: 'xcode', version: 1 } }, 'MyApp/Assets.xcassets/Brand/Contents.json': { info: { author: 'xcode', version: 1 }, properties: { 'provides-namespace': true } }, 'MyApp/Assets.xcassets/Brand/Primary.colorset/Contents.json': brand }, sources: appFirst ? sources : [...sources].reverse() })
+    const r = tokensRun(root, ['build'])
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(read(root, 'Sources/DesignSystem/DesignTokens.swift'), /public static let brandPrimary = Color\("Brand\/Primary", bundle: \.module\)/, `app first: ${appFirst}`)
+  }
+})
+
+// L18
+test('a package target named through a constant is a package target: public, and read from .module', () => {
+  const root = repo({
+    files: { 'Package.swift': '// swift-tools-version: 5.9\nimport PackageDescription\n\nlet ds = "DesignSystem"\nlet package = Package(\n    name: "Acme",\n    products: [.library(name: ds, targets: [ds])],\n    targets: [.target(name: ds, resources: [.process("Colors.xcassets")])]\n)\n', 'Sources/DesignSystem/Colors.xcassets/Contents.json': { info: { author: 'xcode', version: 1 } }, 'Sources/DesignSystem/Colors.xcassets/Brand.colorset/Contents.json': ink },
+    config: { platforms: { ios: {} }, tokens: { source: 'ds/tokens/tokens.resolver.json', outputs: [{ format: 'swift', path: 'Sources/DesignSystem/DesignTokens.swift' }], mobile: { colors: 'catalog' }, mobileSources: [{ kind: 'xcassets', path: 'Sources/DesignSystem/Colors.xcassets' }] } },
+    tokens: [tok(['color', 'Brand'], 'color', srgb('#112233'), { mobile: { asset: 'Brand' } })],
+  })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  const swift = read(root, 'Sources/DesignSystem/DesignTokens.swift')
+  assert.match(swift, /public enum DesignTokens/)
+  assert.match(swift, /public static let brand = Color\("Brand", bundle: \.module\)/)
+  assert.match(r.stdout, /wired: Sources\/DesignSystem\/DesignTokens\.swift sits in the Swift package target DesignSystem/)
+})
+
+// T7
+test('tokens mode leaves out and lists a colour whose owned catalog compiles into another bundle than the Swift file', () => {
+  const { root } = extracted({ colors: 'tokens', outputs: [{ format: 'xcassets', path: OWNED }, { format: 'swift', path: 'App/DesignTokens.swift' }] })
+  const r = tokensRun(root, ['build'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /not carried over to App\/DesignTokens\.swift: color\.Accent is in Sources\/DesignSystem\/Resources\/MassimoTokens\.xcassets, which is not in the bundle this file reads/)
+  assert.doesNotMatch(read(root, 'App/DesignTokens.swift'), /Color\("Accent"/)
 })

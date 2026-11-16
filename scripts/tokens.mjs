@@ -63,7 +63,7 @@ import { buildXcassets, xcassetsPlan } from './lib/build-xcassets.mjs'
 import { assetName } from './lib/mobile-names.mjs'
 import { MOBILE_FORMATS, PLATFORM_OF_FORMAT, hasMassimoHeader, mobileEntries } from './lib/mobile-tokens.mjs'
 import { mobileOptions } from './lib/mobile-units.mjs'
-import { packageTargetOf } from './lib/platform-ios.mjs'
+import { bundleHomes, bundleOf, packageTargetOf, sameBundle } from './lib/platform-ios.mjs'
 import { adapterFor } from './lib/platforms.mjs'
 import { androidValueFiles, catalogColors, catalogPaths, isOwnedCatalog, readAndroidValues, readAssetCatalog, samePlace } from './lib/readers-mobile.mjs'
 import { aliasPath, cssVarFor, flattenDtcg, isAlias } from './lib/source.mjs'
@@ -1755,14 +1755,22 @@ function buildMobile(root, config, model, outputs, projectDir) {
       return null
     }
   }
-  // The app's own colour sets, by name, from the catalogs tokens.mobileSources lists.
-  const teamSets = new Map()
+  // The app's own colour sets, by name, from the catalogs tokens.mobileSources
+  // lists: every set of a name (two targets' catalogs may each hold one), and
+  // the one that meets the owned catalog: in its bundle, else the first.
+  const homes = bundleHomes(repoFiles, read)
+  const catalogOf = (folder) => folder.slice(0, folder.indexOf('.xcassets') + '.xcassets'.length)
+  const ownedCatalog = outputs.find((o) => o.format === 'xcassets')
+  const ownedDir = ownedCatalog ? String(ownedCatalog.path).replace(/^\.\//, '').replace(/\/+$/, '') : null
+  const teamAll = new Map()
+  const owned = ownedCatalogs(config, projectDir)
   for (const s of Array.isArray(config.tokens.mobileSources) ? config.tokens.mobileSources : []) {
     if (s?.kind !== 'xcassets') continue
-    const owned = ownedCatalogs(config, projectDir)
-    for (const catalog of catalogPaths(root, s.path, config.ignore).filter((c) => !isOwnedCatalog(root, owned, c))) for (const set of catalogColors(root, catalog)) if (!teamSets.has(set.name)) teamSets.set(set.name, set)
+    for (const catalog of catalogPaths(root, s.path, config.ignore).filter((c) => !isOwnedCatalog(root, owned, c))) {
+      for (const set of catalogColors(root, catalog)) if (!(teamAll.get(set.name) ?? []).some((x) => x.folder === set.folder)) teamAll.set(set.name, [...(teamAll.get(set.name) ?? []), set])
+    }
   }
-  const ownedCatalog = outputs.find((o) => o.format === 'xcassets')
+  const teamSets = new Map([...teamAll].map(([name, sets]) => [name, (ownedDir && sets.find((x) => sameBundle(ownedDir, catalogOf(x.folder), homes, { strict: true }))) || sets[0]]))
   if (options.colors === 'catalog' && ownedCatalog) {
     throw new Error(`tokens.outputs has an xcassets output (${ownedCatalog.path}) while colours are in catalog mode, where the app's own catalog stays the colour source: remove that output, or set tokens.mobile.colors to "tokens"`)
   }
@@ -1793,7 +1801,8 @@ function buildMobile(root, config, model, outputs, projectDir) {
       made = buildXcassets(xc, path)
       skip(xc.skipped, path)
       report.notes.push(...xc.notes)
-      for (const c of xc.colors) if (teamSets.has(c.name)) report.duplicates.push(teamSets.get(c.name).folder)
+      // A duplicate is a set of the same name the same bundle compiles; another target's catalog keeps its own.
+      for (const c of xc.colors) for (const set of teamAll.get(c.name) ?? []) if (sameBundle(path, catalogOf(set.folder), homes, { strict: true })) report.duplicates.push(set.folder)
       report.wire.push(adapter.tokens.wire(path, repoFiles, read, block))
     } else if (output.format === 'swift') {
       let catalog = null
@@ -1825,20 +1834,23 @@ function buildMobile(root, config, model, outputs, projectDir) {
       const target = packageTargetOf(path, repoFiles, read)
       // A colour is read from the bundle that holds this file: .module inside
       // a package target, else the app's or framework's own. A catalog that
-      // compiles into another bundle (another package target, or the app
-      // when this file is in a package) cannot be read from here, so its
-      // colours are left out and listed, never written to fail at runtime.
-      const owned = new Set(ownedCatalog ? xc.colors.map((c) => c.entry.t.name) : [])
-      const catalogOf = (folder) => folder.slice(0, folder.indexOf('.xcassets') + '.xcassets'.length)
-      const reaches = (cat) => {
-        const home = packageTargetOf(cat, repoFiles, read)
-        return target ? Boolean(home) && home.package === target.package && home.name === target.name : !home
-      }
+      // compiles into another bundle (another package, Xcode, XcodeGen or
+      // Tuist target) cannot be read from here, so its colours are left out
+      // and listed, never written to fail at runtime. A name two catalogs
+      // hold is read from the one in this file's bundle.
+      const ownedSet = new Set(ownedCatalog ? xc.colors.map((c) => c.entry.t.name) : [])
+      const home = bundleOf(path, homes)
+      const reaches = (cat) => sameBundle(path, cat, homes)
       for (const [token, name] of [...(catalog ?? [])]) {
-        const cat = owned.has(token) ? String(ownedCatalog.path).replace(/^\.\//, '').replace(/\/+$/, '') : catalogOf(teamSets.get(name).folder)
-        if (reaches(cat)) continue
+        let cat = ownedDir
+        if (!ownedSet.has(token)) {
+          const sets = teamAll.get(name) ?? []
+          if (sets.some((x) => reaches(catalogOf(x.folder)))) continue
+          const said = plan.entries.find((e) => e.t.name === token)?.t.mobile?.catalog
+          cat = catalogOf((sets.find((x) => catalogOf(x.folder) === said) ?? sets[0]).folder)
+        } else if (reaches(cat)) continue
         catalog.delete(token)
-        leave.set(token, `is in ${cat}, which is not in the bundle this file reads (${target ? `the Swift package target ${target.name}` : 'the bundle that holds this file'}): read it from code in the target that holds that catalog, or list only this target's catalogs in tokens.mobileSources`)
+        leave.set(token, `is in ${cat}, which is not in the bundle this file reads (${home ? home.label : 'the bundle that holds this file'}): read it from code in the target that holds that catalog, or list only this target's catalogs in tokens.mobileSources`)
       }
       for (const s of keptNotes) if (catalog.has(s.token)) report.notes.push(`${s.token} ${s.reason}; the Swift output reads it from the app's catalog by name, so they are kept`)
       const r = buildSwift(plan, options, { inPackage: Boolean(target), catalog, only, skip: leave, mode: options.colors }, HEADER)

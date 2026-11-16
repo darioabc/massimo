@@ -4,6 +4,7 @@
 // reader's colour count. Everything is read as text; massimo never edits a
 // .xcodeproj, Package.swift, Project.swift or project.yml.
 
+import { posix } from 'node:path'
 import { swiftColorLiterals } from './lang-swift.mjs'
 import { compare } from './glob.mjs'
 
@@ -33,15 +34,19 @@ const isTuistHelper = (f) => /(?:^|\/)Tuist\/[^/]+\.swift$/.test(f)
 const markerDir = (kind, f) => (kind === 'tuist' && isTuistHelper(f) ? dirOf(dirOf(f)) : dirOf(projectPath(kind, f)))
 
 // Targets a Package.swift declares, read as text: [{ name, path, test }].
+// A name may be a string, or a constant the file declares (`let ds = "DesignSystem"`).
 export function packageTargets(text) {
   const out = []
-  for (const m of text.matchAll(/\.(target|testTarget|executableTarget|macro|plugin)\s*\(\s*name\s*:\s*"([^"]+)"/g)) {
+  const constant = (id) => new RegExp(String.raw`\b(?:let|var)\s+${id}\s*(?::\s*String\s*)?=\s*"([^"]+)"`).exec(text)?.[1] ?? null
+  for (const m of text.matchAll(/\.(target|testTarget|executableTarget|macro|plugin)\s*\(\s*name\s*:\s*(?:"([^"]+)"|([A-Za-z_]\w*)\b)/g)) {
+    const name = m[2] ?? constant(m[3])
+    if (!name) continue
     const rest = text.slice(m.index, m.index + 4000)
     // The path belongs to this target when it comes before the next one starts.
     const nextTarget = rest.slice(1).search(/\.(?:target|testTarget|executableTarget|macro|plugin|binaryTarget)\s*\(/)
     const own = nextTarget === -1 ? rest : rest.slice(0, nextTarget + 1)
     const path = /\bpath\s*:\s*"([^"]+)"/.exec(own)?.[1] ?? null
-    out.push({ name: m[2], path, test: m[1] === 'testTarget' })
+    out.push({ name, path, test: m[1] === 'testTarget' })
   }
   return out
 }
@@ -63,49 +68,146 @@ export function packageTargetOf(path, files, read) {
   return null
 }
 
-// Targets an XcodeGen project.yml declares, the keys indented one step under
-// `targets:`, each with the folder of its first source (`sources: [A]`,
-// `sources: A`, or a list of paths or `- path: A`), or null.
+// Targets an XcodeGen project.yml declares, the keys one step under
+// `targets:` (at whatever indent the file uses), each with the folders its
+// sources name (`sources: [A, B]`, `sources: A`, a list of paths, of
+// `- path: A` or of `- {path: A}`), relative to the spec and kept inside
+// the repo. Comments are left out.
 function xcodegenTargets(text) {
-  const lines = text.split(/\r?\n/)
-  const at = lines.findIndex((l) => /^targets\s*:/.test(l))
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/(^|\s)#.*$/, '').replace(/\s+$/, ''))
+  const at = lines.findIndex((l) => /^targets\s*:$/.test(l))
   if (at === -1) return []
-  const out = []
-  let inSources = false
-  const clean = (v) => v.trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '') || null
+  const body = []
   for (const line of lines.slice(at + 1)) {
     if (/^\S/.test(line)) break
-    const m = /^ {2}([A-Za-z0-9_.-]+)\s*:/.exec(line)
+    body.push(line)
+  }
+  const indent = (l) => /^ */.exec(l)[0].length
+  const first = body.find((l) => l.trim())
+  if (!first) return []
+  const step = indent(first)
+  const clean = (v) => {
+    const p = posix.normalize(v.trim().replace(/^["']|["']$/g, '').replace(/\/+$/, ''))
+    return p && p !== '..' && !p.startsWith('../') && !p.startsWith('/') ? p : null
+  }
+  const out = []
+  let sources = -1
+  for (const line of body) {
+    if (!line.trim()) continue
+    const m = indent(line) === step ? /^\s*([A-Za-z0-9_.-]+)\s*:/.exec(line) : null
     if (m) {
-      out.push({ name: m[1], path: null })
-      inSources = false
+      out.push({ name: m[1], paths: [] })
+      sources = -1
       continue
     }
     const target = out[out.length - 1]
     if (!target) continue
-    const sources = /^\s+sources\s*:\s*(.*)$/.exec(line)
-    if (sources) {
-      const rest = sources[1].trim()
-      if (rest.startsWith('[')) target.path ??= clean(rest.slice(1).split(/[,\]]/)[0])
-      else if (rest) target.path ??= clean(rest)
-      inSources = !rest
+    const add = (v) => {
+      const p = clean(v)
+      if (p && !target.paths.includes(p)) target.paths.push(p)
+    }
+    const key = /^(\s*)sources\s*:\s*(.*)$/.exec(line)
+    if (key && indent(line) > step) {
+      const rest = key[2].trim()
+      if (rest.startsWith('[')) for (const item of rest.slice(1, rest.lastIndexOf(']')).split(',')) (/path\s*:\s*([^,}]+)/.exec(item) ? add(/path\s*:\s*([^,}]+)/.exec(item)[1]) : !item.includes(':') && add(item))
+      else if (rest) add(rest)
+      sources = rest ? -1 : indent(line)
       continue
     }
-    if (inSources) {
-      const item = /^\s+-\s*(?:path\s*:\s*)?(.+)$/.exec(line)
-      if (item) target.path ??= clean(item[1])
-      else if (!/^\s{6,}/.test(line)) inSources = false
+    if (sources === -1) continue
+    if (indent(line) <= sources && !/^\s*-/.test(line)) {
+      sources = -1
+      continue
     }
+    const flow = /^\s*-\s*\{(.*)\}\s*$/.exec(line)
+    const path = /^\s*(?:-\s*)?path\s*:\s*(.+)$/.exec(line)
+    const plain = /^\s*-\s*([^:{}]+)$/.exec(line)
+    if (flow) {
+      const p = /path\s*:\s*([^,}]+)/.exec(flow[1])
+      if (p) add(p[1])
+    } else if (path) add(path[1])
+    else if (plain) add(plain[1])
   }
-  return out
+  return out.map((t) => ({ ...t, path: t.paths[0] ?? null }))
 }
 
 // The targets a project.pbxproj declares, and its folders Xcode keeps
 // in sync with the disk (Xcode 16), which pick up new files by themselves.
+// `folders` maps a target to the folders that are its own: the synced
+// folders it lists, else a top group named after it (an older project).
 export function pbxprojInfo(text) {
-  const targets = [...text.matchAll(/\/\* ([^*]+?) \*\/ = \{\s*isa = PBXNativeTarget;/g)].map((m) => m[1])
-  const synced = [...text.matchAll(/isa = PBXFileSystemSynchronizedRootGroup;[\s\S]*?path = ("?)([^";\n]+)\1;/g)].map((m) => m[2])
-  return { targets: [...new Set(targets)], synced: [...new Set(synced)] }
+  const objects = (isa) => [...text.matchAll(new RegExp(String.raw`(\w+) \/\* ([^*]+?) \*\/ = \{\s*isa = ${isa};([^{}]*?)\n\s*\};`, 'g'))].map((m) => ({ id: m[1], name: m[2], body: m[3] }))
+  const pathOf = (body) => /\bpath = ("?)([^";\n]+)\1;/.exec(body)?.[2] ?? null
+  const syncedGroups = objects('PBXFileSystemSynchronizedRootGroup').map((g) => ({ id: g.id, path: pathOf(g.body) })).filter((g) => g.path)
+  const groups = objects('PBXGroup').map((g) => ({ name: g.name, path: pathOf(g.body) })).filter((g) => g.path)
+  const native = objects('PBXNativeTarget')
+  const targets = native.length > 0 ? native.map((t) => t.name) : [...text.matchAll(/\/\* ([^*]+?) \*\/ = \{\s*isa = PBXNativeTarget;/g)].map((m) => m[1])
+  const folders = new Map()
+  for (const t of native) {
+    const list = /fileSystemSynchronizedGroups = \(([^)]*)\)/.exec(t.body)?.[1] ?? ''
+    const own = syncedGroups.filter((g) => new RegExp(String.raw`\b${g.id}\b`).test(list)).map((g) => g.path)
+    const named = own.length > 0 ? own : [...syncedGroups.filter((g) => g.path === t.name).map((g) => g.path), ...groups.filter((g) => g.name === t.name || g.path === t.name).map((g) => g.path)]
+    if (named.length > 0) folders.set(t.name, [...new Set(named)])
+  }
+  return { targets: [...new Set(targets)], synced: [...new Set(syncedGroups.map((g) => g.path))], folders }
+}
+
+// Targets a Tuist Project.swift declares, read as text: [{ name, dirs }],
+// the folders its sources and resources globs start from.
+export function tuistTargets(text) {
+  const starts = [...text.matchAll(/(?:\.target|\bTarget(?:\.target)?)\s*\(\s*name\s*:\s*"([^"]+)"/g)]
+  return starts.map((m, i) => {
+    const own = text.slice(m.index, starts[i + 1]?.index ?? text.length)
+    const lists = [...own.matchAll(/\b(?:sources|resources)\s*:\s*(\[[^\]]*\]|"[^"]*")/g)].map((x) => x[1])
+    const dirs = lists.flatMap((l) => [...l.matchAll(/"([^"]+)"/g)].map((x) => x[1].split(/[*{]/)[0].replace(/\/+$/, ''))).filter(Boolean)
+    return { name: m[1], dirs: [...new Set(dirs)] }
+  })
+}
+
+// The folders whose code and resources one target compiles into a bundle
+// of its own: [{ dir, id, label, package }], from Swift package targets,
+// Xcode targets, XcodeGen targets' sources and Tuist projects. Two paths
+// compile into one bundle when the deepest folder each sits in is one target's.
+export function bundleHomes(files, read) {
+  const homes = []
+  const add = (dir, id, label, pkg = false) => homes.push({ dir: dir.replace(/\/+$/, '') || '.', id, label, package: pkg })
+  for (const f of files.filter((x) => /(?:^|\/)Package\.swift$/.test(x) && !/(?:^|\/)Tuist\/Package\.swift$/.test(x))) {
+    for (const t of packageTargets(read(f) ?? '').filter((x) => !x.test)) add(join(dirOf(f), t.path ?? `Sources/${t.name}`), `package:${f}:${t.name}`, `the Swift package target ${t.name}`, true)
+  }
+  for (const f of files.filter((x) => x.endsWith('.xcodeproj/project.pbxproj'))) {
+    const info = pbxprojInfo(read(f) ?? '')
+    for (const [name, dirs] of info.folders) for (const d of dirs) add(join(dirOf(dirOf(f)), d), `xcode:${f}:${name}`, `the Xcode target ${name}`)
+  }
+  for (const f of files.filter((x) => /(?:^|\/)project\.ya?ml$/.test(x))) {
+    const text = read(f) ?? ''
+    if (!isXcodegenSpec(text)) continue
+    for (const t of xcodegenTargets(text)) for (const d of t.paths ?? (t.path ? [t.path] : [])) add(join(dirOf(f), d), `xcodegen:${f}:${t.name}`, `the XcodeGen target ${t.name}`)
+  }
+  for (const f of files.filter((x) => /(?:^|\/)Project\.swift$/.test(x) && !isTuistHelper(x))) {
+    const targets = tuistTargets(read(f) ?? '')
+    // One target owns the whole project folder; several, the folders their globs name.
+    if (targets.length === 1 && targets[0].dirs.length === 0) add(dirOf(f), `tuist:${f}:${targets[0].name}`, `the Tuist target ${targets[0].name}`)
+    for (const t of targets) for (const d of t.dirs) add(join(dirOf(f), d), `tuist:${f}:${t.name}`, `the Tuist target ${t.name}`)
+  }
+  return homes
+}
+
+// The bundle home a repo-relative path sits in, the deepest one, or null.
+export function bundleOf(path, homes) {
+  const inside = homes.filter((h) => h.dir === '.' || path === h.dir || path.startsWith(`${h.dir}/`))
+  return inside.sort((a, b) => depth(b.dir) - depth(a.dir) || Number(b.package) - Number(a.package))[0] ?? null
+}
+
+// Whether two paths compile into one bundle: the same target's, or neither
+// in a target massimo can see. `strict` (for removing a duplicate) asks for
+// that; else a path in no target massimo can see may share the bundle of
+// one outside a Swift package, as an Xcode project it cannot read would.
+export function sameBundle(a, b, homes, { strict = false } = {}) {
+  const x = bundleOf(a, homes)
+  const y = bundleOf(b, homes)
+  if (x && y) return x.id === y.id
+  if (!x && !y) return true
+  return !strict && !(x?.package || y?.package)
 }
 
 const DS_NAME = /^(?:design[-_ ]?system|ui|components|.*designsystem)$/i
