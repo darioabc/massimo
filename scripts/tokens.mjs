@@ -1799,6 +1799,7 @@ function buildMobile(root, config, model, outputs) {
       let catalog = null
       let only = false
       const leave = new Map()
+      const keptNotes = []
       if (options.colors === 'catalog') {
         catalog = new Map(plan.entries.filter((e) => e.type === 'color').map((e) => [e.t.name, assetName(e.t)]).filter(([, name]) => teamSets.has(name)))
         only = true
@@ -1814,13 +1815,31 @@ function buildMobile(root, config, model, outputs) {
           const name = assetName(e.t)
           if (teamSets.has(name)) {
             kept.push([s.token, name])
-            if (!ownedCatalog) report.notes.push(`${s.token} ${s.reason}; the Swift output reads it from the app's catalog by name, so they are kept`)
+            if (!ownedCatalog) keptNotes.push(s)
           } else leave.set(s.token, `${s.reason}, and no catalog this build reads holds it; it is left out rather than built without them`)
         }
         catalog = new Map([...(ownedCatalog ? xc.colors.map((c) => [c.entry.t.name, c.name]) : []), ...kept])
         only = Boolean(ownedCatalog)
       }
       const target = packageTargetOf(path, repoFiles, read)
+      // A colour is read from the bundle that holds this file: .module inside
+      // a package target, else the app's or framework's own. A catalog that
+      // compiles into another bundle (another package target, or the app
+      // when this file is in a package) cannot be read from here, so its
+      // colours are left out and listed, never written to fail at runtime.
+      const owned = new Set(ownedCatalog ? xc.colors.map((c) => c.entry.t.name) : [])
+      const catalogOf = (folder) => folder.slice(0, folder.indexOf('.xcassets') + '.xcassets'.length)
+      const reaches = (cat) => {
+        const home = packageTargetOf(cat, repoFiles, read)
+        return target ? Boolean(home) && home.package === target.package && home.name === target.name : !home
+      }
+      for (const [token, name] of [...(catalog ?? [])]) {
+        const cat = owned.has(token) ? String(ownedCatalog.path).replace(/^\.\//, '').replace(/\/+$/, '') : catalogOf(teamSets.get(name).folder)
+        if (reaches(cat)) continue
+        catalog.delete(token)
+        leave.set(token, `is in ${cat}, which is not in the bundle this file reads (${target ? `the Swift package target ${target.name}` : 'the bundle that holds this file'}): read it from code in the target that holds that catalog, or list only this target's catalogs in tokens.mobileSources`)
+      }
+      for (const s of keptNotes) if (catalog.has(s.token)) report.notes.push(`${s.token} ${s.reason}; the Swift output reads it from the app's catalog by name, so they are kept`)
       const r = buildSwift(plan, options, { inPackage: Boolean(target), catalog, only, skip: leave, mode: options.colors }, HEADER)
       made = [{ path, text: r.text }]
       skip(r.skipped, path)
