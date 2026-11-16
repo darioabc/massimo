@@ -193,7 +193,15 @@ export function iosWire(path, files, read, platform) {
   if (target) return { needed: false, step: `${path} sits in the Swift package target ${target.name}, which picks it up by itself` }
   const kind = platform?.project?.kind
   if (kind === 'tuist' || kind === 'xcodegen') return { needed: false, step: `${path}: ${kind === 'tuist' ? 'Tuist' : 'XcodeGen'} picks up new files under a target's sources; regenerate the project (${kind === 'tuist' ? 'tuist generate' : 'xcodegen generate'})` }
-  const pbx = files.find((f) => f.endsWith('.xcodeproj/project.pbxproj'))
+  // The project that holds the output: the one the platform block names,
+  // else the deepest whose folder contains it, else the first there is.
+  const projects = files.filter((f) => f.endsWith('.xcodeproj/project.pbxproj'))
+  const named = kind === 'xcodeproj' && typeof platform?.project?.path === 'string' ? `${join(platform.root ?? '.', platform.project.path.replace(/\/+$/, ''))}/project.pbxproj` : null
+  const holding = projects.filter((f) => {
+    const folder = dirOf(dirOf(f))
+    return folder === '.' || path.startsWith(`${folder}/`)
+  }).sort((a, b) => depth(dirOf(dirOf(b))) - depth(dirOf(dirOf(a))))
+  const pbx = (named && projects.includes(named) ? named : null) ?? holding[0] ?? projects[0]
   const info = pbx ? pbxprojInfo(read(pbx) ?? '') : { targets: [], synced: [] }
   const projectDir = pbx ? dirOf(dirOf(pbx)) : '.'
   const synced = info.synced.find((dir) => {
