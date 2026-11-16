@@ -217,12 +217,14 @@ const unescapeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace
 export function xmlResources(text) {
   const code = text.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
   const out = []
-  for (const m of code.matchAll(/<(color|dimen|integer|bool|string|item|style|declare-styleable|attr|array|string-array|integer-array|plurals|fraction|drawable|id)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g)) {
+  // The tag name ends at a space, a slash or >, so <string-array> is never read as a <string>.
+  for (const m of code.matchAll(/<(color|dimen|integer|bool|string|item|style|declare-styleable|attr|array|string-array|integer-array|plurals|fraction|drawable|id)(?=[\s/>])([^>]*?)(?:\/>|>([\s\S]*?)<\/\1\s*>)/g)) {
     const attrs = m[2]
-    const name = /\bname\s*=\s*"([^"]*)"/.exec(attrs)?.[1]
+    const attr = (key) => new RegExp(`\\b${key}\\s*=\\s*(["'])(.*?)\\1`).exec(attrs)?.[2]
+    const name = attr('name')
     if (!name) continue
     let type = m[1]
-    if (type === 'item') type = /\btype\s*=\s*"([^"]*)"/.exec(attrs)?.[1] ?? 'item'
+    if (type === 'item') type = attr('type') ?? 'item'
     out.push({ type, name, value: m[3] === undefined ? null : unescapeXml(m[3].trim()) })
   }
   return out
