@@ -358,32 +358,51 @@ export function readAndroidValues(root, files) {
       if (isObject(css)) refs.push({ t, at: 'value' })
     }
   }
-  // References point at the token their resource became.
-  const target = (ref) => {
-    const t = byKey.get(`${ref[0] === 'dimen' ? 'dimen' : 'color'}:${ref[1]}`)
-    return t ? `{${t.path.join('.')}}` : null
+  // References point at the token their resource became. Each chain is
+  // followed to the value it ends at first, so the order resources are
+  // declared in never matters: a dimension takes its group from that value,
+  // and a chain that ends at a resource no file read here declares (a
+  // library's colour, say), or goes round, leaves out every token on it.
+  const keyOf = (ref) => `${ref[0] === 'dimen' ? 'dimen' : 'color'}:${ref[1]}`
+  const refOf = new Map(refs.map(({ t }) => [t, t.value.ref]))
+  const ends = new Map()
+  const follow = (t, seen = new Set()) => {
+    if (!refOf.has(t)) return { end: t }
+    if (ends.has(t)) return ends.get(t)
+    if (seen.has(t)) return { end: null, cycle: true }
+    seen.add(t)
+    const next = byKey.get(keyOf(refOf.get(t)))
+    const out = next ? follow(next, seen) : { end: null, missing: true }
+    ends.set(t, out)
+    return out
   }
-  for (const { t, value, file } of night) {
-    const v = isObject(value) ? target(value.ref) : value
-    if (v === null) {
-      notes.push(`${file}: ${t.mobile.resource} points at @${value.ref[0]}/${value.ref[1]}, which no file read here declares`)
-      continue
-    }
-    if (v !== t.value) t.modes.dark = v
-  }
+  const shown = (ref) => `@${ref[0]}/${ref[1]}`
   for (const { t } of refs) {
-    const v = target(t.value.ref)
-    if (v === null) {
-      notes.push(`${t.source}: ${t.mobile.resource} points at @${t.value.ref[0]}/${t.value.ref[1]}, which no file read here declares; left out`)
-      tokens.splice(tokens.indexOf(t), 1)
+    const { end, cycle } = follow(t)
+    if (end) continue
+    const ref = refOf.get(t)
+    const direct = !byKey.has(keyOf(ref))
+    notes.push(`${t.source}: ${t.mobile.resource} points at ${shown(ref)}, ${cycle ? 'and the references go round in a cycle' : direct ? 'which no file read here declares' : 'which is left out'}; left out${direct || cycle ? '' : ' too'}`)
+  }
+  const out = new Set(refs.filter(({ t }) => !follow(t).end).map(({ t }) => t))
+  for (const t of out) {
+    tokens.splice(tokens.indexOf(t), 1)
+    for (const [k, v] of byKey) if (v === t) byKey.delete(k)
+  }
+  for (const t of tokens) {
+    if (t.dimenRef) t.path = [follow(t).end.path[0], t.path[1]]
+    delete t.dimenRef
+  }
+  for (const t of tokens) if (refOf.has(t)) t.value = `{${byKey.get(keyOf(refOf.get(t))).path.join('.')}}`
+  for (const { t, value, file } of night) {
+    if (out.has(t)) continue
+    const target = isObject(value) ? byKey.get(keyOf(value.ref)) : null
+    if (isObject(value) && !target) {
+      notes.push(`${file}: ${t.mobile.resource} points at ${shown(value.ref)}, which no file read here declares`)
       continue
     }
-    t.value = v
-    if (t.dimenRef) {
-      const to = byKey.get(`dimen:${t.value.slice(1, -1).split('.').slice(1).join('.')}`)
-      t.path = [to?.path[0] ?? 'size', t.path[1]]
-    }
-    delete t.dimenRef
+    const v = target ? `{${target.path.join('.')}}` : value
+    if (v !== t.value) t.modes.dark = v
   }
   for (const [dir, count] of [...skipped].sort((a, b) => compare(a[0], b[0]))) {
     notes.push(`${dir}: ${count} ${count === 1 ? 'value is' : 'values are'} for a qualifier massimo does not model yet (only values and values-night are read)`)
