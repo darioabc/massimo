@@ -58,7 +58,7 @@ Material 3 apps usually switch to `dynamicLightColorScheme` and `dynamicDarkColo
 
 ## What is not carried over
 
-The build lists each token it leaves out of an output, and why: a transition (use its duration and curve tokens), a stroke style on its own, a CSS-only value, a typography token with no text style (Swift), and on Android resources anything but colours, sizes, numbers and durations (the compose output carries those). A shadow's spread and inset have no SwiftUI form, a gradient keeps its stops but not a direction, and a stroke style other than solid or dashed is written as solid; each is a note. A colour outside the space an output holds is converted (Display P3 stays Display P3 in Swift, the catalog and Compose; Android resources and an oklch value become sRGB) and the note says when it was clipped.
+The build lists each token it leaves out of an output, and why: a transition (use its duration and curve tokens), a stroke style on its own, a CSS-only value, a typography token with no text style (Swift), and on Android resources anything but colours, sizes, numbers and durations (the compose output carries those). A shadow's spread and inset have no SwiftUI form, a gradient keeps its stops but not a direction, and a stroke style other than solid or dashed is written as solid; each is a note. A colour outside the space an output holds is converted: Display P3 stays Display P3 in Swift, the catalog and Compose, and Android resources and an oklch value become sRGB. Swift and the catalog keep an sRGB colour outside 0 to 1 as extended sRGB; Compose and Android resources clip it, and the note says so.
 
 ## Names
 

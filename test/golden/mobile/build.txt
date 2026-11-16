@@ -13,7 +13,7 @@ massimo tokens build: 22 tokens; wrote ios/App/DesignTokens.swift, ios/App/Massi
   note: text.caption: the system font takes the size of the caption text style and scales with it; the token's 12pt is kept in size
   note: spacing.gap-em: its exact CSS (0.5em) is the web's; the mobile outputs use its value
   note: color.vivid: converted from oklch to sRGB for the catalog
-  note: color.vivid: converted from oklch to sRGB
+  note: color.vivid: Compose colours are sRGB here, so its oklch value was converted and clipped
   note: font.family.sans: the family Inter must be added as a font resource before Compose can use it
   note: text.body: the family Inter is written as FontFamily.Default; add it as a font resource and swap it in
   note: text.display: the family Inter is written as FontFamily.Default; add it as a font resource and swap it in

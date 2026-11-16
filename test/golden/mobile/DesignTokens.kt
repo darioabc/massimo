@@ -42,7 +42,7 @@ public val LightDesignTokensColors: DesignTokensColors = DesignTokensColors(
     onPrimary = Color(0xFFFFFFFF),
     default = Color(0xFF000000),
     accent = Color(red = 1f, green = 0.4f, blue = 0.2f, alpha = 1f, colorSpace = ColorSpaces.DisplayP3),
-    vivid = Color(red = 1.172538f, green = -0.139477f, blue = -0.128339f, alpha = 1f),
+    vivid = Color(0xFFFF0000),
     scrim = Color(0x80000000),
 )
 
@@ -53,7 +53,7 @@ public val DarkDesignTokensColors: DesignTokensColors = DesignTokensColors(
     onPrimary = Color(0xFFFFFFFF),
     default = Color(0xFF000000),
     accent = Color(red = 1f, green = 0.4f, blue = 0.2f, alpha = 1f, colorSpace = ColorSpaces.DisplayP3),
-    vivid = Color(red = 1.172538f, green = -0.139477f, blue = -0.128339f, alpha = 1f),
+    vivid = Color(0xFFFF0000),
     scrim = Color(0x80000000),
 )
 

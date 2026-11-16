@@ -14,7 +14,7 @@
 // fallback, and the app's own switch to dynamicLightColorScheme is left as it is.
 
 import { groupRank } from './mobile-tokens.mjs'
-import { byteOf, floatText, numberText } from './mobile-units.mjs'
+import { byteOf, floatText, inSrgb, numberText, outOfRange } from './mobile-units.mjs'
 
 // The colour slots lightColorScheme and darkColorScheme take.
 export const MATERIAL_SLOTS = [
@@ -38,7 +38,16 @@ export function packageOfPath(path) {
   return m ? m[1].split('/').join('.') : null
 }
 
-function color(c, imports) {
+// A colour as Kotlin. Compose's sRGB holds 0..1, so a component outside it
+// (an oklch or extended sRGB colour out of gamut) is clipped, and `clip`
+// records what was, for the note.
+function color(raw, imports, clip = null) {
+  let c = raw
+  if (raw.space !== 'display-p3' && outOfRange(raw)) {
+    const s = inSrgb(raw)
+    c = { ...raw, r: s.r, g: s.g, b: s.b, a: s.a }
+    if (clip) clip.from = raw.converted ?? 'extended sRGB'
+  }
   const bytes = [c.a, c.r, c.g, c.b].map(byteOf)
   if (c.space !== 'display-p3' && bytes.every((b) => b !== null)) return `Color(0x${bytes.map((b) => b.toString(16).toUpperCase().padStart(2, '0')).join('')})`
   if (c.space === 'display-p3') {
@@ -74,9 +83,12 @@ export function buildCompose(plan, options, ctx, header) {
     const name = e.kotlin
     const v = e.value
     const head = doc(e.t.description, pad)
+    const clip = { from: null }
+    const clipNote = () => clip.from && notes.push(`${e.t.name}: Compose colours are sRGB here, so its ${clip.from} value was converted and clipped`)
     if (v.color) {
-      colors.push({ e, name, light: color(v.color, imports), dark: color((e.dark ?? v).color, imports) })
-      if (v.color.space === 'srgb' && v.color.converted) notes.push(`${e.t.name}: converted from ${v.color.converted} to sRGB`)
+      colors.push({ e, name, light: color(v.color, imports, clip), dark: color((e.dark ?? v).color, imports, clip) })
+      if (clip.from) clipNote()
+      else if (v.color.space === 'srgb' && v.color.converted) notes.push(`${e.t.name}: converted from ${v.color.converted} to sRGB`)
       continue
     }
     const typography = e.group === 'Typography'
@@ -112,16 +124,17 @@ export function buildCompose(plan, options, ctx, header) {
       needs.shadow = true
       imports.add('androidx.compose.ui.unit.dp')
       if (v.shadow.some((l) => l.inset)) notes.push(`${e.t.name}: an inset shadow is written as a drop shadow; inset is not carried over`)
-      add(e.group, [...head, `${pad}public val ${name}: List<${ns}Shadow> = listOf(${v.shadow.map((l) => `${ns}Shadow(color = ${color(l.color, imports)}, blur = ${unit(l.blur, 'dp')}, offsetX = ${unit(l.x, 'dp')}, offsetY = ${unit(l.y, 'dp')}, spread = ${unit(l.spread, 'dp')})`).join(', ')})`])
+      add(e.group, [...head, `${pad}public val ${name}: List<${ns}Shadow> = listOf(${v.shadow.map((l) => `${ns}Shadow(color = ${color(l.color, imports, clip)}, blur = ${unit(l.blur, 'dp')}, offsetX = ${unit(l.x, 'dp')}, offsetY = ${unit(l.y, 'dp')}, spread = ${unit(l.spread, 'dp')})`).join(', ')})`])
     } else if (v.border) {
       needs.border = true
       imports.add('androidx.compose.ui.unit.dp')
       if (!['solid', 'dashed'].includes(v.border.style)) notes.push(`${e.t.name}: the stroke style ${v.border.style} is not carried over; it is written as solid`)
-      add(e.group, [...head, `${pad}public val ${name}: ${ns}Border = ${ns}Border(width = ${unit(v.border.width, 'dp')}, color = ${color(v.border.color, imports)}, dashed = ${v.border.style === 'dashed'})`])
+      add(e.group, [...head, `${pad}public val ${name}: ${ns}Border = ${ns}Border(width = ${unit(v.border.width, 'dp')}, color = ${color(v.border.color, imports, clip)}, dashed = ${v.border.style === 'dashed'})`])
     } else if (v.gradient) {
       notes.push(`${e.t.name}: a gradient's stops are carried over; its direction is set where it is drawn`)
-      add(e.group, [...head, `${pad}public val ${name}: List<Pair<Float, Color>> = listOf(${v.gradient.map((s) => `${f(s.position)} to ${color(s.color, imports)}`).join(', ')})`])
+      add(e.group, [...head, `${pad}public val ${name}: List<Pair<Float, Color>> = listOf(${v.gradient.map((s) => `${f(s.position)} to ${color(s.color, imports, clip)}`).join(', ')})`])
     }
+    clipNote()
   }
   for (const e of entries) for (const note of e.notes) notes.push(`${e.t.name}: ${note}`)
 
