@@ -182,6 +182,14 @@ test('containment: a listed key outside the repo is never removed, an output out
   put(root, { 'ds/tokens/mobile-outputs.json': { format: 1, writtenBy: '0.6.0', files: { '../keep.txt': hash } } })
   assert.equal(tokensRun(root, ['build', '--prune']).status, 0)
   assert.ok(existsSync(join(root, '..', 'keep.txt')))
+  // A key inside the repo as written, through a symlink that leads out.
+  const through = repo({ config: tokensMode([XML_OUT]), tokens: [tok(['color', 'primary'], 'color', srgb('#6200ee'))] })
+  mkdirSync(join(through, '..', 'shared'))
+  writeFileSync(join(through, '..', 'shared', 'keep.txt'), 'not massimo\'s\n')
+  symlinkSync(join(through, '..', 'shared'), join(through, 'link'))
+  put(through, { 'ds/tokens/mobile-outputs.json': { format: 1, writtenBy: '0.6.0', files: { 'link/keep.txt': hash } } })
+  assert.equal(tokensRun(through, ['build', '--prune']).status, 0)
+  assert.ok(existsSync(join(through, '..', 'shared', 'keep.txt')))
   // A path with .. that leaves the repo, and an output folder that is a symlink leading out.
   const up = repo({ config: tokensMode([{ format: 'swift', path: '../Out.swift' }]), tokens: [tok(['color', 'primary'], 'color', srgb('#6200ee'))] })
   assert.equal(tokensRun(up, ['build']).status, 1)
@@ -625,7 +633,8 @@ const androidBuild = (tokens, outputs = [COMPOSE_OUT, XML_OUT], extra = {}) => {
   const r = tokensRun(root, ['build'])
   return { root, r }
 }
-const composeColor = (kt, name) => new RegExp(String.raw`override val ${name}: Color = (Color\([^\n]*\))`).exec(kt)?.[1] ?? null
+// The light colour, in the colours class of either shape (an object's override, or a constructor argument).
+const composeColor = (kt, name) => new RegExp(String.raw`(?:override val ${name}: Color = | ${name} = )(Color\([^\n]*\))`).exec(kt)?.[1] ?? null
 const floats = (text) => [...text.matchAll(/(?:red|green|blue) = (-?[\d.]+)f/g)].map((m) => Number(m[1]))
 
 // L1
