@@ -10,7 +10,10 @@ import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, symlinkSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { CATALOG, COMPOSE_OUT, EXTRA, OWNED, colorset, entry, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
+import { iosWire } from '../scripts/lib/platform-ios.mjs'
+import { swiftColorLiterals } from '../scripts/lib/lang-swift.mjs'
+import { kotlinColorLiterals } from '../scripts/lib/lang-kotlin.mjs'
+import { CATALOG, COMPOSE_OUT, detect, EXTRA, OWNED, colorset, entry, px, SWIFT_OUT, XCASSETS_OUT, XML_OUT, extracted, put, read, readConfig, repo, scratch, srgb, tok, tokensMode, tokensRun, writeConfig } from './mobile-helpers.mjs'
 
 const listed = (root) => JSON.parse(read(root, 'ds/tokens/mobile-outputs.json')).files
 const git = (root, ...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, encoding: 'utf8' })
@@ -523,4 +526,92 @@ test('every variant check keeps a team colour set from --dedupe: any differing f
   assert.equal(l.status, 0, l.stderr)
   assert.match(l.stdout, /color\.ink has entries massimo does not model yet \(display-P3 gamut\)/)
   assert.ok(!existsSync(join(lone, XCASSETS_OUT.path, 'Ink.colorset')))
+})
+
+// ── What detect proposes for iOS ────────────────────────────────────────────
+
+const VIEW = 'import SwiftUI\n\nstruct Card: View {\n    var body: some View { Text("Hi") }\n}\n'
+const PBX_ONE = (name) => `// !$*UTF8*$!\n{\n\tobjects = {\n\t\tA1 /* ${name} */ = {\n\t\t\tisa = PBXNativeTarget;\n\t\t\tname = ${name};\n\t\t};\n\t};\n}\n`
+const iosOf = (files) => detect(put(join(scratch(), 'repo'), files)).platforms?.find((p) => p.id === 'ios') ?? null
+const WEB = { 'package.json': { name: 'site', dependencies: { next: '15.0.0', react: '19.0.0' } }, 'app/page.tsx': 'export default function Page() { return null }\n' }
+
+// R4
+test('detect finds every real iOS app: past a UI-less package that sorts first, Swift 6 and attribute imports, AppKit, Objective-C, XcodeGen includes, and UI past the sample', () => {
+  const server = { 'api/Package.swift': '// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: "Api", targets: [.executableTarget(name: "App", dependencies: [])])\n', 'api/Sources/App/main.swift': 'import Vapor\n\nlet app = Application()\n' }
+  const app = { 'ios/Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme'), 'ios/Acme/ContentView.swift': VIEW }
+  assert.equal(iosOf({ ...WEB, ...server, ...app })?.root, 'ios')
+  for (const line of ['public import SwiftUI', 'package import SwiftUI', 'internal import UIKit', '@preconcurrency import UIKit', '@_exported import SwiftUI', 'import struct SwiftUI.Color', 'import AppKit']) {
+    assert.ok(iosOf({ 'Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme'), 'Acme/View.swift': `${line}\n\nlet x = 1\n` }), line)
+  }
+  const objc = iosOf({ 'Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme'), 'Acme/AppDelegate.m': '#import <UIKit/UIKit.h>\n@implementation AppDelegate\n@end\n', 'Acme/Base.lproj/Main.storyboard': '<document/>\n', 'Acme/Assets.xcassets/Contents.json': { info: { author: 'xcode', version: 1 } }, 'Acme/Assets.xcassets/Ink.colorset/Contents.json': colorset([entry('#112233')]) })
+  assert.ok(objc, 'an Objective-C UIKit app')
+  assert.deepEqual(objc.ui, ['uikit'])
+  const included = iosOf({ 'project.yml': 'name: Acme\ninclude:\n  - targets.yml\n', 'targets.yml': 'targets:\n  Acme:\n    type: application\n    supportedDestinations: [iOS]\n    sources: [Acme]\n', 'Acme/View.swift': VIEW })
+  assert.equal(included?.project.kind, 'xcodegen')
+  const block = iosOf({ 'project.yml': 'name: Acme\ntargets:\n  Acme:\n    type: application\n    platform:\n      - iOS\n    sources: [Acme]\n', 'Acme/View.swift': VIEW })
+  assert.equal(block?.project.kind, 'xcodegen')
+  const many = { 'Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme') }
+  for (let i = 0; i < 605; i++) many[`Acme/Model${String(i).padStart(3, '0')}.swift`] = `struct Model${i} {}\n`
+  many['Acme/ZView.swift'] = VIEW
+  assert.ok(iosOf(many), 'UI past the first 600 files')
+})
+
+// T3
+test('a project.yml that is not an XcodeGen spec beside a real iOS app never becomes its project', () => {
+  const deploy = { 'project.yml': 'name: deploy\nservices: [api]\ntargets:\n  api: {}\n' }
+  const atRoot = iosOf({ ...deploy, 'Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme'), 'Acme/View.swift': VIEW })
+  assert.deepEqual(atRoot.project, { kind: 'xcodeproj', path: 'Acme.xcodeproj' })
+  const below = iosOf({ ...deploy, 'ios/Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme'), 'ios/Acme/View.swift': VIEW })
+  assert.equal(below.root, 'ios')
+  assert.deepEqual(below.project, { kind: 'xcodeproj', path: 'ios/Acme.xcodeproj' })
+})
+
+// I7
+test('the wire step reads the project whose folder holds the output, whatever project the config names', () => {
+  const synced = (name) => `// !$*UTF8*$!\n{\n\tobjects = {\n\t\tB1 /* ${name} */ = {\n\t\t\tisa = PBXFileSystemSynchronizedRootGroup;\n\t\t\tpath = ${name};\n\t\t};\n\t\tA1 /* ${name} */ = {\n\t\t\tisa = PBXNativeTarget;\n\t\t\tfileSystemSynchronizedGroups = (\n\t\t\t\tB1 /* ${name} */,\n\t\t\t);\n\t\t};\n\t};\n}\n`
+  const text = { 'Demo.xcodeproj/project.pbxproj': synced('Demo'), 'Store.xcodeproj/project.pbxproj': synced('Store') }
+  const files = [...Object.keys(text), 'Demo/App.swift', 'Store/App.swift', 'App.xcworkspace/contents.xcworkspacedata']
+  for (const block of [{ root: '.', project: { kind: 'xcodeproj', path: 'Demo.xcodeproj' } }, { root: './', project: { kind: 'xcodeproj', path: 'Demo.xcodeproj' } }, { root: '.', project: { kind: 'xcworkspace', path: 'App.xcworkspace' } }]) {
+    const w = iosWire('Store/DesignTokens.swift', files, (f) => text[f] ?? null, block)
+    assert.equal(w.needed, false, `${JSON.stringify(block)}: ${w.step}`)
+    assert.match(w.step, /sits in Store, a folder Xcode keeps in sync/)
+  }
+  // detect names the project that holds the app's catalog.
+  const d = iosOf({ ...text, 'Demo/App.swift': VIEW, 'Store/App.swift': VIEW, 'Store/Assets.xcassets/Contents.json': { info: { author: 'xcode', version: 1 } }, 'Store/Assets.xcassets/Ink.colorset/Contents.json': colorset([entry('#112233')]) })
+  assert.deepEqual(d.project, { kind: 'xcodeproj', path: 'Store.xcodeproj' })
+})
+
+// L13
+test('detect proposes a design-system target from an older Xcode project, any project.yml shape, and the project it names', () => {
+  const classic = '// !$*UTF8*$!\n{\n\tobjects = {\n\t\tG1 /* DesignSystem */ = {\n\t\t\tisa = PBXGroup;\n\t\t\tchildren = (\n\t\t\t);\n\t\t\tpath = DesignSystem;\n\t\t\tsourceTree = "<group>";\n\t\t};\n\t\tA1 /* Acme */ = {\n\t\t\tisa = PBXNativeTarget;\n\t\t\tname = Acme;\n\t\t};\n\t\tA2 /* DesignSystem */ = {\n\t\t\tisa = PBXNativeTarget;\n\t\t\tname = DesignSystem;\n\t\t};\n\t};\n}\n'
+  assert.equal(iosOf({ 'Acme.xcodeproj/project.pbxproj': classic, 'Acme/App.swift': VIEW, 'DesignSystem/Card.swift': VIEW }).designSystem?.path, 'DesignSystem')
+  // The proposed project, not the first .xcodeproj under the root.
+  assert.equal(iosOf({ 'Acme.xcodeproj/project.pbxproj': classic, 'Aaa/Aaa.xcodeproj/project.pbxproj': PBX_ONE('Aaa'), 'Acme/App.swift': VIEW, 'DesignSystem/Card.swift': VIEW }).designSystem?.path, 'DesignSystem')
+  const shapes = [
+    'name: Acme # the app\ntargets:\n    App:\n        type: application\n        platform: iOS\n        sources: [App]\n    DesignSystem:\n        type: framework\n        platform: iOS\n        sources: [DesignSystem] # shared\n',
+    'name: Acme\ntargets:\n  App:\n    platform: iOS\n    sources: [App]\n  DesignSystem:\n    platform: iOS\n    sources:\n      # the views\n      - {path: DesignSystem, name: Views}\n',
+    'name: Acme\ntargets:\n  App:\n    platform: iOS\n    sources: [App]\n  DesignSystem:\n    platform: iOS\n    sources:\n      - name: Views\n        path: ./Kit/../DesignSystem\n',
+  ]
+  for (const yml of shapes) {
+    const ios = iosOf({ 'project.yml': yml, 'App/App.swift': VIEW, 'DesignSystem/Card.swift': VIEW })
+    assert.equal(ios.designSystem?.path, 'DesignSystem', yml)
+  }
+})
+
+// L14
+test('a catalog deep in Resources gets its Swift beside the sources, a Workspace.swift in the app is no Tuist manifest, and Tuist helpers are not app code', () => {
+  const nested = iosOf({ 'project.yml': 'name: Acme\ntargets:\n  App:\n    platform: iOS\n    sources: [App]\n', 'App/Sources/View.swift': VIEW, 'App/Resources/Assets/Colors.xcassets/Contents.json': { info: { author: 'xcode', version: 1 } }, 'App/Resources/Assets/Colors.xcassets/Ink.colorset/Contents.json': colorset([entry('#112233')]) })
+  assert.deepEqual(nested.suggestedOutputs.map((o) => o.path), ['App/Sources/DesignTokens.swift'])
+  const plain = iosOf({ 'Acme.xcodeproj/project.pbxproj': PBX_ONE('Acme'), 'Acme/View.swift': VIEW, 'Acme/Workspace.swift': 'struct Workspace {}\n' })
+  assert.deepEqual(plain.project, { kind: 'xcodeproj', path: 'Acme.xcodeproj' })
+  const tuist = iosOf({ 'Project.swift': 'import ProjectDescription\nlet project = Project(name: "Acme")\n', 'Tuist.swift': 'import ProjectDescription\nlet tuist = Tuist()\n', 'Tuist/ProjectDescriptionHelpers/Project+Templates.swift': 'import ProjectDescription\nextension Project {}\n', 'Sources/View.swift': VIEW })
+  assert.equal(tuist.swiftFiles, 1)
+})
+
+// R5
+test('the colour counts keep hard-coded components wrapped in a conversion or parentheses', () => {
+  const swift = 'let a = UIColor(red: CGFloat(18) / 255.0, green: CGFloat(52) / 255.0, blue: CGFloat(86) / 255.0, alpha: 1)\nlet b = Color(red: Double(0x12) / 255, green: Double(0x34) / 255, blue: Double(0x56) / 255)\nlet c = UIColor(red: (250.0 / 255.0), green: 0.5, blue: 0.5, alpha: 1)\nlet d = Color(red: r, green: g, blue: b)\nlet e = UIColor(red: CGFloat(r) / 255, green: 0, blue: 0, alpha: 1)\n'
+  assert.deepEqual(swiftColorLiterals(swift).map((f) => f.line), [1, 2, 3])
+  const kotlin = 'val a = Color.rgb((0.1f * 255).toInt(), 0, 0)\nval b = Color(18 / 255f, 52 / 255f, 86 / 255f)\nval c = Color.rgb(r, g, b)\n'
+  assert.deepEqual(kotlinColorLiterals(kotlin).map((f) => f.line), [1, 2])
 })

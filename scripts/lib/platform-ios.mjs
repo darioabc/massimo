@@ -214,7 +214,21 @@ const DS_NAME = /^(?:design[-_ ]?system|ui|components|.*designsystem)$/i
 
 // A project.yml is an XcodeGen spec when it declares targets for an Apple
 // platform; the name alone is common (a deploy or CI file).
-const isXcodegenSpec = (text) => /^targets\s*:/m.test(text) && /^\s*(?:platform\s*:\s*\[?\s*["']?(?:iOS|macOS|tvOS|watchOS|visionOS|auto)\b|deploymentTarget\s*:)/m.test(text)
+// Its targets may sit in an included file, and a platform may be a list or
+// supportedDestinations.
+const isXcodegenSpec = (text) => /^(?:targets|include)\s*:/m.test(text) && (/^include\s*:/m.test(text) || /^\s*deploymentTarget\s*:/m.test(text) || /^\s*(?:platform|supportedDestinations)\s*:[^\n]*(?:\n\s+-[^\n]*)*/m.test(text) && /\b(?:iOS|macOS|tvOS|watchOS|visionOS|auto)\b/.test(text))
+
+// An import of a UI framework in Swift, in every form Swift 6 writes one:
+// an access level (public import), attributes (@preconcurrency,
+// @_exported), or one declaration (import struct SwiftUI.Color).
+const swiftImport = (mod) => new RegExp(String.raw`^[ \t]*(?:@\w+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|package|internal|fileprivate|private)[ \t]+)?import[ \t]+(?:(?:struct|class|enum|protocol|func|var|let|typealias)[ \t]+)?${mod}\b`, 'm')
+const IMPORTS = { swiftui: swiftImport('SwiftUI'), uikit: swiftImport('UIKit'), appkit: swiftImport('AppKit') }
+const OBJC_UI = /^[ \t]*(?:#import[ \t]*<(?:UIKit|AppKit|Cocoa)\/|@import[ \t]+(?:UIKit|AppKit|Cocoa)\b)/m
+// Swift files read for the counts; the gate goes on past them until it finds a UI import.
+const SAMPLE = 600
+
+// A Tuist manifest imports ProjectDescription; a file of that name in the app's own code does not.
+const isManifest = (kind, f, read) => kind !== 'tuist' || !f.endsWith('.swift') || /^\s*import\s+ProjectDescription\b/m.test(read(f) ?? '')
 
 // What detect reports for an iOS project, or null when there is none.
 // `files` are repo-relative paths with ignored folders already left out.
@@ -224,42 +238,46 @@ export function detectIos(files, read) {
   for (const f of own) {
     const kind = KINDS.find(([, test]) => test(f))?.[0]
     if (kind === 'xcodegen' && !isXcodegenSpec(read(f) ?? '')) continue
-    if (kind) markers.push({ kind, path: projectPath(kind, f), dir: markerDir(kind, f) })
+    if (kind && !isManifest(kind, f, read)) continue
+    if (kind) markers.push({ kind, path: projectPath(kind, f), dir: markerDir(kind, f), file: f })
   }
-  const swift = own.filter((f) => f.endsWith('.swift') && !/(?:^|\/)(?:Package|Project|Workspace)\.swift$/.test(f) && !isTuistHelper(f))
   if (markers.length === 0) return null
-  const shallowest = Math.min(...markers.map((m) => depth(m.dir)))
-  const top = markers.filter((m) => depth(m.dir) === shallowest)
-  const root = [...new Set(top.map((m) => m.dir))].sort(compare)[0]
+  // Manifests and Tuist's own folder are not the app's code.
+  const manifestFiles = new Set(markers.map((m) => m.file))
+  const swift = own.filter((f) => f.endsWith('.swift') && !manifestFiles.has(f) && !/(?:^|\/)Package\.swift$/.test(f) && !/(?:^|\/)Tuist\//.test(f))
+  // The shallowest project folder with a UI, in name order: a server package
+  // or a command-line tool beside the app never hides it.
+  const look = (root) => {
+    const inRoot = swift.filter((f) => under(root, f) !== null)
+    const imports = { swiftui: 0, uikit: 0, appkit: 0 }
+    inRoot.forEach((f, i) => {
+      if (i >= SAMPLE && (imports.swiftui || imports.uikit || imports.appkit)) return
+      const text = read(f) ?? ''
+      for (const k of Object.keys(imports)) if (IMPORTS[k].test(text)) imports[k]++
+    })
+    const objc = own.some((f) => /\.(?:m|mm|h)$/.test(f) && under(root, f) !== null && OBJC_UI.test(read(f) ?? ''))
+    const interfaceFiles = own.filter((f) => /\.(?:storyboard|xib)$/.test(f) && under(root, f) !== null).length
+    const colorSets = own.some((f) => under(root, f) !== null && /\.xcassets\/.*\.colorset\/Contents\.json$/.test(f))
+    const ui = [...(imports.swiftui > 0 ? ['swiftui'] : []), ...(imports.uikit > 0 || interfaceFiles > 0 || objc ? ['uikit'] : [])]
+    // Code with no UI at all (a server, a command-line tool) is not an app massimo designs for.
+    if (ui.length === 0 && imports.appkit === 0 && !colorSets) return null
+    if (ui.length === 0) ui.push('swiftui')
+    return { inRoot, ui }
+  }
+  const roots = [...new Set(markers.map((m) => m.dir))].sort((a, b) => depth(a) - depth(b) || compare(a, b))
+  let root = null
+  let found = null
+  for (const r of roots) {
+    found = look(r)
+    if (found) {
+      root = r
+      break
+    }
+  }
+  if (!found) return null
+  const { inRoot, ui } = found
   const rank = (k) => KINDS.findIndex(([kind]) => kind === k)
   const here = markers.filter((m) => m.dir === root).sort((a, b) => rank(a.kind) - rank(b.kind) || Number(isTuistHelper(a.path)) - Number(isTuistHelper(b.path)) || compare(a.path, b.path))
-  const project = { kind: here[0].kind, path: here[0].path }
-  const reasons = here.map((m) => `${m.path} (${m.kind})`)
-  const inRoot = swift.filter((f) => under(root, f) !== null)
-  const imports = { swiftui: 0, uikit: 0 }
-  for (const f of inRoot.slice(0, 600)) {
-    const text = read(f) ?? ''
-    if (/^\s*import\s+SwiftUI\b/m.test(text)) imports.swiftui++
-    if (/^\s*import\s+UIKit\b/m.test(text)) imports.uikit++
-  }
-  const interfaceFiles = own.filter((f) => /\.(?:storyboard|xib)$/.test(f) && under(root, f) !== null).length
-  const ui = [...(imports.swiftui > 0 ? ['swiftui'] : []), ...(imports.uikit > 0 || interfaceFiles > 0 ? ['uikit'] : [])]
-  // Swift with no UI at all (a server, a command-line tool) is not an app massimo designs for.
-  const colorSets = own.some((f) => under(root, f) !== null && /\.xcassets\/.*\.colorset\/Contents\.json$/.test(f))
-  if (inRoot.length === 0 || (ui.length === 0 && !colorSets)) return null
-  if (ui.length === 0) ui.push('swiftui')
-  // Modules: the Swift package targets, the XcodeGen targets, the Xcode targets.
-  const modules = []
-  for (const pkg of own.filter((f) => /(?:^|\/)Package\.swift$/.test(f) && under(root, f) !== null)) {
-    for (const t of packageTargets(read(pkg) ?? '').filter((x) => !x.test)) modules.push({ name: t.name, path: join(dirOf(pkg), t.path ?? `Sources/${t.name}`), from: 'Package.swift' })
-  }
-  const yml = here.find((m) => m.kind === 'xcodegen')
-  if (yml) for (const t of xcodegenTargets(read(yml.path) ?? '')) modules.push({ name: t.name, path: t.path ? join(dirOf(yml.path), t.path) : null, from: 'project.yml' })
-  const pbx = own.find((f) => f.endsWith('.xcodeproj/project.pbxproj') && under(root, f) !== null)
-  const pbxInfo = pbx ? pbxprojInfo(read(pbx) ?? '') : { targets: [], synced: [] }
-  // A target whose name is a folder Xcode keeps in sync has its code there.
-  for (const name of pbxInfo.targets) modules.push({ name, path: pbxInfo.synced.includes(name) ? join(dirOf(dirOf(pbx)), name) : null, from: pbx })
-  const designSystem = modules.find((m) => m.path && DS_NAME.test(m.name)) ?? null
   // Catalogs that hold colours, the app's own first.
   const catalogs = new Map()
   for (const f of own) {
@@ -269,6 +287,33 @@ export function detectIos(files, read) {
     catalogs.set(cat, (catalogs.get(cat) ?? 0) + 1)
   }
   const colorCatalogs = [...catalogs].map(([path, colors]) => ({ path, colors, app: !NOT_THE_APP.test(path) })).sort((a, b) => Number(b.app) - Number(a.app) || b.colors - a.colors || compare(a.path, b.path))
+  // Of several Xcode projects in one folder, the one whose folders hold the app's catalog.
+  const holder = (pbxPath, target) => {
+    const info = pbxprojInfo(read(pbxPath) ?? '')
+    const dir = dirOf(dirOf(pbxPath))
+    return [...info.synced, ...[...info.folders.values()].flat()].some((d) => target.startsWith(`${join(dir, d)}/`))
+  }
+  const appCatalog = colorCatalogs.find((c) => c.app)?.path
+  if (appCatalog && here[0].kind === 'xcodeproj') {
+    const holding = here.find((m) => m.kind === 'xcodeproj' && holder(`${m.path}/project.pbxproj`, appCatalog))
+    if (holding) here.splice(here.indexOf(holding), 1), here.unshift(holding)
+  }
+  const project = { kind: here[0].kind, path: here[0].path }
+  const reasons = here.map((m) => `${m.path} (${m.kind})`)
+  // Modules: the Swift package targets, the XcodeGen targets, the Xcode targets.
+  const modules = []
+  for (const pkg of own.filter((f) => /(?:^|\/)Package\.swift$/.test(f) && under(root, f) !== null)) {
+    for (const t of packageTargets(read(pkg) ?? '').filter((x) => !x.test)) modules.push({ name: t.name, path: join(dirOf(pkg), t.path ?? `Sources/${t.name}`), from: 'Package.swift' })
+  }
+  const yml = here.find((m) => m.kind === 'xcodegen')
+  if (yml) for (const t of xcodegenTargets(read(yml.path) ?? '')) modules.push({ name: t.name, path: t.path ? join(dirOf(yml.path), t.path) : null, from: 'project.yml' })
+  // The project detect names, else the first under the root.
+  const named = here.find((m) => m.kind === 'xcodeproj')
+  const pbx = named ? `${named.path}/project.pbxproj` : own.find((f) => f.endsWith('.xcodeproj/project.pbxproj') && under(root, f) !== null)
+  const pbxInfo = pbx ? pbxprojInfo(read(pbx) ?? '') : { targets: [], synced: [], folders: new Map() }
+  // A target's own folder: a synced folder it lists or is named for, or a group named for it.
+  for (const name of pbxInfo.targets) modules.push({ name, path: pbxInfo.folders.get(name)?.[0] ? join(dirOf(dirOf(pbx)), pbxInfo.folders.get(name)[0]) : null, from: pbx })
+  const designSystem = modules.find((m) => m.path && DS_NAME.test(m.name)) ?? null
   const previews = inRoot.filter((f) => /#Preview\b|:\s*PreviewProvider\b/.test(read(f) ?? '')).length
   const manifests = [...here.map((m) => m.path), ...own.filter((f) => /(?:^|\/)(?:Package\.resolved|Podfile|Cartfile)$/.test(f) && under(root, f) !== null)]
   const text = manifests.map((f) => (f.endsWith('.xcodeproj') ? read(`${f}/project.pbxproj`) : read(f)) ?? '').join('\n')
@@ -312,9 +357,11 @@ export function iosTokens(e, files, read) {
   if (anchor) {
     const target = packageTargetOf(anchor, files, read)
     dir = target ? target.dir : anchor.endsWith('.xcassets') ? dirOf(anchor) : anchor
-    // A catalog in a Resources folder sits beside the code: Tuist and XcodeGen copy Resources/ as resources, never compile it.
-    if (!target && /(?:^|\/)Resources$/.test(dir)) {
-      const parent = dirOf(dir)
+    // A catalog anywhere in a Resources folder sits beside the code: Tuist and XcodeGen copy Resources/ as resources, never compile it.
+    const steps = dir.split('/')
+    const at = steps.lastIndexOf('Resources')
+    if (!target && at !== -1) {
+      const parent = steps.slice(0, at).join('/') || '.'
       const sources = join(parent, 'Sources')
       dir = files.some((f) => f.startsWith(`${sources}/`) && f.endsWith('.swift')) ? sources : parent
     }
@@ -335,15 +382,22 @@ export function iosWire(path, files, read, platform) {
   if (target) return { needed: false, step: `${path} sits in the Swift package target ${target.name}, which picks it up by itself` }
   const kind = platform?.project?.kind
   if (kind === 'tuist' || kind === 'xcodegen') return { needed: false, step: `${path}: ${kind === 'tuist' ? 'Tuist' : 'XcodeGen'} picks up new files under a target's sources; regenerate the project (${kind === 'tuist' ? 'tuist generate' : 'xcodegen generate'})` }
-  // The project that holds the output: the one the platform block names,
-  // else the deepest whose folder contains it, else the first there is.
+  // The project that holds the output: of the projects whose folder contains
+  // it, the one with a target folder around it, then the deepest, then the
+  // one the platform block names; with none, the named one, else the first.
   const projects = files.filter((f) => f.endsWith('.xcodeproj/project.pbxproj'))
-  const named = kind === 'xcodeproj' && typeof platform?.project?.path === 'string' ? `${join(platform.root ?? '.', platform.project.path.replace(/\/+$/, ''))}/project.pbxproj` : null
+  const clean = (p) => p.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '') || '.'
+  const named = kind === 'xcodeproj' && typeof platform?.project?.path === 'string' ? `${join(clean(platform.root ?? '.'), clean(platform.project.path))}/project.pbxproj` : null
+  const around = (f) => {
+    const info = pbxprojInfo(read(f) ?? '')
+    const dir = dirOf(dirOf(f))
+    return [...info.synced, ...[...info.folders.values()].flat()].some((d) => path.startsWith(`${join(dir, d)}/`))
+  }
   const holding = projects.filter((f) => {
     const folder = dirOf(dirOf(f))
     return folder === '.' || path.startsWith(`${folder}/`)
-  }).sort((a, b) => depth(dirOf(dirOf(b))) - depth(dirOf(dirOf(a))))
-  const pbx = (named && projects.includes(named) ? named : null) ?? holding[0] ?? projects[0]
+  }).sort((a, b) => Number(around(b)) - Number(around(a)) || depth(dirOf(dirOf(b))) - depth(dirOf(dirOf(a))) || Number(b === named) - Number(a === named) || compare(a, b))
+  const pbx = holding[0] ?? (named && projects.includes(named) ? named : null) ?? projects[0]
   const info = pbx ? pbxprojInfo(read(pbx) ?? '') : { targets: [], synced: [] }
   const projectDir = pbx ? dirOf(dirOf(pbx)) : '.'
   const synced = info.synced.find((dir) => {
