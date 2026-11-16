@@ -161,8 +161,12 @@ test('a hand edit that keeps massimo\'s header is never written over: off the li
   const cb = readConfig(b)
   cb.tokens.outputs = [{ format: 'swift', path: 'ios/App/Designtokens.swift' }]
   writeConfig(b, cb)
-  assert.equal(tokensRun(b, ['build']).status, 1)
-  assert.match(readFileSync(join(b, 'ios/App', readdirSync(join(b, 'ios/App'))[0]), 'utf8'), /our tweak, keep/)
+  // On a disk that ignores case the new spelling is the edited file, so the
+  // build refuses it; on one that keeps case it is a new file, and the edited
+  // one is left as it is.
+  const ignoresCase = existsSync(join(b, 'ios/App/Designtokens.swift'))
+  assert.equal(tokensRun(b, ['build']).status, ignoresCase ? 1 : 0)
+  assert.match(readFileSync(join(b, 'ios/App', readdirSync(join(b, 'ios/App')).sort()[0]), 'utf8'), /our tweak, keep/)
   // With no mobile-outputs.json.
   const c = repo({ config: tokensMode([SWIFT_OUT]), tokens: [tok(['color', 'primary'], 'color', srgb('#6200ee'))] })
   assert.equal(tokensRun(c, ['build']).status, 0)
