@@ -490,6 +490,14 @@ function configRefusal(raw) {
   const newer = newerMessage('config', raw?.version, CONFIG_FILE)
   if (newer) return newer
   if (typeof raw?.minScripts === 'string' && olderThan(SCRIPTS_VERSION, raw.minScripts)) return `${CONFIG_FILE} needs massimo scripts ${raw.minScripts} or later, and these are ${SCRIPTS_VERSION}: ${UPDATE}`
+  // A malformed platforms value would read as no web platform and quietly turn the web checks off.
+  if (raw && typeof raw === 'object' && 'platforms' in raw) {
+    const p = raw.platforms
+    const ids = ['web', 'ios', 'android']
+    if (!isPlainObject(p) || Object.keys(p).length === 0 || Object.entries(p).some(([id, block]) => !ids.includes(id) || !isPlainObject(block))) {
+      return `${CONFIG_FILE}: platforms must map web, ios or android to a block (an object, {} for the defaults) and name at least one, such as { "web": {}, "ios": {} }; it is ${JSON.stringify(p)}`
+    }
+  }
   return null
 }
 
