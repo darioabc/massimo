@@ -660,7 +660,25 @@ const suggestedConfig = {
 const MOBILE_SHELLS = ['react-native', 'expo', '@nativescript/core', 'cordova-ios', 'cordova-android', '@tauri-apps/cli', '@tauri-apps/api']
 function detectPlatforms() {
   if (MOBILE_SHELLS.some(has) || files.includes('pubspec.yaml')) return []
+  // A shell can sit below the root too (a workspace member, a mobile/
+  // folder): any folder whose package.json names a shell framework, or that
+  // holds a capacitor.config or a pubspec.yaml, is left out with all it holds.
   const shell = new Set(notUi)
+  for (const f of listed) {
+    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : null
+    if (!dir) continue
+    const name = f.slice(f.lastIndexOf('/') + 1)
+    if (/^(?:capacitor\.config\.(?:ts|js|mjs|json)|pubspec\.yaml)$/.test(name)) shell.add(dir)
+    else if (name === 'package.json') {
+      let own = {}
+      try {
+        own = depsOf(readJson(join(root, f), {}))
+      } catch {
+        // an unreadable package.json names no shell
+      }
+      if (MOBILE_SHELLS.some((dep) => Object.hasOwn(own, dep))) shell.add(dir)
+    }
+  }
   const own = listed.filter((f) => ![...shell].some((dir) => f.startsWith(`${dir}/`)) && !f.startsWith(ownDir))
   const read = (f) => {
     try {
