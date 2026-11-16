@@ -33,7 +33,7 @@
 // is behind the CSS, and `build` never writes over a file it mirrors.
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { colorCss, colorModes, contrastRatio, parseColor, toHex } from './lib/color.mjs'
@@ -1966,7 +1966,14 @@ function notOwned(root, files, owned) {
 // which are the team's now and never removed.
 function orphansOf(root, files, owned) {
   const made = new Set(files.filter((f) => f.mobile).map((f) => rel(root, f.path)))
-  const left = Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p)) && insideRoot(root, join(root, p))).sort(compare)
+  // On a disk that ignores case, an output renamed only in case is the old
+  // path too: the same file, never an orphan of itself.
+  const idOf = (path) => {
+    const st = statSync(path)
+    return `${st.dev}:${st.ino}`
+  }
+  const madeIds = new Set(files.filter((f) => f.mobile && existsSync(f.path)).map((f) => idOf(f.path)))
+  const left = Object.keys(owned.files).filter((p) => !made.has(p) && existsSync(join(root, p)) && insideRoot(root, join(root, p)) && !madeIds.has(idOf(join(root, p)))).sort(compare)
   const same = (p) => sha256(readFileSync(join(root, p))) === owned.files[p]
   return { orphans: left.filter(same), changed: left.filter((p) => !same(p)) }
 }
