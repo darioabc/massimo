@@ -84,6 +84,10 @@ export function pbxprojInfo(text) {
 
 const DS_NAME = /^(?:design[-_ ]?system|ui|components|.*designsystem)$/i
 
+// A project.yml is an XcodeGen spec when it declares targets for an Apple
+// platform; the name alone is common (a deploy or CI file).
+const isXcodegenSpec = (text) => /^targets\s*:/m.test(text) && /^\s*(?:platform\s*:\s*\[?\s*["']?(?:iOS|macOS|tvOS|watchOS|visionOS|auto)\b|deploymentTarget\s*:)/m.test(text)
+
 // What detect reports for an iOS project, or null when there is none.
 // `files` are repo-relative paths with ignored folders already left out.
 export function detectIos(files, read) {
@@ -91,6 +95,7 @@ export function detectIos(files, read) {
   const markers = []
   for (const f of own) {
     const kind = KINDS.find(([, test]) => test(f))?.[0]
+    if (kind === 'xcodegen' && !isXcodegenSpec(read(f) ?? '')) continue
     if (kind) markers.push({ kind, path: projectPath(kind, f), dir: dirOf(projectPath(kind, f)) })
   }
   const swift = own.filter((f) => f.endsWith('.swift') && !/(?:^|\/)(?:Package|Project)\.swift$/.test(f))
@@ -111,6 +116,9 @@ export function detectIos(files, read) {
   }
   const interfaceFiles = own.filter((f) => /\.(?:storyboard|xib)$/.test(f) && under(root, f) !== null).length
   const ui = [...(imports.swiftui > 0 ? ['swiftui'] : []), ...(imports.uikit > 0 || interfaceFiles > 0 ? ['uikit'] : [])]
+  // Swift with no UI at all (a server, a command-line tool) is not an app massimo designs for.
+  const colorSets = own.some((f) => under(root, f) !== null && /\.xcassets\/.*\.colorset\/Contents\.json$/.test(f))
+  if (inRoot.length === 0 || (ui.length === 0 && !colorSets)) return null
   if (ui.length === 0) ui.push('swiftui')
   // Modules: the Swift package targets, the XcodeGen targets, the Xcode targets.
   const modules = []
@@ -141,8 +149,7 @@ export function detectIos(files, read) {
     ['Prefire', /\bPrefire\b/],
     ['iOSSnapshotTestCase', /iOSSnapshotTestCase|FBSnapshotTestCase/],
   ].filter(([, re]) => re.test(text)).map(([name]) => name)
-  const confidence = swift.length === 0 ? 'low' : project.kind === 'xcworkspace' && !here.some((m) => m.kind === 'xcodeproj') ? 'medium' : 'high'
-  if (swift.length === 0) reasons.push('no Swift files')
+  const confidence = project.kind === 'xcworkspace' && !here.some((m) => m.kind === 'xcodeproj') ? 'medium' : 'high'
   return { id: 'ios', root, project, confidence, reasons, ui, modules, designSystem, catalogs: colorCatalogs, synced: pbxInfo.synced, previews, snapshotTools, swiftFiles: inRoot.length }
 }
 
