@@ -1728,24 +1728,6 @@ const warnAll = (model) => {
 
 // ── Orchestration ───────────────────────────────────────────────────────────
 
-// The Swift and Kotlin names each token has in the mobile outputs, as Figma's
-// code syntax (iOS, ANDROID), for a config that declares platforms.
-function mobileCodeNames(model, config) {
-  const ids = new Set(Object.keys(config.platforms ?? {}))
-  if (!ids.has('ios') && !ids.has('android')) return null
-  const options = mobileOptions(config)
-  const ns = options.namespace
-  const lower = (s) => `${s.charAt(0).toLowerCase()}${s.slice(1)}`
-  const names = new Map()
-  for (const e of mobileEntries(model, options).entries) {
-    names.set(e.t.name, {
-      ...(ids.has('ios') ? { iOS: `${ns}.${e.group}.${e.swift}` } : {}),
-      ...(ids.has('android') ? { ANDROID: `${ns}.${lower(e.group)}.${e.kotlin}` } : {}),
-    })
-  }
-  return names
-}
-
 // The mobile outputs, as files plus what the build reports: what was not
 // carried over, notes, the step that wires each output into its project, and
 // the colour sets an owned catalog now duplicates in the app's own.
@@ -1777,6 +1759,12 @@ function buildMobile(root, config, model, outputs) {
   if (ownedCatalog && xc.collisions.length > 0) throw new Error(xc.collisions.map((c) => `${c.tokens.join(' and ')} would both be the colour set ${c.name}; rename one of them`).join('\n'))
   const files = []
   const report = { skipped: [], notes: [], wire: [], duplicates: [] }
+  // Each token's name in the code the outputs declare, for Figma's code
+  // syntax: iOS from a swift output, Android from a compose output, else
+  // the resource an android-xml output declares.
+  const ios = new Map()
+  const compose = new Map()
+  const resources = new Map()
   const skip = (list, output) => report.skipped.push(...list.map((s) => ({ ...s, output })))
   // What no mobile output can carry, said once for all of them.
   skip(plan.skipped, 'the mobile outputs')
@@ -1845,8 +1833,10 @@ function buildMobile(root, config, model, outputs) {
       skip(r.skipped, path)
       report.notes.push(...r.notes)
       report.wire.push(adapter.tokens.wire(path, repoFiles, read, block))
+      for (const [token, name] of r.names) if (!ios.has(token)) ios.set(token, `${options.namespace}.${name}`)
     } else if (output.format === 'compose') {
       const r = buildCompose(plan, options, { path }, HEADER)
+      for (const [token, name] of r.names) if (!compose.has(token)) compose.set(token, `${options.namespace}.${name}`)
       made = [{ path, text: r.text }]
       skip(r.skipped, path)
       report.notes.push(...r.notes)
@@ -1858,6 +1848,8 @@ function buildMobile(root, config, model, outputs) {
       if (clashes.length > 0) {
         throw new Error(`the android-xml output would declare resources the module already declares, which does not compile:\n${clashes.map((c) => `  ${c.type} ${c.name} in ${c.file}`).join('\n')}\nRename those tokens, or remove the module's own resource once massimo_tokens.xml declares it (after the user's OK)`)
       }
+      // A typography token is two resources (its size and line height), so it has no one name.
+      for (const r of xml.resources) if (!r.night && !plan.entries.find((e) => e.t.name === r.token)?.value.text && !resources.has(r.token)) resources.set(r.token, `R.${r.type}.${r.name}`)
       made = buildAndroidXml(xml, path, HEADER)
       skip(xml.skipped, path)
       report.notes.push(...xml.notes)
@@ -1867,7 +1859,13 @@ function buildMobile(root, config, model, outputs) {
   }
   report.notes = [...new Set(report.notes)]
   report.duplicates = [...new Set(report.duplicates)].sort(compare)
-  return { files, report }
+  const android = compose.size > 0 || outputs.some((o) => o.format === 'compose') ? compose : resources
+  const codeNames = new Map()
+  for (const e of plan.entries) {
+    const names = { ...(ios.has(e.t.name) ? { iOS: ios.get(e.t.name) } : {}), ...(android.has(e.t.name) ? { ANDROID: android.get(e.t.name) } : {}) }
+    if (Object.keys(names).length > 0) codeNames.set(e.t.name, names)
+  }
+  return { files, report, codeNames }
 }
 
 // Every file `build` writes, as { path (absolute), text }. Throws on a bad token set.
@@ -1897,7 +1895,7 @@ function buildOutputs(root, projectDir, config, tokens) {
   }
   const mobile = mobileOutputs.length > 0 ? buildMobile(root, config, model, mobileOutputs) : null
   if (mobile) out.push(...mobile.files)
-  out.push({ path: join(projectDir, 'tokens', 'figma-variables.json'), text: buildFigma(model, config.platforms ? mobileCodeNames(model, config) : null) })
+  out.push({ path: join(projectDir, 'tokens', 'figma-variables.json'), text: buildFigma(model, mobile?.codeNames ?? null) })
   out.push({ path: join(projectDir, 'kit', 'kit.css'), text: buildKit(model, tokens.origin, tokens.files, config) })
   return { model, files: out, mobile: mobile?.report ?? null }
 }

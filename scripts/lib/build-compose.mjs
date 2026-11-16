@@ -180,5 +180,8 @@ export function buildCompose(plan, options, ctx, header) {
   const sorted = [...imports].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
   const libraries = [...new Set(sorted.map((i) => i.split('.').slice(0, 3).join('.')))]
   const text = [`// ${header}`, '// massimo mobile output, format 1', '', `package ${pkg}`, '', ...sorted.map((i) => `import ${i}`), '', ...body, ''].join('\n')
-  return { text, skipped, notes, libraries }
+  // What the file declares, as `group.member` under the namespace object, for Figma's code syntax.
+  const left = new Set(skipped.map((x) => x.token))
+  const names = new Map(entries.filter((e) => !left.has(e.t.name)).map((e) => [e.t.name, `${e.group.charAt(0).toLowerCase()}${e.group.slice(1)}.${e.kotlin}`]))
+  return { text, skipped, notes, libraries, names }
 }

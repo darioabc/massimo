@@ -350,8 +350,10 @@ test('Figma code syntax names only what an output declares, in the scope it decl
   const both = repo({ config: tokensMode([SWIFT_OUT, COMPOSE_OUT]), tokens })
   assert.equal(tokensRun(both, ['build']).status, 0)
   assert.deepEqual(codeSyntaxOf(both, 'text/primary'), { WEB: 'var(--text-primary)', iOS: 'DesignTokens.Colors.textPrimary', ANDROID: 'DesignTokens.colors.textPrimary' })
-  // text.display has no iOS text style, so the Swift file does not declare it.
-  assert.deepEqual(codeSyntaxOf(both, 'text/display'), { WEB: 'var(--text-display)', ANDROID: 'DesignTokens.typography.display' })
+  // With iOS declared but only a compose output, there is no iOS name to give.
+  const composeOnly = repo({ config: tokensMode([COMPOSE_OUT]), tokens })
+  assert.equal(tokensRun(composeOnly, ['build']).status, 0)
+  assert.deepEqual(codeSyntaxOf(composeOnly, 'color/primary'), { WEB: 'var(--color-primary)', ANDROID: 'DesignTokens.colors.primary' })
 })
 
 // #20

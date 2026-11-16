@@ -43,7 +43,7 @@ function nsColor(c) {
   return `NSColor(srgbRed: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
 }
 
-// The Swift source, and what was left out: { text, skipped, notes }.
+// The Swift source, what was left out and what it declares: { text, skipped, notes, names }.
 //   ctx.inPackage  whether the file sits in a Swift package target: then
 //                  declarations are public and catalogs read from .module
 //   ctx.catalog    Map token name -> colour set name the code reads, or null
@@ -171,5 +171,8 @@ export function buildSwift(plan, options, ctx, header) {
   if (needs.border) {
     out.push('', `${pub}struct ${ns}Border: Sendable {`, `    ${pub}let width: CGFloat`, `    ${pub}let color: Color`, `    ${pub}let dashed: Bool`, '}')
   }
-  return { text: `${out.join('\n')}\n`, skipped, notes }
+  // What the file declares, as `Group.member`, for Figma's code syntax.
+  const left = new Set(skipped.map((x) => x.token))
+  const names = new Map(entries.filter((e) => !left.has(e.t.name)).map((e) => [e.t.name, `${e.group}.${e.swift}`]))
+  return { text: `${out.join('\n')}\n`, skipped, notes, names }
 }
