@@ -38,6 +38,11 @@ function uiColor(c) {
   return `UIColor(red: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
 }
 
+function nsColor(c) {
+  if (c.space === 'display-p3') return `NSColor(displayP3Red: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
+  return `NSColor(srgbRed: ${n(c.r)}, green: ${n(c.g)}, blue: ${n(c.b)}, alpha: ${n(c.a)})`
+}
+
 // The Swift source, and what was left out: { text, skipped, notes }.
 //   ctx.inPackage  whether the file sits in a Swift package target: then
 //                  declarations are public and catalogs read from .module
@@ -75,7 +80,9 @@ export function buildSwift(plan, options, ctx, header) {
         traitColors = true
         const dark = e.dark?.color
         const ui = dark ? `UIColor { $0.userInterfaceStyle == .dark ? ${uiColor(dark)} : ${uiColor(v.color)} }` : uiColor(v.color)
-        add('Colors', [...head, '#if canImport(UIKit)', `${pad}${pub}static let ${name} = Color(uiColor: ${ui})`, '#else', `${pad}${pub}static let ${name} = ${staticColor(v.color)}`, '#endif'])
+        // AppKit (a macOS target of the same package) follows the appearance too.
+        const ns = dark ? `NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? ${nsColor(dark)} : ${nsColor(v.color)} }` : nsColor(v.color)
+        add('Colors', [...head, '#if canImport(UIKit)', `${pad}${pub}static let ${name} = Color(uiColor: ${ui})`, '#elseif canImport(AppKit)', `${pad}${pub}static let ${name} = Color(nsColor: ${ns})`, '#else', `${pad}${pub}static let ${name} = ${staticColor(v.color)}`, '#endif'])
         needs.uikitColors.push({ name, line: ui })
       }
       continue
@@ -129,7 +136,8 @@ export function buildSwift(plan, options, ctx, header) {
   for (const e of entries) for (const note of e.notes) notes.push(`${e.t.name}: ${note}`)
 
   const out = [`// ${header}`, '// massimo mobile output, format 1', '', 'import SwiftUI']
-  if (traitColors || options.uikit) out.push('#if canImport(UIKit)', 'import UIKit', '#endif')
+  if (traitColors) out.push('#if canImport(UIKit)', 'import UIKit', '#elseif canImport(AppKit)', 'import AppKit', '#endif')
+  else if (options.uikit) out.push('#if canImport(UIKit)', 'import UIKit', '#endif')
   out.push('')
   // Outside a package, the bundle that holds this file, which is the app's or the framework's.
   if (!ctx.inPackage && catalogColors) out.push(`private final class ${ns}BundleToken {}`, `private let ${bundle} = Bundle(for: ${ns}BundleToken.self)`, '')
