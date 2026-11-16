@@ -21,13 +21,16 @@ const NOT_THE_APP = /(?:^|\/)(?:\.?demo|demos|example|examples|sample|samples|pr
 // The project files, by kind, in the order that decides the kind: a
 // generator first, since the .xcodeproj it makes is often not committed.
 const KINDS = [
-  ['tuist', (f) => /(?:^|\/)(?:Project\.swift|Tuist\.swift|tuist\.toml|Tuist\/Config\.swift)$/.test(f)],
+  ['tuist', (f) => /(?:^|\/)(?:Project\.swift|Workspace\.swift|Tuist\.swift|tuist\.toml|Tuist\/Config\.swift)$/.test(f)],
   ['xcodegen', (f) => /(?:^|\/)project\.ya?ml$/.test(f)],
   ['swiftpm', (f) => /(?:^|\/)Package\.swift$/.test(f) && !/(?:^|\/)Tuist\/Package\.swift$/.test(f)],
   ['xcworkspace', (f) => /\.xcworkspace\/contents\.xcworkspacedata$/.test(f) && !/\.xcodeproj\/project\.xcworkspace\//.test(f)],
   ['xcodeproj', (f) => /\.xcodeproj\/project\.pbxproj$/.test(f)],
 ]
 const projectPath = (kind, f) => (kind === 'xcworkspace' || kind === 'xcodeproj' ? f.replace(/\/[^/]+$/, '') : f)
+// Tuist's helper folder belongs to the project above it: Tuist/Config.swift marks the folder that holds Tuist/.
+const isTuistHelper = (f) => /(?:^|\/)Tuist\/[^/]+\.swift$/.test(f)
+const markerDir = (kind, f) => (kind === 'tuist' && isTuistHelper(f) ? dirOf(dirOf(f)) : dirOf(projectPath(kind, f)))
 
 // Targets a Package.swift declares, read as text: [{ name, path, test }].
 export function packageTargets(text) {
@@ -96,15 +99,15 @@ export function detectIos(files, read) {
   for (const f of own) {
     const kind = KINDS.find(([, test]) => test(f))?.[0]
     if (kind === 'xcodegen' && !isXcodegenSpec(read(f) ?? '')) continue
-    if (kind) markers.push({ kind, path: projectPath(kind, f), dir: dirOf(projectPath(kind, f)) })
+    if (kind) markers.push({ kind, path: projectPath(kind, f), dir: markerDir(kind, f) })
   }
-  const swift = own.filter((f) => f.endsWith('.swift') && !/(?:^|\/)(?:Package|Project)\.swift$/.test(f))
+  const swift = own.filter((f) => f.endsWith('.swift') && !/(?:^|\/)(?:Package|Project|Workspace)\.swift$/.test(f) && !isTuistHelper(f))
   if (markers.length === 0) return null
   const shallowest = Math.min(...markers.map((m) => depth(m.dir)))
   const top = markers.filter((m) => depth(m.dir) === shallowest)
   const root = [...new Set(top.map((m) => m.dir))].sort(compare)[0]
   const rank = (k) => KINDS.findIndex(([kind]) => kind === k)
-  const here = markers.filter((m) => m.dir === root).sort((a, b) => rank(a.kind) - rank(b.kind) || compare(a.path, b.path))
+  const here = markers.filter((m) => m.dir === root).sort((a, b) => rank(a.kind) - rank(b.kind) || Number(isTuistHelper(a.path)) - Number(isTuistHelper(b.path)) || compare(a.path, b.path))
   const project = { kind: here[0].kind, path: here[0].path }
   const reasons = here.map((m) => `${m.path} (${m.kind})`)
   const inRoot = swift.filter((f) => under(root, f) !== null)
@@ -183,11 +186,17 @@ export function iosTokens(e, files, read) {
   if (anchor) {
     const target = packageTargetOf(anchor, files, read)
     dir = target ? target.dir : anchor.endsWith('.xcassets') ? dirOf(anchor) : anchor
+    // A catalog in a Resources folder sits beside the code: Tuist and XcodeGen copy Resources/ as resources, never compile it.
+    if (!target && /(?:^|\/)Resources$/.test(dir)) {
+      const parent = dirOf(dir)
+      const sources = join(parent, 'Sources')
+      dir = files.some((f) => f.startsWith(`${sources}/`) && f.endsWith('.swift')) ? sources : parent
+    }
   } else {
     dir = e.root === '.' ? 'DesignTokens' : `${e.root}/DesignTokens`
   }
-  const outputs = [{ format: 'swift', path: `${dir}/DesignTokens.swift`, platform: 'ios' }]
-  if (sources.length === 0) outputs.push({ format: 'xcassets', path: `${dir}/MassimoTokens.xcassets`, platform: 'ios' })
+  const outputs = [{ format: 'swift', path: join(dir, 'DesignTokens.swift'), platform: 'ios' }]
+  if (sources.length === 0) outputs.push({ format: 'xcassets', path: join(dir, 'MassimoTokens.xcassets'), platform: 'ios' })
   return { sources, outputs, colors: sources.length > 0 ? 'catalog' : 'tokens' }
 }
 
