@@ -11,7 +11,7 @@ Plugin root: two directories above this skill's base directory. Follow `<plugin>
 
 ## Run
 
-1. **Begin.** `state.mjs set guard in_progress`.
+1. **Begin.** `state.mjs set guard in_progress`. In a project that declares platforms and no web platform (an iOS or Android app on its own), the graph reads no code yet, so skip steps 2 and 3, and say why: `ds:` headers in Swift or Kotlin files are read by nothing. Its guard is the token check: step 4's `check.mjs`, which runs `tokens.mjs check` and skips the graph, and step 5's CI job.
 2. **Tiers.** Propose a tier and group for every component (`ds:group <Tier> / <Group>`): Foundations (tokens made visible), Primitives (buttons, inputs, text), Patterns (composed pieces: cards, forms, lists), Shells (layouts, navigation), Pages, Explorations (parked or experimental). Base it on the graph: what a component composes and who composes it. Show the user the proposed index in one list, grouped; agree it; write the headers; re-run `graph.mjs` and check the index reads well.
 3. **Rules on primitives.** Take the ten most-used components from `graph.md`. For each, propose `ds:` lines from how the code actually uses it (graph `composedBy`, real call sites):
    - `ds:use-when` when to reach for it instead of its neighbours (every Primitives node gets one);
