@@ -42,7 +42,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PAGE_MARK, SECTION_MARK, builtPagePaths, componentId, componentReadme, contentTypeOf, fontFaces, isMedia, listTokens, previewFromPage, rewriteCssUrls, sectionsFor, themeScript } from './lib/artifact.mjs'
+import { PAGE_MARK, SECTION_MARK, builtPagePaths, componentId, componentReadme, contentTypeOf, fontFaces, isMedia, listTokens, ownStorySlug, previewFromPage, rewriteCssUrls, sectionsFor, themeScript } from './lib/artifact.mjs'
 import { compare, expandGlobs } from './lib/glob.mjs'
 import { SCRIPTS_VERSION, fail, loadConfig, parseArgs, readJson, rel, scriptCommand, today, warnIfVendoredOlder } from './lib/project.mjs'
 import { truthy } from './lib/text.mjs'
@@ -90,9 +90,9 @@ function walkFiles(dir, base = dir) {
 // written for it. Null fields when the repo has no token set yet.
 function tokenSide(root, config, title) {
   const set = tokenEntries(root, config)
-  if (!set) return { set: null, doc: null, left: [], sections: {} }
-  const { doc, left } = listTokens(set, { name: title })
-  return { set, doc, left, sections: sectionsFor(left, set.modes) }
+  if (!set) return { set: null, doc: null, left: [], twins: [], sections: {} }
+  const { doc, left, twins } = listTokens(set, { name: title })
+  return { set, doc, left, twins, sections: sectionsFor(left, set.modes) }
 }
 
 // The pages the project folder keeps, as Map(path under the project folder ->
@@ -136,8 +136,9 @@ function assemble({ root, config, projectDir, builtDir }) {
   const files = new Map()
   const notes = []
   const { pages, tokens, graph, chosen, title } = pagesOf({ root, config, projectDir })
-  const { set, doc, left } = tokens
+  const { set, doc, left, twins } = tokens
   if (!set) notes.push('No token set yet, so the folder has no tokens.json. Run the tokens phase first.')
+  if (twins.length > 0) notes.push(`${twins.length} ${twins.length === 1 ? 'colour is a Tailwind theme name' : 'colours are Tailwind theme names'} for a colour the lists hold under its own name (\`--${twins[0]}\` for \`--${twins[0].slice('color-'.length)}\`), so the lists leave ${twins.length === 1 ? 'it' : 'them'} out.`)
 
   // The brand book: the project's own README, else a line that says what is here.
   const readme = join(projectDir, 'README.md')
@@ -186,9 +187,12 @@ function assemble({ root, config, projectDir, builtDir }) {
   const assets = new Set()
   const stylesheets = new Set()
   const previews = { built: 0, none: [] }
+  // A manifest or csf lane names each node's stories in the graph (`direct`); a
+  // native lane finds stories by file name, so a node's own story is the one beside it.
+  const native = (config.stories?.lane ?? 'native') === 'native'
   for (const { id, node } of chosen) {
     let skip = null
-    const slug = node.direct?.[0] ?? null
+    const slug = node.direct?.[0] ?? (native ? ownStorySlug(node) : null)
     if (!builtDir) skip = 'no build of the story lane was given'
     else if (!slug) skip = 'no story of its own'
     else {
@@ -254,14 +258,14 @@ function assemble({ root, config, projectDir, builtDir }) {
   const keptFiles = existsSync(kept) ? walkFiles(kept) : []
   for (const f of keptFiles) files.set(f, readFileSync(join(kept, f)))
 
-  return { files, notes, left, chosen, previews, missing, set, graph, title, keptFiles }
+  return { files, notes, left, twins, chosen, previews, missing, set, graph, title, keptFiles }
 }
 
-function reportText({ notes, left, chosen, previews, missing, set, title, files, keptFiles, commands }) {
+function reportText({ notes, left, twins, chosen, previews, missing, set, title, files, keptFiles, commands }) {
   const uploads = [...files.keys()].filter((f) => f.startsWith('assets/') && isMedia(f)).length
   const lines = [`# ${title}: the design system folder`, '', `Built by massimo ${SCRIPTS_VERSION}. ${files.size} files.`, '']
   lines.push('## What it holds', '')
-  lines.push(`- Tokens: ${set ? `${set.entries.length - left.length} of ${set.entries.length} in the token lists, in ${set.modes.length} ${set.modes.length === 1 ? 'theme' : 'themes'} (${set.modes.join(', ')})` : 'none'}`)
+  lines.push(`- Tokens: ${set ? `${set.entries.length - left.length - twins.length} of ${set.entries.length} in the token lists, in ${set.modes.length} ${set.modes.length === 1 ? 'theme' : 'themes'} (${set.modes.join(', ')})` : 'none'}`)
   lines.push(`- Components: ${chosen.length} with a page, ${previews.built} with a preview`)
   lines.push(`- Assets: ${[...files.keys()].filter((f) => f.startsWith('assets/')).length} files, ${uploads} of them pictures, videos or PDFs`)
   lines.push(`- Kept files copied over the build: ${keptFiles.length}`)
@@ -375,9 +379,9 @@ function main() {
   if (typeof flags.built === 'string' && !existsSync(builtDir)) fail(`no folder at ${shown(builtDir)}; build the story lane first`)
   const result = assemble({ root, config, projectDir, builtDir: builtDir && existsSync(builtDir) ? builtDir : null })
   if (!builtDir || !existsSync(builtDir)) result.notes.push(`No build of the story lane${given ? ` at ${given}` : ''}, so components have a page and no preview. Build the lane, then pass --built <dir>.`)
-  const { files, left, chosen, previews, set } = result
+  const { files, left, twins, chosen, previews, set } = result
   const bytes = [...files.values()].reduce((n, v) => n + Buffer.byteLength(v), 0)
-  const summary = `${set ? `${set.entries.length - left.length} of ${set.entries.length} tokens in the lists` : 'no tokens'}, ${chosen.length} ${chosen.length === 1 ? 'component' : 'components'} (${previews.built} with a preview), ${files.size} files, ${(bytes / 1e6).toFixed(1)} MB`
+  const summary = `${set ? `${set.entries.length - left.length - twins.length} of ${set.entries.length} tokens in the lists` : 'no tokens'}, ${chosen.length} ${chosen.length === 1 ? 'component' : 'components'} (${previews.built} with a preview), ${files.size} files, ${(bytes / 1e6).toFixed(1)} MB`
 
   if (mode === 'plan') {
     for (const n of result.notes) process.stderr.write(`  note: ${n}\n`)

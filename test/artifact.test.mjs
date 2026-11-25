@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { PAGE_MARK, SECTION_MARK, builtPagePaths, colorValueOk, componentId, componentReadme, contentTypeOf, fontFaces, isMedia, listTokens, previewFromPage, rewriteCssUrls, sectionsFor, selectElement, themeScript } from '../scripts/lib/artifact.mjs'
+import { PAGE_MARK, SECTION_MARK, builtPagePaths, colorValueOk, componentId, componentReadme, contentTypeOf, fontFaces, isMedia, listTokens, ownStorySlug, previewFromPage, rewriteCssUrls, sectionsFor, selectElement, storySlug, themeScript } from '../scripts/lib/artifact.mjs'
 import { read, readJson, run, scratch } from './helpers.mjs'
 
 const entry = (cssVar, type, values, more = {}) => ({ name: cssVar.replace(/^--/, '').replace(/-/g, '.'), cssVar, type, description: '', values, aliases: {}, ...more })
@@ -45,6 +45,39 @@ test('tokens become lists: a value per theme, references kept, families by what 
   assert.deepEqual(doc.shadow.tokens[0].value, { light: '0 1px 2px #0000001a', dark: '0 1px 2px #00000080' })
   assert.deepEqual(doc.type.families, { body: '"Acme Sans", system-ui, sans-serif' })
   assert.deepEqual(doc.type.groups, [{ name: 'Text', family: 'body', styles: [{ name: 'text-body', fontSize: '1rem', lineHeight: '1.5', fontWeight: 400 }] }])
+})
+
+test("Tailwind's theme names for a colour already listed are left out and counted, and nothing else is", () => {
+  const set = {
+    modes: ['light', 'dark'],
+    entries: [
+      entry('--ink', 'color', { light: '#111111', dark: '#eeeeee' }),
+      entry('--color-ink', 'color', { light: '#111111', dark: '#eeeeee' }, { aliases: { light: '--ink', dark: '--ink' } }),
+      // Its own value, so not a copy, though --brand exists.
+      entry('--brand', 'color', { light: '#ff0000', dark: '#ff0000' }),
+      entry('--color-brand', 'color', { light: '#00ff00', dark: '#00ff00' }),
+      // A copy in one theme only.
+      entry('--paper', 'color', { light: '#ffffff', dark: '#000000' }),
+      entry('--color-paper', 'color', { light: '#ffffff', dark: '#222222' }, { aliases: { light: '--paper', dark: null } }),
+      // Points at a colour of another name.
+      entry('--color-text', 'color', { light: '#111111', dark: '#eeeeee' }, { aliases: { light: '--ink', dark: '--ink' } }),
+    ],
+  }
+  const { doc, left, twins } = listTokens(set)
+  assert.deepEqual(twins, ['color-ink'])
+  assert.deepEqual(left, [])
+  assert.deepEqual(doc.color.tokens.map((t) => t.name), ['ink', 'brand', 'color-brand', 'paper', 'color-paper', 'color-text'])
+})
+
+test("a native lane's story slug is the file stem in kebab case, from the story beside the component", () => {
+  assert.equal(storySlug('app/components/ui/button/Button.story.vue'), 'button')
+  assert.equal(storySlug('src/components/IconButton.story.tsx'), 'icon-button')
+  assert.equal(storySlug('src/lib/DuePill.story.svelte'), 'due-pill')
+  assert.equal(ownStorySlug({ file: 'src/components/IconButton.tsx', stories: ['src/components/Toolbar.story.tsx', 'src/components/IconButton.story.tsx'] }), 'icon-button')
+  // A story that only imports the component is another component's.
+  assert.equal(ownStorySlug({ file: 'src/components/Icon.tsx', stories: ['src/components/Toolbar.story.tsx'] }), null)
+  assert.equal(ownStorySlug({ file: 'src/components/Card.tsx', stories: ['src/components/Card.stories.tsx'] }), null)
+  assert.equal(ownStorySlug({ file: 'src/components/Card.tsx' }), null)
 })
 
 test('what the lists cannot hold is left with a reason and written as a section', () => {
@@ -266,6 +299,45 @@ test('previews come from a static build of the story lane, with the files they l
   assert.match(report, /\| pages\/index \| no built page for the story home \|/)
   assert.match(report, /- `\/img\/card\.svg`/)
   assert.match(report, /2\. A Claude design system artifact: /)
+})
+
+test("a native lane's previews come from each component's own story, and Tailwind's colour copies are counted, not listed", () => {
+  const t = scratch('app')
+  after(t.cleanup)
+  const config = join(t.root, 'massimo.config.json')
+  const c = JSON.parse(readFileSync(config, 'utf8'))
+  c.stories = { include: ['src/components/**/*.story.tsx'], storyUrl: 'http://localhost:4650/stories/{slug}' }
+  // Tokens mirrored from a shadcn-style stylesheet: each colour, then Tailwind's theme name for it.
+  c.tokens = { styleFiles: ['src/styles/shadcn.css'], mirror: true, source: 'design-system/tokens/tokens.resolver.json', outputs: [] }
+  writeFileSync(config, JSON.stringify(c))
+  writeFileSync(join(t.root, 'src', 'styles', 'shadcn.css'), ':root {\n  /* The page. */\n  --surface: #fafafa;\n  --ink: #111111;\n}\n\n@theme inline {\n  --color-surface: var(--surface);\n  --color-ink: var(--ink);\n}\n')
+  const mirrored = run('tokens', t, ['mirror'])
+  assert.equal(mirrored.status, 0, mirrored.stderr)
+  const comp = join(t.root, 'src', 'components')
+  writeFileSync(join(comp, 'IconButton.tsx'), "import { Icon } from './Icon'\n\nexport function IconButton() {\n  return <button><Icon /></button>\n}\n")
+  writeFileSync(join(comp, 'IconButton.story.tsx'), "import { IconButton } from './IconButton'\n\nexport default function Story() {\n  return <IconButton />\n}\n")
+  // Toolbar's own story, which also shows Icon: Icon has a story, but not its own.
+  writeFileSync(join(comp, 'Toolbar.story.tsx'), "import { Toolbar } from './Toolbar'\nimport { Icon } from './Icon'\n\nexport default function Story() {\n  return <Toolbar><Icon /></Toolbar>\n}\n")
+  assert.equal(run('graph', t).status, 0)
+  const built = join(t.root, 'dist-stories')
+  for (const slug of ['icon-button', 'toolbar']) {
+    mkdirSync(join(built, 'stories', slug), { recursive: true })
+    writeFileSync(join(built, 'stories', slug, 'index.html'), `<html><head></head><body><main>${slug}</main></body></html>`)
+  }
+  const r = run('artifact', t, ['build', '--built', 'dist-stories'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(r.stdout, /: 2 of 4 tokens in the lists, /)
+  assert.match(r.stderr, /note: 2 colours are Tailwind theme names for a colour the lists hold under its own name \(`--color-\w+` for `--\w+`\), so the lists leave them out\./)
+  const out = join(t.project, 'artifact', 'project')
+  const tokens = readJson(out, 'tokens.json')
+  assert.deepEqual(tokens.color.tokens.map((x) => x.name).sort(), ['ink', 'surface'])
+  assert.equal(tokens.color.tokens.find((x) => x.name === 'surface').usage, 'The page.')
+  assert.match(read(out, 'components', 'IconButton', 'preview.html'), /<main>icon-button<\/main>/)
+  assert.match(read(out, 'components', 'Toolbar', 'preview.html'), /<main>toolbar<\/main>/)
+  assert.ok(!existsSync(join(out, 'components', 'Icon', 'preview.html')))
+  const report = read(t.project, 'artifact', 'report.md')
+  assert.match(report, /\| Icon \| no story of its own \|/)
+  assert.match(report, /- Tokens: 2 of 4 in the token lists/)
 })
 
 test('pages keeps a page per component and a section per left-out kind in the project folder, and --check holds them', () => {
