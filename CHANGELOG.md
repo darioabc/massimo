@@ -28,6 +28,15 @@ iOS and Android, as a preview: massimo recognises a mobile app, reads its colour
 
 - Web: a CSS `color()` value with no alpha (`color(display-p3 1 0.5 0)`) was read as two components, so every build failed. It keeps its three. Since 0.5.0.
 
+## 0.5.1
+
+Two fixes to the artifact build, from publishing a Nuxt app with a native story lane and shadcn's theme. After updating, run `init.mjs --update-scripts`, then `artifact.mjs build` again. No file format changes.
+
+### Fixed
+
+- A native story lane gets previews. The graph names a node's stories only on a manifest or csf lane, so on a native lane, the default, every component was reported as having no story of its own and the folder had no previews. A component's preview now comes from its own story, the story file beside it with the same stem, at the slug every native recipe gives it: the file stem in kebab case (`IconButton.story.vue` is `/stories/icon-button`). A story that only shows a component inside another is still not its own.
+- Tailwind's theme names for colours are not listed twice. Tailwind 4 and shadcn declare every colour a second time under its theme name (`--color-ink: var(--ink)` beside `--ink`), so the token lists held each colour twice. A colour whose name is `color-` and the name of a listed colour, and which points at that colour in every theme, is left out of the lists. The report counts them in a note, and the token counts say how many are listed.
+
 ## 0.5.0
 
 The design system as a folder to publish, in the layout of a Claude design system artifact, and a way for any coding agent to run massimo from the repo. After updating, run `init.mjs --update-scripts`: it also copies the playbooks into the project folder and adds a block to `AGENTS.md`. No file format changes. `state.json` gains an optional `artifact` phase, which a project without it reads as skipped.

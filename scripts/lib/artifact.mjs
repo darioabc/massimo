@@ -65,11 +65,26 @@ function familyOf(entry) {
 const usageOf = (entry) => (entry.description ?? '').slice(0, CAPS.usage)
 const allSame = (values, modes) => modes.every((m) => values[m] === values[modes[0]])
 
+// A native lane's story slug: the story file's stem in kebab case, the rule
+// every native recipe uses (`Button.story.vue` and `IconButton.story.tsx` give
+// `button` and `icon-button`).
+export const storySlug = (file) => String(file).split('/').pop().replace(/\.story\.[^./]+$/, '').replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+
+// The slug of a component's own story on a native lane: the story file beside
+// it with the same stem, as the graph pairs them. A story that only imports the
+// component is another component's, so it gives null.
+export function ownStorySlug(node) {
+  const stem = String(node?.file ?? '').replace(/\.[^./]+$/, '')
+  const own = (node?.stories ?? []).find((f) => /\.story\.[^./]+$/.test(f) && f.replace(/\.story\.[^./]+$/, '') === stem)
+  return own ? storySlug(own) : null
+}
+
 // The token set as the lists the views read. `set` is what tokens.mjs gives:
 // `modes` (the default first) and an entry per token with its CSS name, type,
 // description, a value per mode as CSS text, and per mode the CSS name of the
-// token it points at. Returns the document and `left`: every token with no
-// place in it, as { name, type, values, description, reason, section }.
+// token it points at. Returns the document; `left`, every token with no
+// place in it, as { name, type, values, description, reason, section }; and
+// `twins`, the names of Tailwind's theme copies of colours it already lists.
 export function listTokens(set, { name = 'Design system' } = {}) {
   const modes = set.modes
   const first = modes[0]
@@ -77,8 +92,18 @@ export function listTokens(set, { name = 'Design system' } = {}) {
   const leave = (entry, reason) => left.push({ name: entry.cssName, type: entry.type, values: entry.values, description: entry.description ?? '', reason, section: SECTION_OF[entry.type] ?? 'more-tokens' })
 
   const usable = []
+  // Tailwind 4's theme names for a colour the set already holds under its own
+  // name (`--color-ink: var(--ink)` beside `--ink`, as shadcn writes them) say
+  // nothing new, so the lists leave them out and the report counts them.
+  const colorVars = new Set(set.entries.filter((x) => x.type === 'color').map((x) => x.cssVar))
+  const twins = []
   for (const entry of set.entries) {
     const cssName = entry.cssVar.replace(/^--/, '')
+    const twin = entry.type === 'color' && cssName.startsWith('color-') ? `--${cssName.slice('color-'.length)}` : null
+    if (twin && colorVars.has(twin) && modes.every((m) => entry.aliases?.[m] === twin)) {
+      twins.push(cssName)
+      continue
+    }
     const e = { ...entry, cssName }
     if (!TOKEN_NAME.test(cssName)) leave(e, 'its CSS name is longer than 64 characters or has a character the views do not take')
     else if (entry.cssOnly) leave(e, 'a CSS-only value')
@@ -186,7 +211,7 @@ export function listTokens(set, { name = 'Design system' } = {}) {
   if (colorTokens.length > 0) doc.color = { themes: modes.map((m) => ({ id: m.toLowerCase(), name: titleCase(m) })), tokens: colorTokens.map((t) => ({ ...t, value: isObject(t.value) ? Object.fromEntries(Object.entries(t.value).map(([m, v]) => [m.toLowerCase(), v])) : t.value })) }
   if (Object.keys(families).length > 0 || groups.size > 0) doc.type = { fonts: [], families, groups: [...groups.values()] }
   for (const k of [...core, ...extra.slice(0, CAPS.extraFamilies)]) if (lists.has(k)) doc[k] = { tokens: lists.get(k) }
-  return { doc, left }
+  return { doc, left, twins }
 }
 
 // ── Sections for what the lists cannot hold ────────────────────────────────
