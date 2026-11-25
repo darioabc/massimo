@@ -21,6 +21,10 @@
 // audit.primitives 'color' counts only colour primitives. tokens.mjs extract
 // runs the audit without them (runAudit's `raw`).
 //
+// In a project that declares iOS or Android platforms, latest.md and
+// latest.json also count the colours Swift and Kotlin files hard-code, read
+// only: never findings, never in the baseline.
+//
 // Writes audits/latest.json and audits/latest.md. The ratchet is per offender:
 // baseline.json keys are "<file>: <value>" with counts, and --check fails when
 // any offender rises or a new one appears, even if the kind's total holds.
@@ -55,6 +59,7 @@ import {
   stripComments,
 } from './lib/source.mjs'
 import { readTokenSource } from './lib/dtcg.mjs'
+import { colorLiteralCounts } from './lib/platforms.mjs'
 import { findObject, leaves } from './lib/jsobject.mjs'
 import { TAILWIND_CONFIG_STARTS, channelColor, readCss } from './lib/readers.mjs'
 import { headerRoles, keyRoles, knownKeys, placeFile } from './lib/roles.mjs'
@@ -1666,6 +1671,19 @@ function renderMarkdown(result, date, command) {
   out.push(`- Off-grid spacing values (not a multiple of 4px): ${canon.offGridSpacingValues}`)
   out.push(`- Arbitrary values: ${canon.arbitraryValues}`, '')
 
+  // A mobile project's hard-coded colours, read only (0.6.0).
+  if (result.mobileColors) {
+    const total = result.mobileColors.reduce((n, p) => n + p.count, 0)
+    out.push('## Hard-coded colours in Swift and Kotlin', '')
+    out.push(`${total} colour ${total === 1 ? 'literal' : 'literals'} written into the code, outside the tests and the files massimo generates. Read only: they are not findings and never join the baseline, so \`--check\` does not see them.`, '')
+    for (const p of result.mobileColors) {
+      out.push(`- ${p.id}: ${p.count} in ${p.files} of ${p.scanned} ${p.language} files`)
+      for (const f of p.top.slice(0, MD_PER_FILE)) out.push(`  - \`${f.file}\` ×${f.count} (${f.lines.length > 6 ? `L${f.lines.slice(0, 6).join(', L')}, +${f.lines.length - 6} more` : `L${f.lines.join(', L')}`})`)
+      if (p.top.length > MD_PER_FILE) out.push(`  - +${p.top.length - MD_PER_FILE} more files in latest.json`)
+    }
+    out.push('')
+  }
+
   out.push('## Findings by kind', '')
   const palette = result.paletteClasses
   for (const kind of result.kinds ?? KINDS) {
@@ -1834,6 +1852,9 @@ function main() {
 
   const result = runAudit(root, config, { cluster, projectDir })
   for (const w of result.warnings) process.stderr.write(`massimo audit: warn: ${w}\n`)
+  // A config that declares mobile platforms also gets their colour count, read only.
+  const mobileColors = config.platforms ? colorLiteralCounts(root, config) : []
+  if (mobileColors.length > 0) result.mobileColors = mobileColors
   // Not measured this run: skipped kinds, and kinds whose key is not set,
   // whose baseline entries stand as they are.
   const skipped = new Set([...Object.keys(result.skipped), ...ALL_KINDS.filter((k) => !result.kinds.includes(k))])
@@ -1905,8 +1926,9 @@ function main() {
     extra = `; baseline lowered (${lowered.lowered} lowered, ${lowered.dropped} dropped${lowered.rises.length > 0 ? `, ${lowered.rises.length} rises not recorded` : ''}${lowered.unknown.length > 0 ? `, kept ${lowered.unknown.join(', ')}, which these scripts do not measure` : ''})`
   }
   const c = result.canon
+  const mobile = result.mobileColors ? `; ${result.mobileColors.map((p) => `${p.count} hard-coded ${p.count === 1 ? 'colour' : 'colours'} in ${p.language}`).join(', ')} (read only)` : ''
   process.stdout.write(
-    `massimo audit: ${stats}; ${c.distinctColors} colours in ${c.colorClusters} clusters, ${c.distinctFontSizes} font sizes, ${c.distinctFontFamilies} families, ${c.offGridSpacingValues} off-grid spacing values; wrote ${shown('latest.md')}${extra}\n`,
+    `massimo audit: ${stats}; ${c.distinctColors} colours in ${c.colorClusters} clusters, ${c.distinctFontSizes} font sizes, ${c.distinctFontFamilies} families, ${c.offGridSpacingValues} off-grid spacing values${mobile}; wrote ${shown('latest.md')}${extra}\n`,
   )
 }
 

@@ -286,6 +286,56 @@ const d50ToD65 = (x, y, z) => [
 
 // ── DTCG colour objects ─────────────────────────────────────────────────────
 
+// A DTCG colour's components as sRGB (gamma encoded, before any clamping, so
+// a colour outside sRGB keeps its components below 0 or above 1), for the
+// spaces the mobile outputs convert. Null for a space this does not convert
+// or components that are not numbers.
+export function srgbOfComponents(colorSpace, components) {
+  if (!Array.isArray(components) || components.length !== 3) return null
+  const c = components.map((n) => (n === 'none' ? 0 : n))
+  if (!c.every((n) => typeof n === 'number' && Number.isFinite(n))) return null
+  const encode = (lin) => lin.map((v) => Math.sign(v) * (Math.abs(v) <= 0.0031308 ? Math.abs(v) * 12.92 : 1.055 * Math.abs(v) ** (1 / 2.4) - 0.055))
+  const fromXyz = (x, y, z) => encode([3.2404542 * x - 1.5371385 * y - 0.4985314 * z, -0.969266 * x + 1.8760108 * y + 0.041556 * z, 0.0556434 * x - 0.2040259 * y + 1.0572252 * z])
+  const lab = (L, a, b) => {
+    const fy = (L + 16) / 116
+    const fx = fy + a / 500
+    const fz = fy - b / 200
+    const eps = 216 / 24389
+    const kappa = 24389 / 27
+    const inv = (t) => (t ** 3 > eps ? t ** 3 : (116 * t - 16) / kappa)
+    return fromXyz(...d50ToD65((inv(fx) * 0.3457) / 0.3585, L > kappa * eps ? ((L + 16) / 116) ** 3 : L / kappa, (inv(fz) * (1 - 0.3457 - 0.3585)) / 0.3585))
+  }
+  const [x, y, z] = c
+  switch (colorSpace) {
+    case 'hsl':
+      return hslToRgb(x, y / 100, z / 100)
+    case 'hwb': {
+      const [w, bl] = [y / 100, z / 100]
+      if (w + bl >= 1) return [w / (w + bl), w / (w + bl), w / (w + bl)]
+      return hslToRgb(x, 1, 0.5).map((v) => v * (1 - w - bl) + w)
+    }
+    case 'lab':
+      return lab(x, y, z)
+    case 'lch':
+      return lab(x, y * Math.cos((z * Math.PI) / 180), y * Math.sin((z * Math.PI) / 180))
+    case 'xyz-d65':
+      return fromXyz(x, y, z)
+    case 'xyz-d50':
+      return fromXyz(...d50ToD65(x, y, z))
+    case 'a98-rgb':
+      return fromXyz(...mul(A98_TO_XYZ, c.map((v) => Math.sign(v) * Math.abs(v) ** (563 / 256))))
+    case 'prophoto-rgb':
+      return fromXyz(...d50ToD65(...mul(PROPHOTO_TO_XYZ_D50, c.map((v) => (Math.abs(v) <= 16 / 512 ? v / 16 : Math.sign(v) * Math.abs(v) ** 1.8)))))
+    case 'rec2020': {
+      const alpha = 1.09929682680944
+      const beta = 0.018053968510807
+      return fromXyz(...mul(REC2020_TO_XYZ, c.map((v) => (Math.abs(v) < beta * 4.5 ? v / 4.5 : Math.sign(v) * ((Math.abs(v) + alpha - 1) / alpha) ** (1 / 0.45)))))
+    }
+    default:
+      return null
+  }
+}
+
 // The colour spaces the DTCG 2025.10 colour module allows.
 export const DTCG_COLOR_SPACES = ['srgb', 'srgb-linear', 'hsl', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'display-p3', 'a98-rgb', 'prophoto-rgb', 'rec2020', 'xyz-d65', 'xyz-d50']
 
@@ -329,7 +379,8 @@ export function colorFromCss(input) {
   }
   const slash = m[2].indexOf('/')
   let parts = (slash === -1 ? m[2] : m[2].slice(0, slash)).split(/[\s,]+/).filter(Boolean)
-  if (slash === -1 && parts.length === 4) parts = parts.slice(0, 3)
+  // The legacy comma form's fourth value is its alpha; color()'s first part is its space.
+  if (slash === -1 && parts.length === 4 && m[1] !== 'color') parts = parts.slice(0, 3)
   const value = (p, pctScale) => (p === 'none' ? 'none' : p.endsWith('%') ? r6((parseFloat(p) / 100) * pctScale) : r6(parseFloat(p)))
   const hue = (p) => (p === 'none' ? 'none' : r6(((hueToDeg(p) % 360) + 360) % 360))
   let space = m[1].replace(/a$/, '')

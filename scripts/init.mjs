@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { compare, globToRegExp } from './lib/glob.mjs'
 import { parseArrayAt } from './lib/jsobject.mjs'
 import { stripComments } from './lib/source.mjs'
-import { CONFIG_FILE, DEFAULTS, SCRIPTS_VERSION, deepMerge, fail, findRoot, loadConfig, parseArgs, readJson, rel, vendoredVersion as vendoredVersionOf } from './lib/project.mjs'
+import { CONFIG_FILE, DEFAULTS, SCRIPTS_VERSION, configRefusal, deepMerge, fail, findRoot, loadConfig, parseArgs, platformBlock, readJson, rel, vendoredVersion as vendoredVersionOf, withMinScripts } from './lib/project.mjs'
 import { emptyState, renderStatus, saveState, setPhase } from './lib/state.mjs'
 import { helpAndExit } from './lib/help.mjs'
 
@@ -73,7 +73,11 @@ if (!existsSync(configPath)) {
       fail(`--config-json is not valid JSON: ${e.message}`)
     }
   }
-  planned = deepMerge(suggested, overrides)
+  // The scripts version the config's keys need, so older scripts refuse it instead of ignoring them.
+  planned = withMinScripts(deepMerge(suggested, overrides))
+  // Checked before anything is written, so a refused config leaves no half-made project, in a dry run too.
+  const refusal = configRefusal(planned)
+  if (refusal) fail(refusal)
   write(configPath, `${JSON.stringify(planned, null, 2)}\n`)
 } else {
   report.skipped.push(CONFIG_FILE)
@@ -82,6 +86,7 @@ if (!existsSync(configPath)) {
 // A dry run writes no config, so it reports from the config it would write.
 function plannedConfig(raw) {
   const config = deepMerge(structuredClone(DEFAULTS), raw)
+  if (raw.platforms && typeof raw.platforms === 'object') config.platforms = Object.fromEntries(Object.entries(raw.platforms).map(([id, block]) => [id, platformBlock(id, block)]))
   return { config, projectDir: isAbsolute(config.projectDir) ? config.projectDir : join(root, config.projectDir) }
 }
 const { projectDir, config } = dry && planned ? plannedConfig(planned) : loadConfig({ root })
@@ -179,6 +184,19 @@ if (refresh) for (const dir of PLAYBOOK_DIRS) if (existsSync(join(pluginRoot, di
 
 // 3c. AGENTS.md: where any agent starts. The block between the markers is
 // massimo's; everything around it is the repo's own and is never touched.
+// The platforms line, for a project that declares platforms: what each is,
+// and that token outputs are massimo's only where it says so. None for a web project.
+function platformsLine() {
+  if (!config.platforms || typeof config.platforms !== 'object') return []
+  const UI = { swiftui: 'SwiftUI', uikit: 'UIKit', compose: 'Jetpack Compose', views: 'Android views' }
+  const NAMES = { web: 'web', ios: 'iOS', android: 'Android' }
+  const each = Object.entries(config.platforms).map(([id, b]) => {
+    const parts = [...(Array.isArray(b?.ui) ? b.ui.map((u) => UI[u] ?? u) : []), ...(b?.root && b.root !== '.' ? [`in \`${b.root}/\``] : [])]
+    return `${NAMES[id] ?? id}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}`
+  })
+  return [`- Platforms: ${each.join('; ')}. \`node ${projectRel}/scripts/tokens.mjs build\` writes each platform's token outputs, and the mobile files massimo owns are the ones \`${projectRel}/tokens/mobile-outputs.json\` lists; it never writes over any other file.`]
+}
+
 const AGENTS_START = '<!-- massimo:agents:start -->'
 const AGENTS_END = '<!-- massimo:agents:end -->'
 function agentsBlock() {
@@ -196,6 +214,7 @@ function agentsBlock() {
     `- Where a playbook dispatches a worker such as \`massimo:reviewer\`, start a fresh agent with \`${projectRel}/playbooks/agents/<name>.md\` as its instructions if your tool can; otherwise follow that file yourself, one worker at a time. A reviewer writes nothing, and the ideator writes only under \`${projectRel}/explorations/\`.`,
     '- Where a playbook names a tool your host lacks (a question prompt, a browser pane), do the same job in plain text: ask in words, give the URL to open.',
     `- \`node ${projectRel}/scripts/check.mjs\` runs every check CI runs.`,
+    ...platformsLine(),
     AGENTS_END,
   ].join('\n')
 }

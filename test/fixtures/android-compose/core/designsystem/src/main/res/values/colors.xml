@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand -->
+    <color name="brand_primary">#FF6200EE</color>
+    <color name="on_brand">@color/paper</color>
+    <color name="paper">#FFFFFF</color>
+    <!-- Half-black scrim, alpha first as Android writes it -->
+    <color name="scrim">#80000000</color>
+    <color name="system_white">@android:color/white</color>
+    <color name="themed">?attr/colorPrimary</color>
+</resources>

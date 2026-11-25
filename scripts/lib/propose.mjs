@@ -26,11 +26,12 @@ export const FAMILIES = ['color', 'typography', 'spacing', 'radius', 'shadow', '
 
 // ── Merging what the sources define ────────────────────────────────────────
 
-// Sources in order of trust: a token file first, then CSS, then config and
+// Sources in order of trust: a token file first, then a mobile app's own
+// colours (an asset catalog, Android res/values), then CSS, then config and
 // theme code, then a Figma export. A path a later source repeats is dropped
 // with a note; `var(--x)` becomes a reference to the token that sets --x.
 export function mergeSources(sources) {
-  const order = ['tokens', 'css', 'tailwind', 'theme', 'figma']
+  const order = ['tokens', 'xcassets', 'android-values', 'css', 'tailwind', 'theme', 'figma']
   const tokens = []
   const notes = []
   const seen = new Map()

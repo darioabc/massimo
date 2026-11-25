@@ -1,0 +1,69 @@
+{
+  "$description": "Draft proposed by massimo from what this repo already uses. Nothing here is in use yet: review it with the tokens skill.",
+  "color": {
+    "$type": "color",
+    "brand": {
+      "$value": {
+        "colorSpace": "display-p3",
+        "components": [
+          1,
+          0.5,
+          0
+        ],
+        "hex": "#ff7600"
+      },
+      "$description": "Brand colour for primary actions and emphasis"
+    },
+    "faded": {
+      "$value": {
+        "colorSpace": "display-p3",
+        "components": [
+          1,
+          0.5,
+          0
+        ],
+        "hex": "#ff7600",
+        "alpha": 0.5
+      }
+    },
+    "ink": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.1,
+          0.2,
+          0.3
+        ],
+        "hex": "#1a334d"
+      },
+      "$description": "Text"
+    },
+    "plain": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.2,
+          0.4,
+          0.6
+        ],
+        "hex": "#336699"
+      }
+    },
+    "wide": {
+      "$value": {
+        "colorSpace": "rec2020",
+        "components": [
+          0.4,
+          0.6,
+          0.2
+        ],
+        "hex": "#4aa829"
+      }
+    }
+  },
+  "$extensions": {
+    "massimo": {
+      "format": 2
+    }
+  }
+}

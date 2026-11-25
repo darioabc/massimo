@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readTokenSource } from './lib/dtcg.mjs'
 import { fail, loadConfig, parseArgs, readJson, refuseNewer, rel, scriptCommand, warnIfVendoredOlder, writeFileAtomic } from './lib/project.mjs'
+import { hasWeb } from './lib/platforms.mjs'
 import { tierOrder } from './lib/roles.mjs'
 import { isAlias } from './lib/source.mjs'
 import { truthy } from './lib/text.mjs'
@@ -76,7 +77,9 @@ export function docsBlock({ root, config, projectDir }) {
   const graph = readJson(join(projectDir, 'graph.json'), null)
   refuseNewer('graph', graph?.version, 'graph.json')
   lines.push('## Components', '')
-  if (!graph) {
+  if (!graph && !hasWeb(config)) {
+    lines.push('The component graph reads web code, and this project declares no web platform, so it has none.', '')
+  } else if (!graph) {
     lines.push(`No component graph yet. Generate it with ${run('graph', 'ds:graph')}.`, '')
   } else {
     const nodes = graph.nodes ?? []
@@ -112,6 +115,8 @@ export function docsBlock({ root, config, projectDir }) {
     // The check runner: every massimo check that applies, then the project's own.
     lines.push(`\`npm run ds:check\` runs in CI: \`${dsCheck}\`. It runs every massimo check that applies to the project and fails on a stale graph, a raw value beyond the audit's baseline, a generated token file that is out of date, or a stale README.${extra.length > 0 ? ` It also runs the project's own checks (\`guard.extraChecks\`): ${extra.join(', ')}.` : ''}`, '')
   } else if (dsCheck) lines.push(`\`npm run ds:check\` runs in CI: \`${dsCheck}\`. It fails on a stale graph, a raw value beyond the audit's baseline, or a generated token file that is out of date.`, '')
+  // With no package.json, guard adds no script: CI runs the check runner itself.
+  else if (!existsSync(join(root, 'package.json'))) lines.push(`\`${scriptCommand(root, projectDir, 'check')}\` runs every massimo check that applies to the project${extra.length > 0 ? `, then the project's own (\`guard.extraChecks\`): ${extra.join(', ')}` : ''}. With no package.json there is no \`ds:check\` script: CI runs this command.`, '')
   else lines.push('No `ds:check` script yet; the guard phase adds one for CI.', '')
   const mirror = readJson(join(projectDir, 'figma', 'mirror.json'), null)
   if (mirror?.syncedAt) {
